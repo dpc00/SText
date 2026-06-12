@@ -6,7 +6,11 @@
             { "caption": "-" },
             {
                 "caption": "PyBackup Flask App",
-                "command": "py_backup_flask"
+                "command": "pb_flask_launcher"
+            },
+            {
+                "caption": "PyBackup Flask App (Silent)",
+                "command": "pb_flask_silent"
             }
         ]
     }
