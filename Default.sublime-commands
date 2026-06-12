@@ -4,7 +4,5 @@
     { "caption": "MCP: Browse Command Palette",  "command": "mcp_browse_command_palette" },
     { "caption": "MCP: Browse Syntaxes",         "command": "mcp_browse_syntaxes" },
     { "caption": "MCP: Browse Variables",        "command": "mcp_browse_variables" },
-    { "caption": "PyBackup: Run Script",         "command": "exec", "args": { "cmd": ["python", "C:/Users/donal/projects/pybackup/pybackup.py"], "working_dir": "C:/Users/donal/projects/pybackup" } },
-    { "caption": "PyBackup: Open UI",            "command": "py_backup" },
-    { "caption": "PyBackup: Flask App",          "command": "py_backup_flask" }
+    { "caption": "PyBackup: Flask App",          "command": "pb_flask_launcher" }
 ]
