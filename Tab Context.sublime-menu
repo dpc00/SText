@@ -1,0 +1,13 @@
+[
+    {
+        "caption": "Open Terminus here...",
+        "command": "terminus_open",
+        "args": {
+            "cwd": "${file_path:${folder}}"
+        }
+    },
+    {
+        "caption": "Open Claude in Terminus here...",
+        "command": "open_claude_terminus_in_editor"
+    }
+]

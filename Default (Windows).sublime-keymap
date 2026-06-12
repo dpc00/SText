@@ -1,0 +1,4 @@
+[
+	{ "keys": ["ctrl+s"], "command": "save", "args": { "async": true } },
+	{ "keys": ["ctrl+shift+k"], "command": "clear_buffer" }
+]
