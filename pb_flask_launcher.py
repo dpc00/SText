@@ -20,7 +20,7 @@ class PbFlaskLauncherCommand(sublime_plugin.WindowCommand):
                     [
                         "terminus_paste_text",
                         {
-                            "text": "start python C:/Users/donal/projects/pybackup/ui/app.py\n",
+                            "text": "start /B python C:/Users/donal/projects/pybackup/ui/app.py\n",
                             "bracketed": False,
                         },
                     ],
