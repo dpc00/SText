@@ -28,6 +28,6 @@
             "platforms": ["windows"]
         },
     ],
-    "scrollback": 300,
-    "scrollback_history_size": 300
+    "scrollback": 600,
+    "scrollback_history_size": 600
 }
