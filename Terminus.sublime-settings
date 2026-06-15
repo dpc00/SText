@@ -4,30 +4,31 @@
             "name": "Command Prompt",
             "cmd": "cmd.exe",
             "env": {
-                "TERM": "xterm-256color"
+                "TERM": "xterm-256color",
             },
             "enable": true,
-            "platforms": ["windows"]
+            "platforms": ["windows"],
         },
         {
             "name": "PowerShell 7",
             "cmd": "pwsh.exe",
             "env": {
-                "TERM": "xterm-256color"
+                "TERM": "xterm-256color",
             },
             "enable": true,
-            "platforms": ["windows"]
+            "platforms": ["windows"],
         },
         {
             "name": "PowerShell 5.1",
             "cmd": "powershell.exe",
             "env": {
-                "TERM": "xterm-256color"
+                "TERM": "xterm-256color",
             },
             "enable": true,
-            "platforms": ["windows"]
+            "platforms": ["windows"],
         },
     ],
     "scrollback": 600,
-    "scrollback_history_size": 600
+    "scrollback_history_size": 600,
+    "theme": "brogrammer",
 }
