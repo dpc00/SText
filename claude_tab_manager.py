@@ -190,24 +190,28 @@ def _detect_anomalies(view_id: str, current_row_count: int, last_row_count: int)
     if view_id not in _view_state:
         return
 
+    import time
     state = _view_state[view_id]
+    now = time.time()
 
-    # Detect if buffer shrunk (lines deleted) without being logged
+    # Detect if buffer shrunk (trim/reload) — reset last_line so we re-log current buffer
     if current_row_count < last_row_count:
         lost_lines = last_row_count - current_row_count
-        if lost_lines > 5:  # More than 5 lines deleted
+        if lost_lines > 5:
             _diagnostic_log(
-                f"ANOMALY: {lost_lines} lines deleted from buffer (buffer trim occurred)"
+                f"ANOMALY: {lost_lines} lines deleted from buffer (resetting last_line to re-log)"
             )
             state["anomalies"] = state.get("anomalies", 0) + 1
+            state["last_line"] = 0
 
-    # Detect long pauses (might indicate invisible operations)
+    # Detect long pauses — debounced to once per 5 minutes to avoid log flood
     if "last_output_time" in state:
-        import time
-        time_since_output = time.time() - state["last_output_time"]
-        if time_since_output > 30:  # 30 seconds without output
+        time_since_output = now - state["last_output_time"]
+        last_pause_logged = state.get("last_pause_logged_time", 0)
+        if time_since_output > 30 and now - last_pause_logged > 300:
             _diagnostic_log(f"ANOMALY: 30+ seconds without output (possible invisible operation)")
             state["anomalies"] = state.get("anomalies", 0) + 1
+            state["last_pause_logged_time"] = now
 
 
 def _tick():
@@ -239,6 +243,13 @@ def _tick():
         state = _view_state[vid]
         last_line = state.get("last_line", 0)
         last_row_count = state.get("last_row_count", 0)
+
+        # If last_line is stale (e.g. loaded from disk for a resumed view), reset so we
+        # re-log whatever is currently in the buffer rather than silently missing content.
+        if last_line > row_count:
+            _diagnostic_log(f"RESET: last_line={last_line} > row_count={row_count}, resetting to 0")
+            state["last_line"] = 0
+            last_line = 0
 
         # Detect anomalies
         _detect_anomalies(vid, row_count, last_row_count)
@@ -430,7 +441,46 @@ class CtmDumpBufferCommand(sublime_plugin.TextCommand):
             sublime.error_message(error_msg)
 
 
+class CtmEventListener(sublime_plugin.EventListener):
+    """Flush the full Claude buffer to the log when the view or window closes."""
+
+    def _flush_claude_view(self, view: sublime.View) -> None:
+        if view.name() != "Claude":
+            return
+        try:
+            entire_content = view.substr(sublime.Region(0, view.size()))
+            if not entire_content.strip():
+                return
+            _append_log(entire_content)
+            vid = str(view.id())
+            row_count = view.rowcol(view.size())[0] + 1
+            if vid in _view_state:
+                _view_state[vid]["last_line"] = row_count
+            _save_state()
+            _diagnostic_log(f"CLOSE_FLUSH: saved {len(entire_content)} chars from Claude view")
+        except Exception as e:
+            _diagnostic_log(f"CLOSE_FLUSH_ERROR: {e}")
+
+    def on_pre_close(self, view: sublime.View) -> None:
+        self._flush_claude_view(view)
+
+    def on_window_command(self, window, command_name, args):
+        if command_name in ("close_window", "exit"):
+            v = _claude_view()
+            if v:
+                self._flush_claude_view(v)
+
+
 def plugin_unloaded():
     """Clean up when plugin unloads."""
+    v = _claude_view()
+    if v:
+        try:
+            entire_content = v.substr(sublime.Region(0, v.size()))
+            if entire_content.strip():
+                _append_log(entire_content)
+                _diagnostic_log(f"UNLOAD_FLUSH: saved {len(entire_content)} chars")
+        except Exception:
+            pass
     _save_state()
     _diagnostic_log("plugin_unloaded")
