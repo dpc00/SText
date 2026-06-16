@@ -122,13 +122,40 @@ def _cleanup_old_screenshots() -> None:
         _diagnostic_log(f"CLEANUP_ERROR: {e}")
 
 
+import re as _re
+_TRAIL_JUNK = _re.compile(r'[\s─-╿▀-▟]+$')
+# Claude Code status-bar lines: wide single lines containing navigation/cost info
+# Status-bar lines are padded to terminal width: non-space, big gap, non-space
+_STATUS_BAR_GAP = _re.compile(r'\S\s{20,}\S')
+
+def _clean_text(text: str) -> str:
+    """Normalize terminal buffer text for clean log output."""
+    # Replace non-breaking space with regular space (Terminus pads with \xa0)
+    text = text.replace("\xa0", " ")
+    # Remove zero-width invisible characters
+    text = text.replace("​", "").replace("‌", "").replace("‍", "").replace("﻿", "")
+    # Normalize line endings: \r\n → \n, then bare \r → \n
+    # Bare \r is used by terminals to overwrite the current line; treating as \n
+    # splits each overwrite fragment so the status-bar filter can catch them.
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+    cleaned = []
+    for line in lines:
+        line = _TRAIL_JUNK.sub("", line)
+        # Drop terminal status-bar lines (wide lines padded between left/right elements)
+        if len(line) > 100 and _STATUS_BAR_GAP.search(line):
+            continue
+        cleaned.append(line)
+    return "\n".join(cleaned)
+
+
 def _append_log(text: str) -> None:
     """Append text to today's conversation log."""
     try:
         os.makedirs(_LOG_DIR, exist_ok=True)
         log_file = os.path.join(_LOG_DIR, f"claude_{datetime.date.today().isoformat()}.log")
-        with open(log_file, "a", encoding="utf-8") as f:
-            f.write(text)
+        with open(log_file, "a", encoding="utf-8", newline="") as f:
+            f.write(_clean_text(text))
     except OSError as e:
         _diagnostic_log(f"WRITE_ERROR: Failed to write to log: {e}")
 
@@ -442,22 +469,29 @@ class CtmDumpBufferCommand(sublime_plugin.TextCommand):
 
 
 class CtmEventListener(sublime_plugin.EventListener):
-    """Flush the full Claude buffer to the log when the view or window closes."""
+    """Flush any unlogged Claude buffer content when the view or window closes."""
 
     def _flush_claude_view(self, view: sublime.View) -> None:
         if view.name() != "Claude":
             return
         try:
-            entire_content = view.substr(sublime.Region(0, view.size()))
-            if not entire_content.strip():
-                return
-            _append_log(entire_content)
             vid = str(view.id())
             row_count = view.rowcol(view.size())[0] + 1
+            last_line = _view_state.get(vid, {}).get("last_line", 0)
+            if last_line >= row_count:
+                return  # nothing new since last tick
+            start_point = view.text_point(last_line, 0)
+            end_point = view.size()
+            if start_point >= end_point:
+                return
+            new_text = view.substr(sublime.Region(start_point, end_point))
+            if not new_text.strip():
+                return
+            _append_log(new_text)
             if vid in _view_state:
                 _view_state[vid]["last_line"] = row_count
             _save_state()
-            _diagnostic_log(f"CLOSE_FLUSH: saved {len(entire_content)} chars from Claude view")
+            _diagnostic_log(f"CLOSE_FLUSH: saved {len(new_text)} chars from Claude view")
         except Exception as e:
             _diagnostic_log(f"CLOSE_FLUSH_ERROR: {e}")
 
@@ -471,15 +505,150 @@ class CtmEventListener(sublime_plugin.EventListener):
                 self._flush_claude_view(v)
 
 
+def _decode_project(folder_name: str) -> str:
+    """Convert encoded project folder name to readable path.
+
+    ~/.claude/projects/ encodes the working directory by replacing path
+    separators with '-' and dropping the colon, e.g.:
+      C--Users-donal-projects-SText  ->  projects/SText
+    """
+    # Strip drive + user prefix: "C--Users-donal-"
+    import re
+    stripped = re.sub(r'^[A-Z]--Users-[^-]+-', '', folder_name)
+    return stripped
+
+
+def _read_session_info(jsonl_path: str) -> dict:
+    """Extract title, first prompt, timestamps, and exchange count from a JSONL session file."""
+    title = None
+    first_prompt = None
+    first_ts = None
+    last_ts = None
+    exchanges = 0
+    try:
+        with open(jsonl_path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                t = obj.get("type")
+                ts = obj.get("timestamp")
+                if ts:
+                    if first_ts is None:
+                        first_ts = ts
+                    last_ts = ts
+                if not title and t == "ai-title":
+                    title = obj.get("aiTitle", "")
+                if t == "user" and not obj.get("isMeta"):
+                    exchanges += 1
+                    if not first_prompt:
+                        content = obj.get("message", {}).get("content", "")
+                        if isinstance(content, str) and content and not content.startswith("<"):
+                            first_prompt = content[:120].replace("\n", " ")
+    except OSError:
+        pass
+    return {
+        "title": title or "(untitled)",
+        "first_prompt": first_prompt,
+        "first_ts": first_ts,
+        "last_ts": last_ts,
+        "exchanges": exchanges,
+    }
+
+
+class CtmListSessionsCommand(sublime_plugin.WindowCommand):
+    """Show recent Claude Code sessions across all projects."""
+
+    def run(self, count=40):
+        projects_dir = Path.home() / ".claude" / "projects"
+        if not projects_dir.exists():
+            sublime.error_message("No ~/.claude/projects directory found")
+            return
+
+        sessions = []
+        for project_dir in projects_dir.iterdir():
+            if not project_dir.is_dir():
+                continue
+            project = _decode_project(project_dir.name)
+            for jsonl in project_dir.glob("*.jsonl"):
+                if jsonl.parent != project_dir:
+                    continue
+                mtime = jsonl.stat().st_mtime
+                sessions.append((mtime, project, jsonl))
+
+        sessions.sort(key=lambda x: x[0], reverse=True)
+        sessions = sessions[:count]
+
+        lines = [f"Recent Claude sessions (last {count}):\n"]
+        for mtime, project, jsonl in sessions:
+            info = _read_session_info(str(jsonl))
+
+            # Header: date + project + exchange count
+            dt = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+            lines.append(f"{dt}  [{project}]  {info['exchanges']} exchanges")
+
+            # Session title (AI-generated)
+            lines.append(f"  Title:  {info['title']}")
+
+            # First thing the user actually said
+            if info["first_prompt"]:
+                prompt = info["first_prompt"]
+                if len(prompt) == 120:
+                    prompt += "…"
+                lines.append(f"  First:  {prompt}")
+
+            # Time span
+            if info["first_ts"] and info["last_ts"]:
+                def fmt_ts(ts):
+                    # Convert UTC ISO string to local time
+                    try:
+                        dt_utc = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                        return dt_utc.astimezone().strftime("%Y-%m-%d %H:%M")
+                    except Exception:
+                        return ts[:16]
+                start = fmt_ts(info["first_ts"])
+                end = fmt_ts(info["last_ts"])
+                if start == end:
+                    lines.append(f"  Time:   {start}")
+                else:
+                    lines.append(f"  Time:   {start} → {end}")
+
+            lines.append("")
+
+        output = "\n".join(lines)
+        v = self.window.new_file()
+        v.set_name("Claude Sessions")
+        v.set_scratch(True)
+        v.run_command("append", {"characters": output})
+
+
+class CtmSearchConversationsCommand(sublime_plugin.WindowCommand):
+    """Launch the Claude conversation search Flask app in a browser."""
+
+    def run(self):
+        script = str(Path(__file__).parent / "claude_search_app.py")
+        import subprocess
+        subprocess.Popen(
+            ["python", script],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+
+
 def plugin_unloaded():
     """Clean up when plugin unloads."""
     v = _claude_view()
     if v:
         try:
-            entire_content = v.substr(sublime.Region(0, v.size()))
-            if entire_content.strip():
-                _append_log(entire_content)
-                _diagnostic_log(f"UNLOAD_FLUSH: saved {len(entire_content)} chars")
+            vid = str(v.id())
+            row_count = v.rowcol(v.size())[0] + 1
+            last_line = _view_state.get(vid, {}).get("last_line", 0)
+            if last_line < row_count:
+                start_point = v.text_point(last_line, 0)
+                new_text = v.substr(sublime.Region(start_point, v.size()))
+                if new_text.strip():
+                    _append_log(new_text)
+                    _diagnostic_log(f"UNLOAD_FLUSH: saved {len(new_text)} chars")
         except Exception:
             pass
     _save_state()

@@ -4,5 +4,7 @@
     { "caption": "MCP: Browse Command Palette",  "command": "mcp_browse_command_palette" },
     { "caption": "MCP: Browse Syntaxes",         "command": "mcp_browse_syntaxes" },
     { "caption": "MCP: Browse Variables",        "command": "mcp_browse_variables" },
-    { "caption": "PyBackup: Flask App",          "command": "pb_flask_launcher" }
+    { "caption": "PyBackup: Flask App",          "command": "pb_flask_launcher" },
+    { "caption": "Claude: List Recent Sessions", "command": "ctm_list_sessions" },
+    { "caption": "Claude: Search Conversations", "command": "ctm_search_conversations" }
 ]
