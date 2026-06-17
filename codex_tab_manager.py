@@ -1,10 +1,10 @@
-"""claude_tab_manager.py — robust logging for Claude Code sessions in Sublime Text.
+"""codex_tab_manager.py â€” robust logging for Codex sessions in Sublime Text.
 
 PURPOSE
 =======
-The Terminus view named "Claude" is the live Claude Code session. This plugin
-creates multiple layers of logging to capture EVERYTHING Claude does, because
-Claude Code itself fails to persistently log many operations (especially agent
+The Terminus view named "Codex" is the live Codex session. This plugin
+creates multiple layers of logging to capture EVERYTHING Codex does, because
+Codex itself fails to persistently log many operations (especially agent
 spawning).
 
 LOGGING LAYERS
@@ -33,7 +33,7 @@ STATE
 =====
 - Per-view state (last-logged line, view size, etc.) saved to disk
 - Survives plugin reloads, Sublime restarts, and view closures
-- State file: ~/.claude/claude_tab_manager_state.json
+- State file: ~/.codex/codex_tab_manager_state.json
 """
 
 import datetime
@@ -47,13 +47,14 @@ from pathlib import Path
 import sublime  # type: ignore
 import sublime_plugin  # type: ignore
 
-_LOG_DIR = str(Path.home() / ".claude" / "conversation_logs")
-_STATE_FILE = str(Path.home() / ".claude" / "claude_tab_manager_state.json")
-_SCREENSHOT_DIR = str(Path.home() / ".claude" / "screenshots")
-_DIAGNOSTICS_FILE = str(Path.home() / ".claude" / "claude_diagnostics.log")
+_LOG_DIR = str(Path.home() / ".codex" / "conversation_logs")
+_STATE_FILE = str(Path.home() / ".codex" / "codex_tab_manager_state.json")
+_SCREENSHOT_DIR = str(Path.home() / ".codex" / "screenshots")
+_DIAGNOSTICS_FILE = str(Path.home() / ".codex" / "codex_diagnostics.log")
 _CHECK_MS = 500  # poll every 500ms (was 4000ms)
 _SCREENSHOT_INTERVAL = 60  # capture screenshot every 60 seconds
 _SCREENSHOT_RETENTION_DAYS = 7  # keep screenshots for 7 days, delete older ones
+_CODEX_VIEW_SETTING = "codex_logger"
 
 # In-memory cache of per-view state
 _view_state = {}  # view_id -> {last_line, last_checked_time, anomalies, etc}
@@ -79,7 +80,7 @@ def _save_state():
         with open(_STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(_view_state, f, indent=2)
     except OSError as e:
-        print(f"claude_tab_manager: ERROR saving state: {e}")
+        print(f"codex_tab_manager: ERROR saving state: {e}")
 
 
 def _diagnostic_log(message: str) -> None:
@@ -97,6 +98,7 @@ def _cleanup_old_screenshots() -> None:
     """Delete screenshots older than _SCREENSHOT_RETENTION_DAYS to manage disk space."""
     try:
         import time
+
         screenshot_dir = Path(_SCREENSHOT_DIR)
         if not screenshot_dir.exists():
             return
@@ -117,24 +119,30 @@ def _cleanup_old_screenshots() -> None:
 
         if deleted_count > 0:
             freed_mb = total_freed_bytes / (1024 * 1024)
-            _diagnostic_log(f"CLEANUP: Deleted {deleted_count} old screenshots, freed {freed_mb:.1f}MB")
+            _diagnostic_log(
+                f"CLEANUP: Deleted {deleted_count} old screenshots, freed {freed_mb:.1f}MB"
+            )
     except Exception as e:
         _diagnostic_log(f"CLEANUP_ERROR: {e}")
 
 
 import re as _re
-_TRAIL_JUNK = _re.compile(r'[\s─-╿▀-▟]+$')
-# Claude Code status-bar lines: wide single lines containing navigation/cost info
+
+_TRAIL_JUNK = _re.compile(r"[\sâ”€-â•¿â–€-â–Ÿ]+$")
+# Codex status-bar lines: wide single lines containing navigation/cost info
 # Status-bar lines are padded to terminal width: non-space, big gap, non-space
-_STATUS_BAR_GAP = _re.compile(r'\S\s{20,}\S')
+_STATUS_BAR_GAP = _re.compile(r"\S\s{20,}\S")
+
 
 def _clean_text(text: str) -> str:
     """Normalize terminal buffer text for clean log output."""
     # Replace non-breaking space with regular space (Terminus pads with \xa0)
     text = text.replace("\xa0", " ")
     # Remove zero-width invisible characters
-    text = text.replace("​", "").replace("‌", "").replace("‍", "").replace("﻿", "")
-    # Normalize line endings: \r\n → \n, then bare \r → \n
+    text = (
+        text.replace("â€‹", "").replace("â€Œ", "").replace("â€", "").replace("ï»¿", "")
+    )
+    # Normalize line endings: \r\n â†’ \n, then bare \r â†’ \n
     # Bare \r is used by terminals to overwrite the current line; treating as \n
     # splits each overwrite fragment so the status-bar filter can catch them.
     text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -153,18 +161,29 @@ def _append_log(text: str) -> None:
     """Append text to today's conversation log."""
     try:
         os.makedirs(_LOG_DIR, exist_ok=True)
-        log_file = os.path.join(_LOG_DIR, f"claude_{datetime.date.today().isoformat()}.log")
+        log_file = os.path.join(
+            _LOG_DIR, f"codex_{datetime.date.today().isoformat()}.log"
+        )
         with open(log_file, "a", encoding="utf-8", newline="") as f:
             f.write(_clean_text(text))
     except OSError as e:
         _diagnostic_log(f"WRITE_ERROR: Failed to write to log: {e}")
 
 
-def _claude_view():
-    """Return the first view named 'Claude' across all windows, or None."""
+def _is_codex_view(view: sublime.View) -> bool:
+    """Return whether a Sublime view is the Codex Terminus session."""
+    if view.name() == "Codex":
+        return True
+    if view.settings().get(_CODEX_VIEW_SETTING):
+        return True
+    return False
+
+
+def _codex_view():
+    """Return the first Codex Terminus view across all windows, or None."""
     for w in sublime.windows():
         for v in w.views():
-            if v.name() == "Claude":
+            if _is_codex_view(v):
                 return v
     return None
 
@@ -174,11 +193,12 @@ def _take_screenshot(view_id: str) -> None:
     try:
         os.makedirs(_SCREENSHOT_DIR, exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filepath = os.path.join(_SCREENSHOT_DIR, f"claude_{timestamp}.png")
+        filepath = os.path.join(_SCREENSHOT_DIR, f"codex_{timestamp}.png")
 
         # Use PIL to capture full screen (preferred)
         try:
             from PIL import ImageGrab
+
             screenshot = ImageGrab.grab()
             screenshot.save(filepath, "PNG")
             _diagnostic_log(f"SCREENSHOT: Captured to {filepath}")
@@ -197,6 +217,7 @@ $bitmap.Dispose()
 """
             # Hide the PowerShell window
             import subprocess
+
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = subprocess.SW_HIDE
@@ -205,23 +226,26 @@ $bitmap.Dispose()
                 ["powershell", "-WindowStyle", "Hidden", "-Command", ps_script],
                 capture_output=True,
                 timeout=10,
-                startupinfo=startupinfo
+                startupinfo=startupinfo,
             )
             _diagnostic_log(f"SCREENSHOT: Captured to {filepath}")
     except Exception as e:
         _diagnostic_log(f"SCREENSHOT_ERROR: {e}")
 
 
-def _detect_anomalies(view_id: str, current_row_count: int, last_row_count: int) -> None:
+def _detect_anomalies(
+    view_id: str, current_row_count: int, last_row_count: int
+) -> None:
     """Detect unusual patterns that might indicate lost data or invisible operations."""
     if view_id not in _view_state:
         return
 
     import time
+
     state = _view_state[view_id]
     now = time.time()
 
-    # Detect if buffer shrunk (trim/reload) — reset last_line so we re-log current buffer
+    # Detect if buffer shrunk (trim/reload) â€” reset last_line so we re-log current buffer
     if current_row_count < last_row_count:
         lost_lines = last_row_count - current_row_count
         if lost_lines > 5:
@@ -231,12 +255,14 @@ def _detect_anomalies(view_id: str, current_row_count: int, last_row_count: int)
             state["anomalies"] = state.get("anomalies", 0) + 1
             state["last_line"] = 0
 
-    # Detect long pauses — debounced to once per 5 minutes to avoid log flood
+    # Detect long pauses â€” debounced to once per 5 minutes to avoid log flood
     if "last_output_time" in state:
         time_since_output = now - state["last_output_time"]
         last_pause_logged = state.get("last_pause_logged_time", 0)
         if time_since_output > 30 and now - last_pause_logged > 300:
-            _diagnostic_log(f"ANOMALY: 30+ seconds without output (possible invisible operation)")
+            _diagnostic_log(
+                f"ANOMALY: 30+ seconds without output (possible invisible operation)"
+            )
             state["anomalies"] = state.get("anomalies", 0) + 1
             state["last_pause_logged_time"] = now
 
@@ -246,13 +272,13 @@ def _tick():
     global _last_cleanup_time
     import time
 
-    # Periodically cleanup old screenshots (every 24 hours)
+    # Periodically cleanup old screenshots (every 2.5 hours)
     current_time = time.time()
-    if current_time - _last_cleanup_time > 86400:  # 24 hours
+    if current_time - _last_cleanup_time > 9000:  # 2.5 hours
         _cleanup_old_screenshots()
         _last_cleanup_time = current_time
 
-    v = _claude_view()
+    v = _codex_view()
 
     if v:
         vid = str(v.id())
@@ -264,7 +290,7 @@ def _tick():
                 "last_line": 0,
                 "last_row_count": row_count,
                 "started_at": datetime.datetime.now().isoformat(),
-                "anomalies": 0
+                "anomalies": 0,
             }
 
         state = _view_state[vid]
@@ -274,7 +300,9 @@ def _tick():
         # If last_line is stale (e.g. loaded from disk for a resumed view), reset so we
         # re-log whatever is currently in the buffer rather than silently missing content.
         if last_line > row_count:
-            _diagnostic_log(f"RESET: last_line={last_line} > row_count={row_count}, resetting to 0")
+            _diagnostic_log(
+                f"RESET: last_line={last_line} > row_count={row_count}, resetting to 0"
+            )
             state["last_line"] = 0
             last_line = 0
 
@@ -285,7 +313,9 @@ def _tick():
         # Log new lines if they exist
         if row_count > last_line:
             try:
-                start_point = v.text_point(last_line, 0) if last_line < row_count else v.size()
+                start_point = (
+                    v.text_point(last_line, 0) if last_line < row_count else v.size()
+                )
                 end_point = v.size()
 
                 if start_point < end_point:
@@ -301,6 +331,7 @@ def _tick():
 
         # Periodic screenshot (every _SCREENSHOT_INTERVAL seconds)
         import time
+
         current_time = time.time()
         if vid not in _last_screenshot_time:
             _last_screenshot_time[vid] = current_time
@@ -312,7 +343,7 @@ def _tick():
     sublime.set_timeout(_tick, _CHECK_MS)
 
 
-class CtmTrimNowCommand(sublime_plugin.TextCommand):
+class CodexTrimNowCommand(sublime_plugin.TextCommand):
     """Manually trim buffer while preserving all content in logs."""
 
     def run(self, edit):
@@ -357,7 +388,9 @@ class CtmTrimNowCommand(sublime_plugin.TextCommand):
             _save_state()
 
         final_lines = v.rowcol(v.size())[0] + 1
-        msg = f"claude_tab_manager: trimmed {lines_deleted} lines, now {final_lines} total"
+        msg = (
+            f"codex_tab_manager: trimmed {lines_deleted} lines, now {final_lines} total"
+        )
         print(msg)
         _diagnostic_log(msg)
 
@@ -365,14 +398,15 @@ class CtmTrimNowCommand(sublime_plugin.TextCommand):
 def plugin_loaded():
     """Initialize the plugin when Sublime loads."""
     _load_state()
+    os.makedirs(_LOG_DIR, exist_ok=True)
     _cleanup_old_screenshots()  # Clean up old screenshots on startup
     sublime.set_timeout(_tick, _CHECK_MS)
-    msg = f"claude_tab_manager: initialized (polling every {_CHECK_MS}ms, screenshots every {_SCREENSHOT_INTERVAL}s, retention {_SCREENSHOT_RETENTION_DAYS} days)"
+    msg = f"codex_tab_manager: initialized (polling every {_CHECK_MS}ms, screenshots every {_SCREENSHOT_INTERVAL}s, retention {_SCREENSHOT_RETENTION_DAYS} days)"
     print(msg)
     _diagnostic_log(msg)
 
 
-class CtmCaptureScrollPositionCommand(sublime_plugin.TextCommand):
+class CodexCaptureScrollPositionCommand(sublime_plugin.TextCommand):
     """Capture screenshot at current scroll position (for manual reconstruction).
 
     Use this while scrolling through the buffer to document what line you're viewing.
@@ -381,8 +415,8 @@ class CtmCaptureScrollPositionCommand(sublime_plugin.TextCommand):
 
     def run(self, edit):
         v = self.view
-        if v.name() != "Claude":
-            sublime.error_message("This command only works in the Claude view")
+        if not _is_codex_view(v):
+            sublime.error_message("This command only works in the Codex view")
             return
 
         try:
@@ -393,10 +427,13 @@ class CtmCaptureScrollPositionCommand(sublime_plugin.TextCommand):
 
             os.makedirs(_SCREENSHOT_DIR, exist_ok=True)
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            filepath = os.path.join(_SCREENSHOT_DIR, f"claude_scroll_line{row+1:04d}_{timestamp}.png")
+            filepath = os.path.join(
+                _SCREENSHOT_DIR, f"codex_scroll_line{row+1:04d}_{timestamp}.png"
+            )
 
             try:
                 from PIL import ImageGrab
+
                 screenshot = ImageGrab.grab()
                 screenshot.save(filepath, "PNG")
             except ImportError:
@@ -412,6 +449,7 @@ $graphics.Dispose()
 $bitmap.Dispose()
 """
                 import subprocess
+
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 startupinfo.wShowWindow = subprocess.SW_HIDE
@@ -419,7 +457,7 @@ $bitmap.Dispose()
                     ["powershell", "-WindowStyle", "Hidden", "-Command", ps_script],
                     capture_output=True,
                     timeout=10,
-                    startupinfo=startupinfo
+                    startupinfo=startupinfo,
                 )
 
             msg = f"Screenshot captured at line {row+1}: {filepath}"
@@ -434,13 +472,13 @@ $bitmap.Dispose()
             sublime.error_message(error_msg)
 
 
-class CtmDumpBufferCommand(sublime_plugin.TextCommand):
-    """Export the entire current Claude buffer to a file for inspection/archival."""
+class CodexDumpBufferCommand(sublime_plugin.TextCommand):
+    """Export the entire current Codex buffer to a file for inspection/archival."""
 
     def run(self, edit):
         v = self.view
-        if v.name() != "Claude":
-            sublime.error_message("This command only works in the Claude view")
+        if not _is_codex_view(v):
+            sublime.error_message("This command only works in the Codex view")
             return
 
         try:
@@ -449,9 +487,9 @@ class CtmDumpBufferCommand(sublime_plugin.TextCommand):
 
             # Save to dated file
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            export_dir = Path.home() / ".claude" / "buffer_exports"
+            export_dir = Path.home() / ".codex" / "buffer_exports"
             export_dir.mkdir(parents=True, exist_ok=True)
-            export_file = export_dir / f"claude_buffer_dump_{timestamp}.txt"
+            export_file = export_dir / f"codex_buffer_dump_{timestamp}.txt"
 
             with open(export_file, "w", encoding="utf-8") as f:
                 f.write(entire_content)
@@ -468,11 +506,11 @@ class CtmDumpBufferCommand(sublime_plugin.TextCommand):
             sublime.error_message(error_msg)
 
 
-class CtmEventListener(sublime_plugin.EventListener):
-    """Flush any unlogged Claude buffer content when the view or window closes."""
+class CodexEventListener(sublime_plugin.EventListener):
+    """Flush any unlogged Codex buffer content when the view or window closes."""
 
-    def _flush_claude_view(self, view: sublime.View) -> None:
-        if view.name() != "Claude":
+    def _flush_codex_view(self, view: sublime.View) -> None:
+        if not _is_codex_view(view):
             return
         try:
             vid = str(view.id())
@@ -491,36 +529,42 @@ class CtmEventListener(sublime_plugin.EventListener):
             if vid in _view_state:
                 _view_state[vid]["last_line"] = row_count
             _save_state()
-            _diagnostic_log(f"CLOSE_FLUSH: saved {len(new_text)} chars from Claude view")
+            _diagnostic_log(f"CLOSE_FLUSH: saved {len(new_text)} chars from Codex view")
         except Exception as e:
             _diagnostic_log(f"CLOSE_FLUSH_ERROR: {e}")
 
     def on_pre_close(self, view: sublime.View) -> None:
-        self._flush_claude_view(view)
+        self._flush_codex_view(view)
 
     def on_window_command(self, window, command_name, args):
         if command_name in ("close_window", "exit"):
-            v = _claude_view()
+            v = _codex_view()
             if v:
-                self._flush_claude_view(v)
+                self._flush_codex_view(v)
 
 
-def _decode_project(folder_name: str) -> str:
-    """Convert encoded project folder name to readable path.
+def _extract_message_text(payload: dict) -> str:
+    """Extract visible text from a Codex response_item message payload."""
+    content = payload.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+    message = payload.get("message")
+    if isinstance(message, dict):
+        return _extract_message_text(message)
+    return ""
 
-    ~/.claude/projects/ encodes the working directory by replacing path
-    separators with '-' and dropping the colon, e.g.:
-      C--Users-donal-projects-SText  ->  projects/SText
-    """
-    # Strip drive + user prefix: "C--Users-donal-"
-    import re
-    stripped = re.sub(r'^[A-Z]--Users-[^-]+-', '', folder_name)
-    return stripped
 
-
-def _read_session_info(jsonl_path: str) -> dict:
-    """Extract title, first prompt, timestamps, and exchange count from a JSONL session file."""
-    title = None
+def _read_session_info(jsonl_path: Path) -> dict:
+    """Extract project, first prompt, timestamps, and exchange count."""
+    project = "(unknown)"
     first_prompt = None
     first_ts = None
     last_ts = None
@@ -532,24 +576,34 @@ def _read_session_info(jsonl_path: str) -> dict:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                t = obj.get("type")
+
                 ts = obj.get("timestamp")
                 if ts:
                     if first_ts is None:
                         first_ts = ts
                     last_ts = ts
-                if not title and t == "ai-title":
-                    title = obj.get("aiTitle", "")
-                if t == "user" and not obj.get("isMeta"):
-                    exchanges += 1
-                    if not first_prompt:
-                        content = obj.get("message", {}).get("content", "")
-                        if isinstance(content, str) and content and not content.startswith("<"):
-                            first_prompt = content[:120].replace("\n", " ")
+
+                payload = obj.get("payload") or {}
+                if obj.get("type") == "session_meta":
+                    project = payload.get("cwd") or project
+                    continue
+
+                if obj.get("type") != "response_item":
+                    continue
+                if payload.get("type") != "message" or payload.get("role") != "user":
+                    continue
+
+                text = _extract_message_text(payload).strip()
+                if not text or text.startswith("<"):
+                    continue
+                exchanges += 1
+                if not first_prompt:
+                    first_prompt = text[:120].replace("\n", " ")
     except OSError:
         pass
     return {
-        "title": title or "(untitled)",
+        "title": jsonl_path.stem,
+        "project": project,
         "first_prompt": first_prompt,
         "first_ts": first_ts,
         "last_ts": last_ts,
@@ -557,36 +611,30 @@ def _read_session_info(jsonl_path: str) -> dict:
     }
 
 
-class CtmListSessionsCommand(sublime_plugin.WindowCommand):
-    """Show recent Claude Code sessions across all projects."""
+class CodexListSessionsCommand(sublime_plugin.WindowCommand):
+    """Show recent Codex sessions across all projects."""
 
     def run(self, count=40):
-        projects_dir = Path.home() / ".claude" / "projects"
-        if not projects_dir.exists():
-            sublime.error_message("No ~/.claude/projects directory found")
+        sessions_dir = Path.home() / ".codex" / "sessions"
+        if not sessions_dir.exists():
+            sublime.error_message("No ~/.codex/sessions directory found")
             return
 
         sessions = []
-        for project_dir in projects_dir.iterdir():
-            if not project_dir.is_dir():
-                continue
-            project = _decode_project(project_dir.name)
-            for jsonl in project_dir.glob("*.jsonl"):
-                if jsonl.parent != project_dir:
-                    continue
-                mtime = jsonl.stat().st_mtime
-                sessions.append((mtime, project, jsonl))
+        for jsonl in sessions_dir.rglob("*.jsonl"):
+            mtime = jsonl.stat().st_mtime
+            sessions.append((mtime, jsonl))
 
         sessions.sort(key=lambda x: x[0], reverse=True)
         sessions = sessions[:count]
 
-        lines = [f"Recent Claude sessions (last {count}):\n"]
-        for mtime, project, jsonl in sessions:
-            info = _read_session_info(str(jsonl))
+        lines = [f"Recent Codex sessions (last {count}):\n"]
+        for mtime, jsonl in sessions:
+            info = _read_session_info(jsonl)
 
             # Header: date + project + exchange count
             dt = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
-            lines.append(f"{dt}  [{project}]  {info['exchanges']} exchanges")
+            lines.append(f"{dt}  [{info['project']}]  {info['exchanges']} exchanges")
 
             # Session title (AI-generated)
             lines.append(f"  Title:  {info['title']}")
@@ -595,40 +643,45 @@ class CtmListSessionsCommand(sublime_plugin.WindowCommand):
             if info["first_prompt"]:
                 prompt = info["first_prompt"]
                 if len(prompt) == 120:
-                    prompt += "…"
+                    prompt += "â€¦"
                 lines.append(f"  First:  {prompt}")
 
             # Time span
             if info["first_ts"] and info["last_ts"]:
+
                 def fmt_ts(ts):
                     # Convert UTC ISO string to local time
                     try:
-                        dt_utc = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                        dt_utc = datetime.datetime.fromisoformat(
+                            ts.replace("Z", "+00:00")
+                        )
                         return dt_utc.astimezone().strftime("%Y-%m-%d %H:%M")
                     except Exception:
                         return ts[:16]
+
                 start = fmt_ts(info["first_ts"])
                 end = fmt_ts(info["last_ts"])
                 if start == end:
                     lines.append(f"  Time:   {start}")
                 else:
-                    lines.append(f"  Time:   {start} → {end}")
+                    lines.append(f"  Time:   {start} â†’ {end}")
 
             lines.append("")
 
         output = "\n".join(lines)
         v = self.window.new_file()
-        v.set_name("Claude Sessions")
+        v.set_name("Codex Sessions")
         v.set_scratch(True)
         v.run_command("append", {"characters": output})
 
 
-class CtmSearchConversationsCommand(sublime_plugin.WindowCommand):
-    """Launch the Claude conversation search Flask app in a browser."""
+class CodexSearchConversationsCommand(sublime_plugin.WindowCommand):
+    """Launch the Codex conversation search Flask app in a browser."""
 
     def run(self):
-        script = str(Path(__file__).parent / "claude_search_app.py")
+        script = str(Path(__file__).parent / "codex_search_app.py")
         import subprocess
+
         subprocess.Popen(
             ["python", script],
             creationflags=subprocess.CREATE_NO_WINDOW,
@@ -637,7 +690,7 @@ class CtmSearchConversationsCommand(sublime_plugin.WindowCommand):
 
 def plugin_unloaded():
     """Clean up when plugin unloads."""
-    v = _claude_view()
+    v = _codex_view()
     if v:
         try:
             vid = str(v.id())

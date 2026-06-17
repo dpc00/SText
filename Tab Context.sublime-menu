@@ -7,7 +7,7 @@
         }
     },
     {
-        "caption": "Open Claude in Terminus here...",
-        "command": "open_claude_terminus_in_editor"
+        "caption": "Open Codex in Terminus here...",
+        "command": "open_codex_terminus_in_editor"
     }
 ]

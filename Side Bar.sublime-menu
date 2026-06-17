@@ -1,7 +1,7 @@
 [
     {
-        "caption": "Open Claude in Terminus here...",
-        "command": "open_claude_terminus_here",
+        "caption": "Open Codex in Terminus here...",
+        "command": "open_codex_terminus_here",
         "args": {
             "paths": []
         }

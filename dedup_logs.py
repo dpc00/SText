@@ -1,6 +1,6 @@
-"""dedup_logs.py — remove duplicate sections from Claude conversation logs.
+"""dedup_logs.py â€” remove duplicate sections from Codex conversation logs.
 
-When the claude_tab_manager plugin reloads (e.g. after a file save), it
+When the codex_tab_manager plugin reloads (e.g. after a file save), it
 sometimes re-logs a block of buffer content that was already written. This
 script finds those duplicate blocks and removes the second occurrence.
 
@@ -14,9 +14,9 @@ Algorithm:
   5. Write the cleaned file in-place (original backed up as .bak).
 
 Tuning:
-  SEED_WINDOW  — lines that must match to trigger candidate check (default 8).
+  SEED_WINDOW  â€” lines that must match to trigger candidate check (default 8).
                  Lower = catches shorter dups but more false positives.
-  MIN_BLOCK    — minimum block length to actually remove (default 20).
+  MIN_BLOCK    â€” minimum block length to actually remove (default 20).
                  Prevents removing coincidentally repeated short phrases.
 """
 
@@ -24,17 +24,21 @@ import glob
 import os
 import sys
 from pathlib import Path
+from typing import List, Tuple, Dict, Set
 
 # Force UTF-8 output on Windows so Unicode log content doesn't crash prints
 if sys.stdout.encoding != "utf-8":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except AttributeError:
+        pass
 
 SEED_WINDOW = 8
 MIN_BLOCK = 20
-LOG_DIR = Path.home() / ".claude" / "conversation_logs"
+LOG_DIR = Path.home() / ".codex" / "conversation_logs"
 
 
-def deduplicate(lines: list[str]) -> tuple[list[str], list[tuple[int, int]]]:
+def deduplicate(lines: List[str]) -> Tuple[List[str], List[Tuple[int, int]]]:
     """Return (cleaned_lines, removed_ranges) where each range is (start, end) line numbers."""
     n = len(lines)
     if n < SEED_WINDOW * 2:
@@ -98,21 +102,21 @@ def deduplicate(lines: list[str]) -> tuple[list[str], list[tuple[int, int]]]:
 
 
 import re as _re
-_TRAIL_JUNK = _re.compile(r'[\s─-╿▀-▟]+$')
+_TRAIL_JUNK = _re.compile(r'[\sâ”€-â•¿â–€-â–Ÿ]+$')
 # Wide status-bar lines: non-space, big gap (20+ spaces), non-space
 _STATUS_BAR_GAP = _re.compile(r'\S\s{20,}\S')
 # Narrow status-bar content patterns (may be merged with no big gap)
 _STATUS_BAR_CONTENT = _re.compile(
     r'Session:\s+\d|Ctx Used:\s+[\d.]|Cost:\s+\$[\d]|\bMem:\s+[\d.]'
 )
-# "← for agents" / "→ for agents" prefix that may be glued to real content
-_AGENT_PREFIX = _re.compile(r'^\s*[←→]\s+for agents\s*')
+# "â† for agents" / "â†’ for agents" prefix that may be glued to real content
+_AGENT_PREFIX = _re.compile(r'^\s*[â†â†’]\s+for agents\s*')
 
 def _clean_line(line: str) -> str:
     """Strip trailing whitespace and terminal box-drawing/block padding.
     Returns empty string (or prefix-stripped content) for status-bar lines."""
     stripped = _TRAIL_JUNK.sub("", line)
-    # Strip "← for agents" prefix; keep whatever follows (may be real content)
+    # Strip "â† for agents" prefix; keep whatever follows (may be real content)
     stripped = _AGENT_PREFIX.sub("", stripped)
     # Drop wide padded status-bar lines
     if len(stripped) > 100 and _STATUS_BAR_GAP.search(stripped):
@@ -141,7 +145,7 @@ def process_file(path: Path, dry_run: bool = False) -> None:
           f"(removed {removed} lines in {len(ranges)} block(s))")
     for start, end in ranges:
         preview = lines[start].rstrip()[:60]
-        print(f"    lines {start + 1}–{end + 1}: '{preview}…'")
+        print(f"    lines {start + 1}â€“{end + 1}: '{preview}â€¦'")
 
     if dry_run:
         return
@@ -156,7 +160,7 @@ def process_file(path: Path, dry_run: bool = False) -> None:
 def main() -> None:
     dry_run = "--dry-run" in sys.argv
     if dry_run:
-        print("DRY RUN — no files will be changed\n")
+        print("DRY RUN â€” no files will be changed\n")
 
     log_files = sorted(LOG_DIR.glob("*.log"))
     if not log_files:
@@ -170,3 +174,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
