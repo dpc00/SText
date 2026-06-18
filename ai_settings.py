@@ -207,7 +207,7 @@ def _render_row(key, default_val, user_prefs, parts):
     key_cls = "key-mod" if is_modified else "key"
 
     desc = _get_desc(key)
-    desc_html = f'<span class="desc">{_e(desc)}</span>' if desc else ""
+    desc_html = f'<div class="desc">{_e(desc)}</div>' if desc else ""
 
     # ── boolean ──────────────────────────────────────────────────────────────
     if isinstance(default_val, bool):
@@ -267,7 +267,7 @@ def _render_row(key, default_val, user_prefs, parts):
 
     parts.append(
         f'<div class="{row_cls}">'
-        f'<span class="{key_cls}">{_e(key)}{star}</span> {ctrl}'
+        f'<div><span class="{key_cls}">{_e(key)}{star}</span> {ctrl}</div>'
         f'{desc_html}'
         f'</div>'
     )
