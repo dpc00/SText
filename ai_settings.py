@@ -279,7 +279,7 @@ def _render_row(key, default_val, user_prefs, parts, wrap_cols=50):
 
 
 def build_settings_html(width_px=460, em_width=9.0):
-    wrap_cols = max(30, int((width_px - 16) / (em_width * 0.6)))
+    wrap_cols = max(30, int((width_px - 16) / em_width))
     prefs_raw = sublime.load_resource("Packages/Default/Preferences.sublime-settings")
     defaults  = sublime.decode_value(prefs_raw)
     user_prefs = sublime.load_settings("Preferences.sublime-settings")
@@ -534,6 +534,8 @@ class AiSettingsOpenCommand(sublime_plugin.WindowCommand):
         v.settings().set("gutter", False)
         v.settings().set("line_numbers", False)
         v.settings().set("scroll_past_end", False)
+        v.settings().set("show_minimap", False)
+        v.settings().set("scroll_bar_enabled", False)
 
         _State.view = v
         _State.phantom_set = sublime.PhantomSet(v, "ai_settings")
