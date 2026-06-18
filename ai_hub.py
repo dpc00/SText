@@ -208,7 +208,8 @@ def build_html():
     parts.append(f"""
 <div class="actions">
   <a class="btn btn-a" href="action://refresh">&#8635; Refresh</a>
-  <a class="btn btn-b" href="action://open-inbox">&#128195; Open Inbox</a>
+  <a class="btn btn-b" href="action://open-inbox">&#128195; Inbox</a>
+  <a class="btn btn-b" href="action://settings">&#9881; Settings</a>
   <a class="btn btn-r" href="action://open-hub-py">&#9998; Edit</a>
 </div>
 """)
@@ -232,6 +233,8 @@ def _navigate(href):
         w.run_command("ai_hub_refresh")
     elif href == "action://open-inbox":
         w.open_file(str(INBOX_PATH))
+    elif href == "action://settings":
+        w.run_command("ai_settings_open")
     elif href == "action://open-hub-py":
         import User.ai_hub as _self
         w.open_file(_self.__file__)
