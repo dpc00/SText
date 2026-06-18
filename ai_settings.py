@@ -94,8 +94,8 @@ def _parse_descriptions():
             if m:
                 key = m.group(1)
                 desc = " ".join(pending_comments).strip()
-                if len(desc) > 120:
-                    desc = desc[:117] + "…"
+                if len(desc) > 300:
+                    desc = desc[:297] + "…"
                 descs[key] = desc
                 pending_comments = []
         else:
@@ -150,7 +150,7 @@ h2 {{
 .modified {{ border-left:2px solid {ACCENT}; }}
 .key {{ color:{TEXT}; font-weight:bold; font-size:11px; }}
 .key-mod {{ color:{ACCENT}; font-weight:bold; font-size:11px; }}
-.desc {{ color:{OVERLAY}; font-size:10px; display:block; margin:1px 0 3px 0; }}
+.desc {{ color:{OVERLAY}; font-size:10px; display:block; margin:1px 0 4px 0; padding-right:8px; }}
 .pill {{
     display:inline; padding:2px 8px; border-radius:3px;
     font-size:10px; font-weight:bold; margin-right:3px;
@@ -207,7 +207,7 @@ def _render_row(key, default_val, user_prefs, parts):
     key_cls = "key-mod" if is_modified else "key"
 
     desc = _get_desc(key)
-    desc_html = f'<span class="desc">{_e(desc[:100])}</span>' if desc else ""
+    desc_html = f'<span class="desc">{_e(desc)}</span>' if desc else ""
 
     # ── boolean ──────────────────────────────────────────────────────────────
     if isinstance(default_val, bool):
