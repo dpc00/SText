@@ -273,7 +273,7 @@ def _render_row(key, default_val, user_prefs, parts):
     )
 
 
-def build_settings_html():
+def build_settings_html(width_px=460):
     prefs_raw = sublime.load_resource("Packages/Default/Preferences.sublime-settings")
     defaults  = sublime.decode_value(prefs_raw)
     user_prefs = sublime.load_settings("Preferences.sublime-settings")
@@ -286,7 +286,7 @@ def build_settings_html():
         if user_prefs.get(k) is not None and user_prefs.get(k) != defaults[k]
     )
 
-    parts = [f"<html><style>{CSS}</style><body>"]
+    parts = [f'<html><style>{CSS}</style><body style="max-width:{width_px}px">']
     parts.append('<h1>&#9881; ST Settings</h1>')
 
     filter_display = (
@@ -476,7 +476,8 @@ def _refresh():
     if v and v.is_valid():
         if _State.phantom_set is None:
             _State.phantom_set = sublime.PhantomSet(v, "ai_settings")
-        html = build_settings_html()
+        width_px = max(200, int(v.viewport_extent()[0]) - 32)
+        html = build_settings_html(width_px)
         phantom = sublime.Phantom(
             sublime.Region(0),
             html,
