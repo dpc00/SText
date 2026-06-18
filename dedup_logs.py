@@ -1,4 +1,4 @@
-"""dedup_logs.py â€” remove duplicate sections from Ai conversation logs.
+﻿"""dedup_logs.py â€” remove duplicate sections from Ai conversation logs.
 
 When the ai_tab_manager plugin reloads (e.g. after a file save), it
 sometimes re-logs a block of buffer content that was already written. This
@@ -108,7 +108,7 @@ def deduplicate(lines: List[str]) -> Tuple[List[str], List[Tuple[int, int]]]:
 
 import re as _re
 
-_TRAIL_JUNK = _re.compile(r"[\sâ”€-â•¿â–€-â–Ÿ]+$")
+_TRAIL_JUNK = _re.compile("[\s─-╿▀-▟]+$")
 # Wide status-bar lines: non-space, big gap (20+ spaces), non-space
 _STATUS_BAR_GAP = _re.compile(r"\S\s{20,}\S")
 # Narrow status-bar content patterns (may be merged with no big gap)

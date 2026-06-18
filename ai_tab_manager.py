@@ -1,4 +1,4 @@
-"""ai_tab_manager.py â€” robust logging for Ai sessions in Sublime Text.
+﻿"""ai_tab_manager.py â€” robust logging for Ai sessions in Sublime Text.
 
 PURPOSE
 =======
@@ -128,7 +128,7 @@ def _cleanup_old_screenshots() -> None:
 
 import re as _re
 
-_TRAIL_JUNK = _re.compile(r"[\sâ”€-â•¿â–€-â–Ÿ]+$")
+_TRAIL_JUNK = _re.compile("[\s─-╿▀-▟]+$")
 # Ai status-bar lines: wide single lines containing navigation/cost info
 # Status-bar lines are padded to terminal width: non-space, big gap, non-space
 _STATUS_BAR_GAP = _re.compile(r"\S\s{20,}\S")

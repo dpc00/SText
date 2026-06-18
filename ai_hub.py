@@ -258,11 +258,22 @@ class AiHubOpenCommand(sublime_plugin.WindowCommand):
     """Open (or refresh) the AI Hub panel. Ctrl+Alt+H."""
 
     def run(self):
-        # Reuse existing view if still alive
-        v = _HubState.view
-        if v is not None and v.is_valid():
-            _render(v)
-            self.window.focus_view(v)
+        # Find existing hub view by name (survives module reloads)
+        existing = None
+        for v in self.window.views():
+            if v.name() == "◆ AI Hub" and v.is_valid():
+                existing = v
+                break
+
+        # Close any extras beyond the first
+        found = [v for v in self.window.views() if v.name() == "◆ AI Hub"]
+        for dup in found[1:]:
+            dup.close()
+
+        if existing is not None:
+            _HubState.view = existing
+            _render(existing)
+            self.window.focus_view(existing)
             return
 
         # Ensure 2-column layout; hub goes in right column (group 1)
@@ -274,7 +285,8 @@ class AiHubOpenCommand(sublime_plugin.WindowCommand):
                 "cells": [[0, 0, 1, 1], [1, 0, 2, 1]],
             })
 
-        v = self.window.new_file(flags=sublime.ADD_TO_SELECTION, group=1)
+        v = self.window.new_file()
+        self.window.set_view_index(v, 1, 0)
         v.set_name("◆ AI Hub")
         v.set_scratch(True)
         v.set_read_only(True)
