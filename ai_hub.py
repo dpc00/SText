@@ -226,7 +226,7 @@ class _HubSheet:
 # ── commands ─────────────────────────────────────────────────────────────────
 
 class AiHubOpenCommand(sublime_plugin.WindowCommand):
-    """Open (or refresh) the AI Hub panel. Default: Ctrl+Alt+I."""
+    """Open (or refresh) the AI Hub panel. Ctrl+Alt+H."""
 
     def run(self):
         html = build_html()
@@ -245,11 +245,20 @@ class AiHubOpenCommand(sublime_plugin.WindowCommand):
             self.window.focus_sheet(existing)
             return
 
+        # Ensure 2-column layout; hub goes in right column (group 1)
+        layout = self.window.get_layout()
+        if len(layout.get("cols", [])) < 3:
+            self.window.set_layout({
+                "cols": [0.0, 0.65, 1.0],
+                "rows": [0.0, 1.0],
+                "cells": [[0, 0, 1, 1], [1, 0, 2, 1]],
+            })
+
         sheet = self.window.new_html_sheet(
             "◆ AI Hub",
             html,
-            flags=sublime.ADD_TO_SELECTION | sublime.SEMI_TRANSIENT,
-            group=-1,
+            flags=sublime.ADD_TO_SELECTION,
+            group=1,
         )
         _HubSheet.sheet = sheet
         _HubSheet.window_id = self.window.id()
