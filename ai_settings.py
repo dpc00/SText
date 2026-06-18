@@ -279,7 +279,8 @@ def _render_row(key, default_val, user_prefs, parts, wrap_cols=50):
 
 
 def build_settings_html(width_px=460, em_width=9.0):
-    wrap_cols = max(30, int((width_px - 16) / em_width))
+    # desc CSS is font-size:10px; Lucida Console char ~= em_width * 0.65
+    wrap_cols = max(30, int((width_px - 16) / (em_width * 0.65)))
     prefs_raw = sublime.load_resource("Packages/Default/Preferences.sublime-settings")
     defaults  = sublime.decode_value(prefs_raw)
     user_prefs = sublime.load_settings("Preferences.sublime-settings")
@@ -539,7 +540,7 @@ class AiSettingsOpenCommand(sublime_plugin.WindowCommand):
 
         _State.view = v
         _State.phantom_set = sublime.PhantomSet(v, "ai_settings")
-        _refresh()
+        sublime.set_timeout(_refresh, 150)
 
 
 class AiSettingsListener(sublime_plugin.EventListener):
