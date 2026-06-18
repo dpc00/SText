@@ -49,10 +49,13 @@
         "*.db",
         "*.sublime-workspace"
     ],
-    "font_size": 11,
+    "font_size": 12,
     "theme": "Default.sublime-theme",
-    "word_wrap": false,
-    "show_git_status": false,
+    "word_wrap": true,
+    "show_git_status": true,
     "color_scheme": "Mariana.sublime-color-scheme",
-    "font_face": "Lucida Console",
+    "font_face": "Cascadia Code Light",
+    "show_line_endings": true,
+    "wrap_width": 0,
+    "sidebar_on_right": false,
 }

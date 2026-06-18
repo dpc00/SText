@@ -5,6 +5,7 @@ Opens with Ctrl+Alt+I. Shows inbox, status, and quick actions.
 
 import os
 import re
+import textwrap
 import sublime
 import sublime_plugin
 from pathlib import Path
