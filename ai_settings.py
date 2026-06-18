@@ -189,12 +189,34 @@ def _e(s):
 
 # ── state ─────────────────────────────────────────────────────────────────────
 
+PREFS_RESOURCE = "Packages/Default/Preferences.sublime-settings"
+
+
+def _get_all_package_settings():
+    """Return sorted list of (label, resource_path) for all non-User settings."""
+    results = []
+    seen = set()
+    for path in sublime.find_resources("*.sublime-settings"):
+        m = re.match(r"Packages/([^/]+)/(.+\.sublime-settings)$", path)
+        if not m or m.group(1) == "User":
+            continue
+        pkg  = m.group(1)
+        fname = m.group(2)
+        label = f"{pkg}  —  {fname}"
+        if label not in seen:
+            seen.add(label)
+            results.append((label, path))
+    results.sort(key=lambda x: x[0].lower())
+    return results
+
+
 class _State:
     view = None
     phantom_set = None
     filter_text = ""
     minimap_was_visible = False
-    active_category = None   # None = all
+    active_category = None        # None = all
+    settings_resource = PREFS_RESOURCE   # which file we're browsing
 
 
 # ── HTML builder ──────────────────────────────────────────────────────────────
@@ -280,30 +302,44 @@ def _render_row(key, default_val, user_prefs, parts, wrap_cols=50):
 
 
 def build_settings_html(width_px=460, em_width=9.0):
-    # desc CSS is font-size:10px; Lucida Console char ~= em_width * 0.65
     wrap_cols = max(30, int((width_px - 16) / (em_width * 0.65)))
-    prefs_raw = sublime.load_resource("Packages/Default/Preferences.sublime-settings")
-    defaults  = sublime.decode_value(prefs_raw)
-    user_prefs = sublime.load_settings("Preferences.sublime-settings")
+    resource  = _State.settings_resource
+    is_prefs  = (resource == PREFS_RESOURCE)
+
+    try:
+        raw = sublime.load_resource(resource)
+        defaults = sublime.decode_value(raw)
+    except Exception:
+        defaults = {}
+
+    # User overrides live in User/<filename>
+    settings_fname = resource.split("/")[-1]
+    user_prefs = sublime.load_settings(settings_fname)
 
     flt = _State.filter_text.lower()
-    cat = _State.active_category
+    cat = _State.active_category if is_prefs else None
 
     modified_count = sum(
         1 for k in defaults
         if user_prefs.get(k) is not None and user_prefs.get(k) != defaults[k]
     )
 
-    parts = [f'<html><style>{CSS}</style><body style="max-width:{width_px}px">']
-    parts.append('<h1>&#9881; ST Settings</h1>')
+    # Title: package name + file
+    m = re.match(r"Packages/([^/]+)/(.+)", resource)
+    pkg_name  = m.group(1) if m else "Settings"
+    file_name = m.group(2) if m else settings_fname
+    title = f"&#9881; {_e(pkg_name)}" if is_prefs else f"&#9881; {_e(pkg_name)} &mdash; {_e(file_name)}"
 
-    filter_display = (
-        f' &nbsp;<span class="filter-active">filter: {_e(flt)}</span>'
-        if flt else ""
-    )
+    parts = [f'<html><style>{CSS}</style><body style="max-width:{width_px}px">']
+    parts.append(f'<h1>{title}</h1>')
+
+    filter_display = f' &nbsp;<span class="filter-active">filter: {_e(flt)}</span>' if flt else ""
+    back = '<a href="action://prefs">&#9670; Prefs</a> &nbsp;|&nbsp; ' if not is_prefs else ''
     parts.append(
         f'<div class="sub">'
         f'{modified_count} modified &nbsp;|&nbsp; '
+        f'<a href="action://packages">&#128230; Packages</a> &nbsp;|&nbsp; '
+        f'{back}'
         f'<a href="action://search">&#128269; search</a> &nbsp;|&nbsp; '
         f'<a href="action://clear-filter">clear</a> &nbsp;|&nbsp; '
         f'<a href="action://hub">&#9670; Hub</a>'
@@ -311,35 +347,34 @@ def build_settings_html(width_px=460, em_width=9.0):
         f'</div>'
     )
 
-    # category filter pills — 4 per row so they don't overflow
-    cat_names = list(CATEGORIES.keys())
-    all_cls = "pill pill-active" if cat is None else "pill pill-inactive"
-    all_pill = f'<a href="action://cat/"><span class="{all_cls}">All</span></a>'
-    cat_pills = []
-    for cname in cat_names:
-        c_cls = "pill pill-active" if cat == cname else "pill pill-inactive"
-        safe = cname.replace(" ", "_").replace("&", "and")
-        cat_pills.append(f'<a href="action://cat/{safe}"><span class="{c_cls}">{_e(cname)}</span></a>')
+    # Category pills — only for main Preferences
+    if is_prefs:
+        cat_names = list(CATEGORIES.keys())
+        all_cls = "pill pill-active" if cat is None else "pill pill-inactive"
+        all_pill = f'<a href="action://cat/"><span class="{all_cls}">All</span></a>'
+        cat_pills = []
+        for cname in cat_names:
+            c_cls = "pill pill-active" if cat == cname else "pill pill-inactive"
+            safe = cname.replace(" ", "_").replace("&", "and")
+            cat_pills.append(f'<a href="action://cat/{safe}"><span class="{c_cls}">{_e(cname)}</span></a>')
+        all_items = [all_pill] + cat_pills
+        parts.append('<div style="margin-bottom:6px;">')
+        for i in range(0, len(all_items), 4):
+            row = " ".join(all_items[i:i + 4])
+            parts.append(f'<div style="margin-bottom:3px;">{row}</div>')
+        parts.append('</div>')
 
-    all_items = [all_pill] + cat_pills
-    row_size = 4
-    parts.append('<div style="margin-bottom:6px;">')
-    for i in range(0, len(all_items), row_size):
-        row = " ".join(all_items[i:i + row_size])
-        parts.append(f'<div style="margin-bottom:3px;">{row}</div>')
-    parts.append('</div>')
-
-    # Determine which keys to show and in what order
-    if cat:
-        cat_keys = CATEGORIES.get(cat, [])
-        show_order = [(cat, cat_keys)]
-    else:
+    # Determine which keys to show
+    if is_prefs and cat:
+        show_order = [(cat, CATEGORIES[cat])]
+    elif is_prefs:
         show_order = list(CATEGORIES.items())
-        # Add uncategorised keys
         categorised = {k for keys in CATEGORIES.values() for k in keys}
         other = [k for k in defaults if k not in categorised]
         if other:
             show_order.append(("Other", other))
+    else:
+        show_order = [("Settings", list(defaults.keys()))]
 
     for section, keys in show_order:
         section_rows = []
@@ -373,6 +408,27 @@ def _navigate(href):
     defaults_raw = sublime.load_resource("Packages/Default/Preferences.sublime-settings")
     defaults = sublime.decode_value(defaults_raw)
     user_prefs = sublime.load_settings("Preferences.sublime-settings")
+
+    if href == "action://packages":
+        pkg_list = _get_all_package_settings()
+        labels  = [p[0] for p in pkg_list]
+        paths   = [p[1] for p in pkg_list]
+        def on_select(idx):
+            if idx < 0:
+                return
+            _State.settings_resource = paths[idx]
+            _State.active_category = None
+            _State.filter_text = ""
+            _refresh()
+        w.show_quick_panel(labels, on_select)
+        return
+
+    if href == "action://prefs":
+        _State.settings_resource = PREFS_RESOURCE
+        _State.active_category = None
+        _State.filter_text = ""
+        _refresh()
+        return
 
     if href == "action://search":
         w.show_input_panel(
