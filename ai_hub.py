@@ -144,10 +144,11 @@ def build_html():
     )
 
     parts = [f"<html><style>{CSS}</style><body>"]
+    inbox_url = INBOX_PATH.as_uri()
     parts.append(f'<h1>&#9670; Claude AI Hub</h1>')
     parts.append(f'<div class="sub">Inbox &mdash; {total_open} open &nbsp;|&nbsp; '
-                 f'<a href="action://refresh">&#8635; refresh</a> &nbsp;|&nbsp; '
-                 f'<a href="action://open-inbox">&#128195; inbox</a></div>')
+                 f'Ctrl+Alt+H to refresh &nbsp;|&nbsp; '
+                 f'<a href="{inbox_url}">&#128195; open inbox</a></div>')
 
     for sec in SECTION_ORDER:
         items = sections.get(sec, [])
@@ -186,7 +187,7 @@ def build_html():
                 rem = len(undone) - shown
                 parts.append(
                     f'<div class="item more">'
-                    f'<a href="action://open-inbox">&#8230; {rem} more</a>'
+                    f'<a href="{inbox_url}">&#8230; {rem} more</a>'
                     f'</div>'
                 )
                 break
@@ -206,10 +207,9 @@ def build_html():
     # Action bar
     parts.append(f"""
 <div class="actions">
-  <a class="btn btn-a" href="action://refresh">&#8635; Refresh</a>
-  <a class="btn btn-b" href="action://open-inbox">&#128195; Open Inbox</a>
-  <a class="btn btn-b" href="action://pickup">&#9654; Pickup</a>
-  <a class="btn btn-r" href="action://open-hub-py">&#9998; Edit Hub</a>
+  <span class="btn btn-a">Ctrl+Alt+H</span> refresh
+  &nbsp;&nbsp;
+  <a class="btn btn-b" href="{_e(inbox_url)}">&#128195; Open Inbox</a>
 </div>
 """)
     parts.append("</body></html>")
@@ -246,29 +246,13 @@ class AiHubOpenCommand(sublime_plugin.WindowCommand):
             return
 
         sheet = self.window.new_html_sheet(
-            "&#9670; AI Hub",
+            "◆ AI Hub",
             html,
-            navigate=self._navigate,
             flags=sublime.ADD_TO_SELECTION | sublime.SEMI_TRANSIENT,
             group=-1,
         )
         _HubSheet.sheet = sheet
         _HubSheet.window_id = self.window.id()
-
-    def _navigate(self, href):
-        if href == "action://refresh":
-            if _HubSheet.sheet is not None:
-                _HubSheet.sheet.set_contents(build_html())
-        elif href == "action://open-inbox":
-            self.window.open_file(str(INBOX_PATH))
-        elif href == "action://pickup":
-            self.window.run_command("show_panel", {"panel": "console"})
-            sublime.set_timeout(lambda: self.window.run_command("show_panel", {"panel": "console"}), 50)
-        elif href == "action://open-hub-py":
-            self.window.open_file(__file__)
-        elif href.startswith("http"):
-            import subprocess
-            subprocess.Popen(["cmd", "/c", "start", "", href])
 
 
 class AiHubRefreshCommand(sublime_plugin.WindowCommand):
