@@ -484,7 +484,9 @@ def _refresh():
     if v and v.is_valid():
         if _State.phantom_set is None:
             _State.phantom_set = sublime.PhantomSet(v, "ai_settings")
-        width_px = max(200, int(v.viewport_extent()[0]) - 52)
+        w = v.window()
+        minimap_w = 66 if (w and w.is_minimap_visible()) else 0
+        width_px = max(200, int(v.viewport_extent()[0]) - minimap_w - 24)
         html = build_settings_html(width_px, v.em_width())
         phantom = sublime.Phantom(
             sublime.Region(0),
@@ -549,16 +551,4 @@ class AiSettingsListener(sublime_plugin.EventListener):
     def on_activated(self, view):
         if view.name() == "⚙ ST Settings" and view.is_valid():
             _State.view = view
-            w = view.window()
-            if w and w.is_minimap_visible():
-                _State.minimap_was_visible = True
-                w.run_command("toggle_minimap")
             _refresh()
-
-    def on_deactivated(self, view):
-        if view.name() == "⚙ ST Settings":
-            if _State.minimap_was_visible:
-                w = view.window()
-                if w and not w.is_minimap_visible():
-                    w.run_command("toggle_minimap")
-                _State.minimap_was_visible = False
