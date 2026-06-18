@@ -1,4 +1,6 @@
 [
 	{ "keys": ["ctrl+s"], "command": "save", "args": { "async": true } },
-	{ "keys": ["ctrl+shift+k"], "command": "clear_buffer" }
+	{ "keys": ["ctrl+shift+k"], "command": "clear_buffer" },
+	{ "keys": ["ctrl+alt+i"], "command": "capture_idea" },
+	{ "keys": ["ctrl+alt+o"], "command": "open_idea_inbox" }
 ]
