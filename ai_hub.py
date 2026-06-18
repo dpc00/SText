@@ -147,8 +147,8 @@ def build_html():
     inbox_url = INBOX_PATH.as_uri()
     parts.append(f'<h1>&#9670; Claude AI Hub</h1>')
     parts.append(f'<div class="sub">Inbox &mdash; {total_open} open &nbsp;|&nbsp; '
-                 f'Ctrl+Alt+H to refresh &nbsp;|&nbsp; '
-                 f'<a href="{inbox_url}">&#128195; open inbox</a></div>')
+                 f'<a href="action://refresh">&#8635; refresh</a> &nbsp;|&nbsp; '
+                 f'<a href="action://open-inbox">&#128195; inbox</a></div>')
 
     for sec in SECTION_ORDER:
         items = sections.get(sec, [])
@@ -187,7 +187,7 @@ def build_html():
                 rem = len(undone) - shown
                 parts.append(
                     f'<div class="item more">'
-                    f'<a href="{inbox_url}">&#8230; {rem} more</a>'
+                    f'<a href="action://open-inbox">&#8230; {rem} more</a>'
                     f'</div>'
                 )
                 break
@@ -207,9 +207,9 @@ def build_html():
     # Action bar
     parts.append(f"""
 <div class="actions">
-  <span class="btn btn-a">Ctrl+Alt+H</span> refresh
-  &nbsp;&nbsp;
-  <a class="btn btn-b" href="{_e(inbox_url)}">&#128195; Open Inbox</a>
+  <a class="btn btn-a" href="action://refresh">&#8635; Refresh</a>
+  <a class="btn btn-b" href="action://open-inbox">&#128195; Open Inbox</a>
+  <a class="btn btn-r" href="action://open-hub-py">&#9998; Edit</a>
 </div>
 """)
     parts.append("</body></html>")
@@ -218,31 +218,51 @@ def build_html():
 
 # ── state ────────────────────────────────────────────────────────────────────
 
-class _HubSheet:
-    sheet = None
-    window_id = None
+class _HubState:
+    view = None          # the scratch view hosting the phantom
+    phantom_set = None   # PhantomSet on that view
 
 
 # ── commands ─────────────────────────────────────────────────────────────────
+
+def _navigate(href):
+    """Handle link clicks from the hub phantom."""
+    w = sublime.active_window()
+    if href == "action://refresh":
+        w.run_command("ai_hub_refresh")
+    elif href == "action://open-inbox":
+        w.open_file(str(INBOX_PATH))
+    elif href == "action://open-hub-py":
+        import User.ai_hub as _self
+        w.open_file(_self.__file__)
+    elif href.startswith("http"):
+        import subprocess
+        subprocess.Popen(["cmd", "/c", "start", "", href])
+
+
+def _render(view):
+    """Push fresh HTML into the phantom set on *view*."""
+    if _HubState.phantom_set is None or _HubState.view != view:
+        _HubState.phantom_set = sublime.PhantomSet(view, "ai_hub")
+    html = build_html()
+    phantom = sublime.Phantom(
+        sublime.Region(0),
+        html,
+        sublime.LAYOUT_BLOCK,
+        on_navigate=_navigate,
+    )
+    _HubState.phantom_set.update([phantom])
+
 
 class AiHubOpenCommand(sublime_plugin.WindowCommand):
     """Open (or refresh) the AI Hub panel. Ctrl+Alt+H."""
 
     def run(self):
-        html = build_html()
-
-        # Reuse existing sheet if still alive
-        existing = None
-        if _HubSheet.sheet is not None:
-            try:
-                if _HubSheet.sheet.window() is not None:
-                    existing = _HubSheet.sheet
-            except Exception:
-                pass
-
-        if existing is not None:
-            existing.set_contents(html)
-            self.window.focus_sheet(existing)
+        # Reuse existing view if still alive
+        v = _HubState.view
+        if v is not None and v.is_valid():
+            _render(v)
+            self.window.focus_view(v)
             return
 
         # Ensure 2-column layout; hub goes in right column (group 1)
@@ -254,26 +274,26 @@ class AiHubOpenCommand(sublime_plugin.WindowCommand):
                 "cells": [[0, 0, 1, 1], [1, 0, 2, 1]],
             })
 
-        sheet = self.window.new_html_sheet(
-            "◆ AI Hub",
-            html,
-            flags=sublime.ADD_TO_SELECTION,
-            group=1,
-        )
-        _HubSheet.sheet = sheet
-        _HubSheet.window_id = self.window.id()
+        v = self.window.new_file(flags=sublime.ADD_TO_SELECTION, group=1)
+        v.set_name("◆ AI Hub")
+        v.set_scratch(True)
+        v.set_read_only(True)
+        v.settings().set("gutter", False)
+        v.settings().set("line_numbers", False)
+        v.settings().set("scroll_past_end", False)
+        v.settings().set("word_wrap", False)
+
+        _HubState.view = v
+        _render(v)
 
 
 class AiHubRefreshCommand(sublime_plugin.WindowCommand):
-    """Refresh the AI Hub sheet. Called after inbox changes."""
+    """Refresh the hub phantom."""
 
     def run(self):
-        if _HubSheet.sheet is None:
-            return
-        try:
-            _HubSheet.sheet.set_contents(build_html())
-        except Exception:
-            pass
+        v = _HubState.view
+        if v and v.is_valid():
+            _render(v)
 
 
 # ── status bar ───────────────────────────────────────────────────────────────
