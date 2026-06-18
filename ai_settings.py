@@ -193,6 +193,7 @@ class _State:
     view = None
     phantom_set = None
     filter_text = ""
+    minimap_was_visible = False
     active_category = None   # None = all
 
 
@@ -535,7 +536,6 @@ class AiSettingsOpenCommand(sublime_plugin.WindowCommand):
         v.settings().set("gutter", False)
         v.settings().set("line_numbers", False)
         v.settings().set("scroll_past_end", False)
-        v.settings().set("show_minimap", False)
         v.settings().set("scroll_bar_enabled", False)
 
         _State.view = v
@@ -544,9 +544,21 @@ class AiSettingsOpenCommand(sublime_plugin.WindowCommand):
 
 
 class AiSettingsListener(sublime_plugin.EventListener):
-    """Re-render on focus so column resizes are picked up."""
+    """Re-render on focus; manage minimap for clean display."""
 
     def on_activated(self, view):
         if view.name() == "⚙ ST Settings" and view.is_valid():
             _State.view = view
+            w = view.window()
+            if w and w.is_minimap_visible():
+                _State.minimap_was_visible = True
+                w.run_command("toggle_minimap")
             _refresh()
+
+    def on_deactivated(self, view):
+        if view.name() == "⚙ ST Settings":
+            if _State.minimap_was_visible:
+                w = view.window()
+                if w and not w.is_minimap_visible():
+                    w.run_command("toggle_minimap")
+                _State.minimap_was_visible = False
