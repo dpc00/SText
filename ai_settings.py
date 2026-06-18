@@ -302,7 +302,7 @@ def _render_row(key, default_val, user_prefs, parts, wrap_cols=50):
 
 
 def build_settings_html(width_px=460, em_width=9.0):
-    wrap_cols = max(30, int((width_px - 16) / (em_width * 0.65)))
+    wrap_cols = max(30, int((width_px - 16) / 6.0))
     resource  = _State.settings_resource
     is_prefs  = (resource == PREFS_RESOURCE)
 
@@ -392,8 +392,10 @@ def build_settings_html(width_px=460, em_width=9.0):
         for key in section_rows:
             _render_row(key, defaults[key], user_prefs, parts, wrap_cols)
 
-    parts.append("""
+    back_btn = '  <a class="btn btn-a" href="action://prefs">&#8592; ST Prefs</a>\n' if not is_prefs else ''
+    parts.append(f"""
 <div class="actions">
+{back_btn}  <a class="btn btn-b" href="action://packages">&#128230; Packages</a>
   <a class="btn btn-b" href="action://open-raw">&#128196; Open Raw JSON</a>
   <a class="btn btn-b" href="action://hub">&#9670; Hub</a>
 </div>
@@ -454,8 +456,7 @@ def _navigate(href):
         return
 
     if href == "action://open-raw":
-        fname = _State.settings_resource.split("/")[-1]
-        w.run_command("open_file", {"file": f"${{packages}}/User/{fname}"})
+        w.run_command("edit_settings", {"base_file": "${packages}/" + "/".join(_State.settings_resource.split("/")[1:])})
         return
 
     if href.startswith("action://cat/"):
@@ -499,7 +500,7 @@ def _navigate(href):
                 typed_val = value
 
         user_prefs.set(key, typed_val)
-        sublime.save_settings("Preferences.sublime-settings")
+        sublime.save_settings(settings_fname)
         _refresh()
         return
 
@@ -525,7 +526,8 @@ def _apply_filter(text):
 
 
 def _apply_input(key, raw, default_val):
-    user_prefs = sublime.load_settings("Preferences.sublime-settings")
+    settings_fname = _State.settings_resource.split("/")[-1]
+    user_prefs = sublime.load_settings(settings_fname)
     raw = raw.strip()
     if isinstance(default_val, bool):
         typed = raw.lower() in ("true", "1", "yes")
@@ -544,12 +546,21 @@ def _apply_input(key, raw, default_val):
     else:
         typed = raw
     user_prefs.set(key, typed)
-    sublime.save_settings("Preferences.sublime-settings")
+    sublime.save_settings(settings_fname)
     _refresh()
 
 
 def _refresh():
     v = _State.view
+    if v is None or not v.is_valid():
+        for w in sublime.windows():
+            for vv in w.views():
+                if vv.name() == "⚙ ST Settings" and vv.is_valid():
+                    v = vv
+                    _State.view = v
+                    break
+            if v and v.is_valid():
+                break
     if v and v.is_valid():
         if _State.phantom_set is None:
             _State.phantom_set = sublime.PhantomSet(v, "ai_settings")
@@ -586,6 +597,9 @@ class AiSettingsOpenCommand(sublime_plugin.WindowCommand):
 
         if existing and existing.is_valid():
             _State.view = existing
+            _State.settings_resource = PREFS_RESOURCE
+            _State.active_category = None
+            _State.filter_text = ""
             _refresh()
             self.window.focus_view(existing)
             return

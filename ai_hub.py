@@ -170,7 +170,7 @@ def build_html():
 
         parts.append(
             f'<h2>'
-            f'<span class="badge {badge_cls}">{icon} {label}</span>'
+            f'<span class="badge {badge_cls}">{icon}</span>'
             f'{_e(sec)}{count_str}'
             f'</h2>'
         )
