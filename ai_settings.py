@@ -311,14 +311,22 @@ def build_settings_html(width_px=460, em_width=9.0):
         f'</div>'
     )
 
-    # category filter pills
-    parts.append('<div style="margin-bottom:8px;">')
+    # category filter pills — 4 per row so they don't overflow
+    cat_names = list(CATEGORIES.keys())
     all_cls = "pill pill-active" if cat is None else "pill pill-inactive"
-    parts.append(f'<a href="action://cat/"><span class="{all_cls}">All</span></a> ')
-    for cname in CATEGORIES:
+    all_pill = f'<a href="action://cat/"><span class="{all_cls}">All</span></a>'
+    cat_pills = []
+    for cname in cat_names:
         c_cls = "pill pill-active" if cat == cname else "pill pill-inactive"
         safe = cname.replace(" ", "_").replace("&", "and")
-        parts.append(f'<a href="action://cat/{safe}"><span class="{c_cls}">{_e(cname)}</span></a> ')
+        cat_pills.append(f'<a href="action://cat/{safe}"><span class="{c_cls}">{_e(cname)}</span></a>')
+
+    all_items = [all_pill] + cat_pills
+    row_size = 4
+    parts.append('<div style="margin-bottom:6px;">')
+    for i in range(0, len(all_items), row_size):
+        row = " ".join(all_items[i:i + row_size])
+        parts.append(f'<div style="margin-bottom:3px;">{row}</div>')
     parts.append('</div>')
 
     # Determine which keys to show and in what order
