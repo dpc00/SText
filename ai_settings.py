@@ -6,6 +6,7 @@ text/number editing. Asterisk marks user-overridden values.
 """
 
 import re
+import textwrap
 import sublime
 import sublime_plugin
 
@@ -197,7 +198,7 @@ class _State:
 
 # ── HTML builder ──────────────────────────────────────────────────────────────
 
-def _render_row(key, default_val, user_prefs, parts):
+def _render_row(key, default_val, user_prefs, parts, wrap_cols=50):
     current = user_prefs.get(key)
     is_modified = current is not None and current != default_val
     effective = current if current is not None else default_val
@@ -207,7 +208,11 @@ def _render_row(key, default_val, user_prefs, parts):
     key_cls = "key-mod" if is_modified else "key"
 
     desc = _get_desc(key)
-    desc_html = f'<div class="desc">{_e(desc)}</div>' if desc else ""
+    if desc:
+        wrapped = "<br>".join(_e(line) for line in textwrap.wrap(desc, wrap_cols))
+        desc_html = f'<div class="desc">{wrapped}</div>'
+    else:
+        desc_html = ""
 
     # ── boolean ──────────────────────────────────────────────────────────────
     if isinstance(default_val, bool):
@@ -273,7 +278,8 @@ def _render_row(key, default_val, user_prefs, parts):
     )
 
 
-def build_settings_html(width_px=460):
+def build_settings_html(width_px=460, em_width=9.0):
+    wrap_cols = max(30, int((width_px - 16) / (em_width * 0.6)))
     prefs_raw = sublime.load_resource("Packages/Default/Preferences.sublime-settings")
     defaults  = sublime.decode_value(prefs_raw)
     user_prefs = sublime.load_settings("Preferences.sublime-settings")
@@ -339,7 +345,7 @@ def build_settings_html(width_px=460):
 
         parts.append(f'<h2>{_e(section)}</h2>')
         for key in section_rows:
-            _render_row(key, defaults[key], user_prefs, parts)
+            _render_row(key, defaults[key], user_prefs, parts, wrap_cols)
 
     parts.append("""
 <div class="actions">
@@ -477,7 +483,7 @@ def _refresh():
         if _State.phantom_set is None:
             _State.phantom_set = sublime.PhantomSet(v, "ai_settings")
         width_px = max(200, int(v.viewport_extent()[0]) - 32)
-        html = build_settings_html(width_px)
+        html = build_settings_html(width_px, v.em_width())
         phantom = sublime.Phantom(
             sublime.Region(0),
             html,
