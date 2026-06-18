@@ -7,7 +7,7 @@
         }
     },
     {
-        "caption": "Open Codex in Terminus here...",
-        "command": "open_codex_terminus_in_editor"
+        "caption": "Open Ai in Terminus here...",
+        "command": "open_ai_terminus_in_editor"
     }
 ]

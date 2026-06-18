@@ -1,10 +1,10 @@
-"""Commands to launch Codex CLI from Sublime Text.
+"""Commands to launch Ai CLI from Sublime Text.
 
 Command names as Sublime Text sees them:
-  open_codex_here
-  open_codex_in_editor
-  open_codex_terminus_in_editor
-  open_codex_terminus_here
+  open_ai_here
+  open_ai_in_editor
+  open_ai_terminus_in_editor
+  open_ai_terminus_here
 """
 
 import os
@@ -15,30 +15,30 @@ import sublime
 import sublime_plugin
 
 
-_CODEX_VIEW_SETTING = "codex_logger"
+_AI_VIEW_SETTING = "ai_logger"
 
 
-def _mark_active_codex_view(window):
-    """Mark the newly opened Terminus view so codex_tab_manager can find it."""
+def _mark_active_ai_view(window):
+    """Mark the newly opened Terminus view so ai_tab_manager can find it."""
     if not window:
         return
     view = window.active_view()
     if not view:
         return
-    view.set_name("Codex")
-    view.settings().set(_CODEX_VIEW_SETTING, True)
+    view.set_name("Ai")
+    view.settings().set(_AI_VIEW_SETTING, True)
 
 
 def _external_console(path):
-    """Spawn an external terminal window running codex in path."""
+    """Spawn an external terminal window running ai in path."""
     if sys.platform == "win32":
         subprocess.Popen(
-            ["cmd", "/k", "codex"],
+            ["cmd", "/k", "claude"],
             cwd=path,
             creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
     else:
-        subprocess.Popen(["bash", "-i", "-c", "codex"], cwd=path)
+        subprocess.Popen(["bash", "-i", "-c", "claude"], cwd=path)
 
 
 def _resolve_editor_path(view):
@@ -60,8 +60,8 @@ def _resolve_here_path(window, paths):
     return folders[0] if folders else None
 
 
-class OpenCodexHereCommand(sublime_plugin.WindowCommand):
-    """Sidebar: open a new external console running Codex in the chosen dir."""
+class OpenAiHereCommand(sublime_plugin.WindowCommand):
+    """Sidebar: open a new external console running Ai in the chosen dir."""
 
     def run(self, paths=None):
         path = _resolve_here_path(self.window, paths or [])
@@ -72,8 +72,8 @@ class OpenCodexHereCommand(sublime_plugin.WindowCommand):
         return bool(paths)
 
 
-class OpenCodexInEditorCommand(sublime_plugin.TextCommand):
-    """Palette/keybinding: open a new external console running Codex."""
+class OpenAiInEditorCommand(sublime_plugin.TextCommand):
+    """Palette/keybinding: open a new external console running Ai."""
 
     def run(self, edit):
         path = _resolve_editor_path(self.view)
@@ -81,8 +81,8 @@ class OpenCodexInEditorCommand(sublime_plugin.TextCommand):
             _external_console(path)
 
 
-class OpenCodexTerminusInEditorCommand(sublime_plugin.TextCommand):
-    """Palette/keybinding: open a Terminus tab running Codex."""
+class OpenAiTerminusInEditorCommand(sublime_plugin.TextCommand):
+    """Palette/keybinding: open a Terminus tab running Ai."""
 
     def run(self, edit):
         path = _resolve_editor_path(self.view)
@@ -91,16 +91,16 @@ class OpenCodexTerminusInEditorCommand(sublime_plugin.TextCommand):
         self.view.window().run_command(
             "terminus_open",
             {
-                "cmd": ["codex"],
+                "cmd": ["claude"],
                 "cwd": path,
-                "title": "Codex",
+                "title": "Ai",
             },
         )
-        sublime.set_timeout(lambda: _mark_active_codex_view(self.view.window()), 1000)
+        sublime.set_timeout(lambda: _mark_active_ai_view(self.view.window()), 1000)
 
 
-class OpenCodexTerminusHereCommand(sublime_plugin.WindowCommand):
-    """Sidebar: open a Terminus tab running Codex in the chosen dir."""
+class OpenAiTerminusHereCommand(sublime_plugin.WindowCommand):
+    """Sidebar: open a Terminus tab running Ai in the chosen dir."""
 
     def run(self, paths=None):
         path = _resolve_here_path(self.window, paths or [])
@@ -109,12 +109,12 @@ class OpenCodexTerminusHereCommand(sublime_plugin.WindowCommand):
         self.window.run_command(
             "terminus_open",
             {
-                "cmd": ["codex"],
+                "cmd": ["claude"],
                 "cwd": path,
-                "title": "Codex",
+                "title": "Ai",
             },
         )
-        sublime.set_timeout(lambda: _mark_active_codex_view(self.window), 1000)
+        sublime.set_timeout(lambda: _mark_active_ai_view(self.window), 1000)
 
     def is_visible(self, paths=None):
         return True

@@ -5,7 +5,7 @@ from pathlib import Path
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-sessions = Path.home() / ".codex" / "sessions"
+sessions = Path.home() / ".ai" / "sessions"
 results = []
 
 
@@ -42,7 +42,10 @@ for jf in sessions.rglob("*.jsonl"):
                 if obj.get("type") == "session_meta":
                     project = payload.get("cwd") or project
                     continue
-                if obj.get("type") != "response_item" or payload.get("type") != "message":
+                if (
+                    obj.get("type") != "response_item"
+                    or payload.get("type") != "message"
+                ):
                     continue
 
                 role = payload.get("role")
@@ -56,8 +59,27 @@ for jf in sessions.rglob("*.jsonl"):
 
         for turn in turns:
             hay = (turn["u"] + " " + turn["a"]).lower()
-            if "gmail" in hay and any(w in hay for w in ("disappear", "missing", "logout", "login", "gone", "lost", "removed")):
-                results.append({"file": str(jf), "project": project, "ts": turn["ts"], "u": turn["u"][:400], "a": turn["a"][:800]})
+            if "gmail" in hay and any(
+                w in hay
+                for w in (
+                    "disappear",
+                    "missing",
+                    "logout",
+                    "login",
+                    "gone",
+                    "lost",
+                    "removed",
+                )
+            ):
+                results.append(
+                    {
+                        "file": str(jf),
+                        "project": project,
+                        "ts": turn["ts"],
+                        "u": turn["u"][:400],
+                        "a": turn["a"][:800],
+                    }
+                )
     except Exception:
         pass
 
@@ -65,5 +87,5 @@ results.sort(key=lambda x: x["ts"])
 for r in results:
     print("===", r["project"], "|", r["ts"][:16], "===")
     print("YOU:", r["u"])
-    print("CODEX:", r["a"])
+    print("AI:", r["a"])
     print()

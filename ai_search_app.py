@@ -1,9 +1,9 @@
 """
-Search Codex conversation history.
+Search Ai conversation history.
 
-Launch via: python codex_search_app.py
+Launch via: python ai_search_app.py
 Then open: http://127.0.0.1:5758
-Or use the Sublime command: Codex: Search Conversations
+Or use the Sublime command: Ai: Search Conversations
 """
 
 import json
@@ -15,7 +15,7 @@ from flask import Flask, render_template_string, request
 
 app = Flask(__name__)
 
-SESSIONS_DIR = Path.home() / ".codex" / "sessions"
+SESSIONS_DIR = Path.home() / ".claude" / "sessions"
 PORT = 5758
 
 
@@ -23,7 +23,11 @@ def fmt_ts(ts: str | None) -> str:
     if not ts:
         return ""
     try:
-        return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d %H:%M")
+        return (
+            datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            .astimezone()
+            .strftime("%Y-%m-%d %H:%M")
+        )
     except Exception:
         return ts[:16]
 
@@ -50,7 +54,9 @@ def extract_text(payload) -> str:
 def iter_session_files():
     if not SESSIONS_DIR.exists():
         return []
-    return sorted(SESSIONS_DIR.rglob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
+    return sorted(
+        SESSIONS_DIR.rglob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True
+    )
 
 
 def read_session(jsonl_path: Path) -> dict:
@@ -95,7 +101,12 @@ def read_session(jsonl_path: Path) -> dict:
                 if role == "user":
                     if text.startswith("<"):
                         continue
-                    pending_user = {"user_text": text, "user_ts": ts, "assistant_text": "", "assistant_ts": None}
+                    pending_user = {
+                        "user_text": text,
+                        "user_ts": ts,
+                        "assistant_text": "",
+                        "assistant_ts": None,
+                    }
                     if title == jsonl_path.stem:
                         title = text[:80].replace("\n", " ")
                 elif role == "assistant" and pending_user:
@@ -126,8 +137,14 @@ def get_projects():
     return sorted(projects.items(), key=lambda x: x[1].lower())
 
 
-def do_search(keywords_str, project_filter, date_from_str, date_to_str, search_in, title_filter):
-    keywords = [k.strip().lower() for k in keywords_str.split() if k.strip()] if keywords_str else []
+def do_search(
+    keywords_str, project_filter, date_from_str, date_to_str, search_in, title_filter
+):
+    keywords = (
+        [k.strip().lower() for k in keywords_str.split() if k.strip()]
+        if keywords_str
+        else []
+    )
 
     def parse_date(s):
         try:
@@ -173,24 +190,32 @@ def do_search(keywords_str, project_filter, date_from_str, date_to_str, search_i
                 matching_turns.append(turn)
 
         if matching_turns:
-            results.append({
-                "title": session["title"],
-                "project": session["project"],
-                "file": str(jsonl),
-                "mtime": mtime_date.isoformat(),
-                "first_ts": fmt_ts(session["first_ts"]),
-                "last_ts": fmt_ts(session["last_ts"]),
-                "total_turns": len(session["turns"]),
-                "matching_turns": matching_turns,
-            })
+            results.append(
+                {
+                    "title": session["title"],
+                    "project": session["project"],
+                    "file": str(jsonl),
+                    "mtime": mtime_date.isoformat(),
+                    "first_ts": fmt_ts(session["first_ts"]),
+                    "last_ts": fmt_ts(session["last_ts"]),
+                    "total_turns": len(session["turns"]),
+                    "matching_turns": matching_turns,
+                }
+            )
 
     return results
 
 
 def highlight(text: str, keywords: list[str]) -> str:
     import re
+
     for kw in keywords:
-        text = re.sub(f"({re.escape(kw)})", r'<mark class="bg-warning">\1</mark>', text, flags=re.IGNORECASE)
+        text = re.sub(
+            f"({re.escape(kw)})",
+            r'<mark class="bg-warning">\1</mark>',
+            text,
+            flags=re.IGNORECASE,
+        )
     return text
 
 
@@ -200,7 +225,7 @@ TEMPLATE = r"""
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Codex Conversation Search</title>
+  <title>Ai Conversation Search</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
     body { background: #f8f9fa; }
@@ -222,7 +247,7 @@ TEMPLATE = r"""
 </head>
 <body>
 <div class="container py-4">
-  <h4 class="mb-3">Codex Conversation Search</h4>
+  <h4 class="mb-3">Ai Conversation Search</h4>
   <div class="search-panel mb-4">
     <form method="get" action="/">
       <div class="row g-3">
@@ -256,7 +281,7 @@ TEMPLATE = r"""
           <label class="form-label fw-semibold">Search in</label>
           <select class="form-select" name="in">
             <option value="both" {% if search_in == 'both' %}selected{% endif %}>Both</option>
-            <option value="assistant" {% if search_in == 'assistant' %}selected{% endif %}>Codex said</option>
+            <option value="assistant" {% if search_in == 'assistant' %}selected{% endif %}>Ai said</option>
             <option value="user" {% if search_in == 'user' %}selected{% endif %}>I said</option>
           </select>
         </div>
@@ -299,7 +324,7 @@ TEMPLATE = r"""
       <div class="turn-user">{{ highlight(turn.user_text[:600], keywords) | safe }}{% if turn.user_text|length > 600 %}<span class="text-muted"> ...</span>{% endif %}</div>
       {% endif %}
       {% if turn.assistant_text %}
-      <div class="label-a mt-2">Codex said{% if turn.assistant_ts %} &middot; <span class="ts">{{ turn.assistant_ts[:16].replace('T',' ') }}</span>{% endif %}</div>
+      <div class="label-a mt-2">Ai said{% if turn.assistant_ts %} &middot; <span class="ts">{{ turn.assistant_ts[:16].replace('T',' ') }}</span>{% endif %}</div>
       <div class="turn-assistant">{{ highlight(turn.assistant_text[:1200], keywords) | safe }}{% if turn.assistant_text|length > 1200 %}<span class="text-muted"> ... <a href="/session?file={{ r.file | urlencode }}&q={{ q | urlencode }}">read full session &rarr;</a></span>{% endif %}</div>
       {% endif %}
     </div>
@@ -357,7 +382,7 @@ SESSION_TEMPLATE = r"""
     <div class="turn-user">{{ highlight(turn.user_text, keywords) | safe }}</div>
     {% endif %}
     {% if turn.assistant_text %}
-    <div class="label-a">Codex said {% if turn.assistant_ts %}<span class="ts">&middot; {{ turn.assistant_ts[:16].replace('T',' ') }}</span>{% endif %}</div>
+    <div class="label-a">Ai said {% if turn.assistant_ts %}<span class="ts">&middot; {{ turn.assistant_ts[:16].replace('T',' ') }}</span>{% endif %}</div>
     <div class="turn-assistant">{{ highlight(turn.assistant_text, keywords) | safe }}</div>
     {% endif %}
   </div>
@@ -389,8 +414,11 @@ def index():
 
     if searched:
         import time
+
         t0 = time.time()
-        results = do_search(q, project_filter, date_from, date_to, search_in, title_filter)
+        results = do_search(
+            q, project_filter, date_from, date_to, search_in, title_filter
+        )
         elapsed_ms = round((time.time() - t0) * 1000)
         total_sessions = len(results)
         total_matches = sum(len(r["matching_turns"]) for r in results)
@@ -451,7 +479,8 @@ app.jinja_env.filters["urlencode"] = lambda s: quote(str(s), safe="")
 if __name__ == "__main__":
     import threading
     import webbrowser
+
     url = f"http://127.0.0.1:{PORT}"
     threading.Timer(0.5, lambda: webbrowser.open(url)).start()
-    print(f"Codex Search running at {url}")
+    print(f"Ai Search running at {url}")
     app.run(port=PORT, debug=False)

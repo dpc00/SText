@@ -1,6 +1,6 @@
-"""dedup_logs.py â€” remove duplicate sections from Codex conversation logs.
+"""dedup_logs.py â€” remove duplicate sections from Ai conversation logs.
 
-When the codex_tab_manager plugin reloads (e.g. after a file save), it
+When the ai_tab_manager plugin reloads (e.g. after a file save), it
 sometimes re-logs a block of buffer content that was already written. This
 script finds those duplicate blocks and removes the second occurrence.
 
@@ -35,7 +35,7 @@ if sys.stdout.encoding != "utf-8":
 
 SEED_WINDOW = 8
 MIN_BLOCK = 20
-LOG_DIR = Path.home() / ".codex" / "conversation_logs"
+LOG_DIR = Path.home() / ".claude" / "conversation_logs"
 
 
 def deduplicate(lines: List[str]) -> Tuple[List[str], List[Tuple[int, int]]]:
@@ -47,7 +47,7 @@ def deduplicate(lines: List[str]) -> Tuple[List[str], List[Tuple[int, int]]]:
     # Build index: tuple-of-lines -> [positions]
     index: dict[tuple, list[int]] = {}
     for i in range(n - SEED_WINDOW + 1):
-        key = tuple(lines[i:i + SEED_WINDOW])
+        key = tuple(lines[i : i + SEED_WINDOW])
         index.setdefault(key, []).append(i)
 
     to_remove: set[int] = set()
@@ -66,22 +66,27 @@ def deduplicate(lines: List[str]) -> Tuple[List[str], List[Tuple[int, int]]]:
                 continue
 
             # Double-check content still matches (index built before removals)
-            if lines[i:i + SEED_WINDOW] != lines[j:j + SEED_WINDOW]:
+            if lines[i : i + SEED_WINDOW] != lines[j : j + SEED_WINDOW]:
                 continue
 
             # Extend forward
             fwd = SEED_WINDOW
-            while (i + fwd < n and j + fwd < n
-                   and i + fwd < j          # first block must not reach second
-                   and lines[i + fwd] == lines[j + fwd]):
+            while (
+                i + fwd < n
+                and j + fwd < n
+                and i + fwd < j  # first block must not reach second
+                and lines[i + fwd] == lines[j + fwd]
+            ):
                 fwd += 1
 
             # Extend backward (without letting the blocks overlap)
             bwd = 0
-            while (i - bwd - 1 >= 0
-                   and j - bwd - 1 >= 0
-                   and j - bwd - 1 > i + fwd   # blocks must not touch
-                   and lines[i - bwd - 1] == lines[j - bwd - 1]):
+            while (
+                i - bwd - 1 >= 0
+                and j - bwd - 1 >= 0
+                and j - bwd - 1 > i + fwd  # blocks must not touch
+                and lines[i - bwd - 1] == lines[j - bwd - 1]
+            ):
                 bwd += 1
 
             block_len = bwd + fwd
@@ -102,15 +107,17 @@ def deduplicate(lines: List[str]) -> Tuple[List[str], List[Tuple[int, int]]]:
 
 
 import re as _re
-_TRAIL_JUNK = _re.compile(r'[\sâ”€-â•¿â–€-â–Ÿ]+$')
+
+_TRAIL_JUNK = _re.compile(r"[\sâ”€-â•¿â–€-â–Ÿ]+$")
 # Wide status-bar lines: non-space, big gap (20+ spaces), non-space
-_STATUS_BAR_GAP = _re.compile(r'\S\s{20,}\S')
+_STATUS_BAR_GAP = _re.compile(r"\S\s{20,}\S")
 # Narrow status-bar content patterns (may be merged with no big gap)
 _STATUS_BAR_CONTENT = _re.compile(
-    r'Session:\s+\d|Ctx Used:\s+[\d.]|Cost:\s+\$[\d]|\bMem:\s+[\d.]'
+    r"Session:\s+\d|Ctx Used:\s+[\d.]|Cost:\s+\$[\d]|\bMem:\s+[\d.]"
 )
 # "â† for agents" / "â†’ for agents" prefix that may be glued to real content
-_AGENT_PREFIX = _re.compile(r'^\s*[â†â†’]\s+for agents\s*')
+_AGENT_PREFIX = _re.compile(r"^\s*[â†â†’]\s+for agents\s*")
+
 
 def _clean_line(line: str) -> str:
     """Strip trailing whitespace and terminal box-drawing/block padding.
@@ -141,8 +148,10 @@ def process_file(path: Path, dry_run: bool = False) -> None:
         print(f"  {path.name}: no duplicates found ({original_count} lines)")
         return
 
-    print(f"  {path.name}: {original_count} lines -> {len(cleaned)} lines "
-          f"(removed {removed} lines in {len(ranges)} block(s))")
+    print(
+        f"  {path.name}: {original_count} lines -> {len(cleaned)} lines "
+        f"(removed {removed} lines in {len(ranges)} block(s))"
+    )
     for start, end in ranges:
         preview = lines[start].rstrip()[:60]
         print(f"    lines {start + 1}â€“{end + 1}: '{preview}â€¦'")
@@ -174,4 +183,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -1,10 +1,10 @@
-"""codex_tab_manager.py â€” robust logging for Codex sessions in Sublime Text.
+"""ai_tab_manager.py â€” robust logging for Ai sessions in Sublime Text.
 
 PURPOSE
 =======
-The Terminus view named "Codex" is the live Codex session. This plugin
-creates multiple layers of logging to capture EVERYTHING Codex does, because
-Codex itself fails to persistently log many operations (especially agent
+The Terminus view named "Ai" is the live Ai session. This plugin
+creates multiple layers of logging to capture EVERYTHING Ai does, because
+Ai itself fails to persistently log many operations (especially agent
 spawning).
 
 LOGGING LAYERS
@@ -33,7 +33,7 @@ STATE
 =====
 - Per-view state (last-logged line, view size, etc.) saved to disk
 - Survives plugin reloads, Sublime restarts, and view closures
-- State file: ~/.codex/codex_tab_manager_state.json
+- State file: ~/.claude/ai_tab_manager_state.json
 """
 
 import datetime
@@ -47,14 +47,14 @@ from pathlib import Path
 import sublime  # type: ignore
 import sublime_plugin  # type: ignore
 
-_LOG_DIR = str(Path.home() / ".codex" / "conversation_logs")
-_STATE_FILE = str(Path.home() / ".codex" / "codex_tab_manager_state.json")
-_SCREENSHOT_DIR = str(Path.home() / ".codex" / "screenshots")
-_DIAGNOSTICS_FILE = str(Path.home() / ".codex" / "codex_diagnostics.log")
+_LOG_DIR = str(Path.home() / ".claude" / "conversation_logs")
+_STATE_FILE = str(Path.home() / ".claude" / "ai_tab_manager_state.json")
+_SCREENSHOT_DIR = str(Path.home() / ".claude" / "screenshots")
+_DIAGNOSTICS_FILE = str(Path.home() / ".claude" / "ai_diagnostics.log")
 _CHECK_MS = 500  # poll every 500ms (was 4000ms)
 _SCREENSHOT_INTERVAL = 60  # capture screenshot every 60 seconds
 _SCREENSHOT_RETENTION_DAYS = 7  # keep screenshots for 7 days, delete older ones
-_CODEX_VIEW_SETTING = "codex_logger"
+_AI_VIEW_SETTING = "ai_logger"
 
 # In-memory cache of per-view state
 _view_state = {}  # view_id -> {last_line, last_checked_time, anomalies, etc}
@@ -80,7 +80,7 @@ def _save_state():
         with open(_STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(_view_state, f, indent=2)
     except OSError as e:
-        print(f"codex_tab_manager: ERROR saving state: {e}")
+        print(f"ai_tab_manager: ERROR saving state: {e}")
 
 
 def _diagnostic_log(message: str) -> None:
@@ -129,7 +129,7 @@ def _cleanup_old_screenshots() -> None:
 import re as _re
 
 _TRAIL_JUNK = _re.compile(r"[\sâ”€-â•¿â–€-â–Ÿ]+$")
-# Codex status-bar lines: wide single lines containing navigation/cost info
+# Ai status-bar lines: wide single lines containing navigation/cost info
 # Status-bar lines are padded to terminal width: non-space, big gap, non-space
 _STATUS_BAR_GAP = _re.compile(r"\S\s{20,}\S")
 
@@ -161,29 +161,27 @@ def _append_log(text: str) -> None:
     """Append text to today's conversation log."""
     try:
         os.makedirs(_LOG_DIR, exist_ok=True)
-        log_file = os.path.join(
-            _LOG_DIR, f"codex_{datetime.date.today().isoformat()}.log"
-        )
+        log_file = os.path.join(_LOG_DIR, f"ai_{datetime.date.today().isoformat()}.log")
         with open(log_file, "a", encoding="utf-8", newline="") as f:
             f.write(_clean_text(text))
     except OSError as e:
         _diagnostic_log(f"WRITE_ERROR: Failed to write to log: {e}")
 
 
-def _is_codex_view(view: sublime.View) -> bool:
-    """Return whether a Sublime view is the Codex Terminus session."""
-    if view.name() == "Codex":
+def _is_ai_view(view: sublime.View) -> bool:
+    """Return whether a Sublime view is the Ai Terminus session."""
+    if view.name() == "Ai":
         return True
-    if view.settings().get(_CODEX_VIEW_SETTING):
+    if view.settings().get(_AI_VIEW_SETTING):
         return True
     return False
 
 
-def _codex_view():
-    """Return the first Codex Terminus view across all windows, or None."""
+def _ai_view():
+    """Return the first Ai Terminus view across all windows, or None."""
     for w in sublime.windows():
         for v in w.views():
-            if _is_codex_view(v):
+            if _is_ai_view(v):
                 return v
     return None
 
@@ -193,7 +191,7 @@ def _take_screenshot(view_id: str) -> None:
     try:
         os.makedirs(_SCREENSHOT_DIR, exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filepath = os.path.join(_SCREENSHOT_DIR, f"codex_{timestamp}.png")
+        filepath = os.path.join(_SCREENSHOT_DIR, f"ai_{timestamp}.png")
 
         # Use PIL to capture full screen (preferred)
         try:
@@ -278,7 +276,7 @@ def _tick():
         _cleanup_old_screenshots()
         _last_cleanup_time = current_time
 
-    v = _codex_view()
+    v = _ai_view()
 
     if v:
         vid = str(v.id())
@@ -343,7 +341,7 @@ def _tick():
     sublime.set_timeout(_tick, _CHECK_MS)
 
 
-class CodexTrimNowCommand(sublime_plugin.TextCommand):
+class AiTrimNowCommand(sublime_plugin.TextCommand):
     """Manually trim buffer while preserving all content in logs."""
 
     def run(self, edit):
@@ -388,9 +386,7 @@ class CodexTrimNowCommand(sublime_plugin.TextCommand):
             _save_state()
 
         final_lines = v.rowcol(v.size())[0] + 1
-        msg = (
-            f"codex_tab_manager: trimmed {lines_deleted} lines, now {final_lines} total"
-        )
+        msg = f"ai_tab_manager: trimmed {lines_deleted} lines, now {final_lines} total"
         print(msg)
         _diagnostic_log(msg)
 
@@ -401,12 +397,12 @@ def plugin_loaded():
     os.makedirs(_LOG_DIR, exist_ok=True)
     _cleanup_old_screenshots()  # Clean up old screenshots on startup
     sublime.set_timeout(_tick, _CHECK_MS)
-    msg = f"codex_tab_manager: initialized (polling every {_CHECK_MS}ms, screenshots every {_SCREENSHOT_INTERVAL}s, retention {_SCREENSHOT_RETENTION_DAYS} days)"
+    msg = f"ai_tab_manager: initialized (polling every {_CHECK_MS}ms, screenshots every {_SCREENSHOT_INTERVAL}s, retention {_SCREENSHOT_RETENTION_DAYS} days)"
     print(msg)
     _diagnostic_log(msg)
 
 
-class CodexCaptureScrollPositionCommand(sublime_plugin.TextCommand):
+class AiCaptureScrollPositionCommand(sublime_plugin.TextCommand):
     """Capture screenshot at current scroll position (for manual reconstruction).
 
     Use this while scrolling through the buffer to document what line you're viewing.
@@ -415,8 +411,8 @@ class CodexCaptureScrollPositionCommand(sublime_plugin.TextCommand):
 
     def run(self, edit):
         v = self.view
-        if not _is_codex_view(v):
-            sublime.error_message("This command only works in the Codex view")
+        if not _is_ai_view(v):
+            sublime.error_message("This command only works in the Ai view")
             return
 
         try:
@@ -428,7 +424,7 @@ class CodexCaptureScrollPositionCommand(sublime_plugin.TextCommand):
             os.makedirs(_SCREENSHOT_DIR, exist_ok=True)
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             filepath = os.path.join(
-                _SCREENSHOT_DIR, f"codex_scroll_line{row+1:04d}_{timestamp}.png"
+                _SCREENSHOT_DIR, f"ai_scroll_line{row+1:04d}_{timestamp}.png"
             )
 
             try:
@@ -472,13 +468,13 @@ $bitmap.Dispose()
             sublime.error_message(error_msg)
 
 
-class CodexDumpBufferCommand(sublime_plugin.TextCommand):
-    """Export the entire current Codex buffer to a file for inspection/archival."""
+class AiDumpBufferCommand(sublime_plugin.TextCommand):
+    """Export the entire current Ai buffer to a file for inspection/archival."""
 
     def run(self, edit):
         v = self.view
-        if not _is_codex_view(v):
-            sublime.error_message("This command only works in the Codex view")
+        if not _is_ai_view(v):
+            sublime.error_message("This command only works in the Ai view")
             return
 
         try:
@@ -487,9 +483,9 @@ class CodexDumpBufferCommand(sublime_plugin.TextCommand):
 
             # Save to dated file
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            export_dir = Path.home() / ".codex" / "buffer_exports"
+            export_dir = Path.home() / ".claude" / "buffer_exports"
             export_dir.mkdir(parents=True, exist_ok=True)
-            export_file = export_dir / f"codex_buffer_dump_{timestamp}.txt"
+            export_file = export_dir / f"ai_buffer_dump_{timestamp}.txt"
 
             with open(export_file, "w", encoding="utf-8") as f:
                 f.write(entire_content)
@@ -506,11 +502,11 @@ class CodexDumpBufferCommand(sublime_plugin.TextCommand):
             sublime.error_message(error_msg)
 
 
-class CodexEventListener(sublime_plugin.EventListener):
-    """Flush any unlogged Codex buffer content when the view or window closes."""
+class AiEventListener(sublime_plugin.EventListener):
+    """Flush any unlogged Ai buffer content when the view or window closes."""
 
-    def _flush_codex_view(self, view: sublime.View) -> None:
-        if not _is_codex_view(view):
+    def _flush_ai_view(self, view: sublime.View) -> None:
+        if not _is_ai_view(view):
             return
         try:
             vid = str(view.id())
@@ -529,22 +525,22 @@ class CodexEventListener(sublime_plugin.EventListener):
             if vid in _view_state:
                 _view_state[vid]["last_line"] = row_count
             _save_state()
-            _diagnostic_log(f"CLOSE_FLUSH: saved {len(new_text)} chars from Codex view")
+            _diagnostic_log(f"CLOSE_FLUSH: saved {len(new_text)} chars from Ai view")
         except Exception as e:
             _diagnostic_log(f"CLOSE_FLUSH_ERROR: {e}")
 
     def on_pre_close(self, view: sublime.View) -> None:
-        self._flush_codex_view(view)
+        self._flush_ai_view(view)
 
     def on_window_command(self, window, command_name, args):
         if command_name in ("close_window", "exit"):
-            v = _codex_view()
+            v = _ai_view()
             if v:
-                self._flush_codex_view(v)
+                self._flush_ai_view(v)
 
 
 def _extract_message_text(payload: dict) -> str:
-    """Extract visible text from a Codex response_item message payload."""
+    """Extract visible text from a Ai response_item message payload."""
     content = payload.get("content")
     if isinstance(content, str):
         return content
@@ -611,13 +607,13 @@ def _read_session_info(jsonl_path: Path) -> dict:
     }
 
 
-class CodexListSessionsCommand(sublime_plugin.WindowCommand):
-    """Show recent Codex sessions across all projects."""
+class AiListSessionsCommand(sublime_plugin.WindowCommand):
+    """Show recent Ai sessions across all projects."""
 
     def run(self, count=40):
-        sessions_dir = Path.home() / ".codex" / "sessions"
+        sessions_dir = Path.home() / ".claude" / "sessions"
         if not sessions_dir.exists():
-            sublime.error_message("No ~/.codex/sessions directory found")
+            sublime.error_message("No ~/.claude/sessions directory found")
             return
 
         sessions = []
@@ -628,7 +624,7 @@ class CodexListSessionsCommand(sublime_plugin.WindowCommand):
         sessions.sort(key=lambda x: x[0], reverse=True)
         sessions = sessions[:count]
 
-        lines = [f"Recent Codex sessions (last {count}):\n"]
+        lines = [f"Recent Ai sessions (last {count}):\n"]
         for mtime, jsonl in sessions:
             info = _read_session_info(jsonl)
 
@@ -670,16 +666,16 @@ class CodexListSessionsCommand(sublime_plugin.WindowCommand):
 
         output = "\n".join(lines)
         v = self.window.new_file()
-        v.set_name("Codex Sessions")
+        v.set_name("Ai Sessions")
         v.set_scratch(True)
         v.run_command("append", {"characters": output})
 
 
-class CodexSearchConversationsCommand(sublime_plugin.WindowCommand):
-    """Launch the Codex conversation search Flask app in a browser."""
+class AiSearchConversationsCommand(sublime_plugin.WindowCommand):
+    """Launch the Ai conversation search Flask app in a browser."""
 
     def run(self):
-        script = str(Path(__file__).parent / "codex_search_app.py")
+        script = str(Path(__file__).parent / "ai_search_app.py")
         import subprocess
 
         subprocess.Popen(
@@ -690,7 +686,7 @@ class CodexSearchConversationsCommand(sublime_plugin.WindowCommand):
 
 def plugin_unloaded():
     """Clean up when plugin unloads."""
-    v = _codex_view()
+    v = _ai_view()
     if v:
         try:
             vid = str(v.id())
