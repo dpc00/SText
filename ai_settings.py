@@ -482,7 +482,7 @@ def _refresh():
     if v and v.is_valid():
         if _State.phantom_set is None:
             _State.phantom_set = sublime.PhantomSet(v, "ai_settings")
-        width_px = max(200, int(v.viewport_extent()[0]) - 32)
+        width_px = max(200, int(v.viewport_extent()[0]) - 52)
         html = build_settings_html(width_px, v.em_width())
         phantom = sublime.Phantom(
             sublime.Region(0),
@@ -538,3 +538,12 @@ class AiSettingsOpenCommand(sublime_plugin.WindowCommand):
         _State.view = v
         _State.phantom_set = sublime.PhantomSet(v, "ai_settings")
         _refresh()
+
+
+class AiSettingsListener(sublime_plugin.EventListener):
+    """Re-render on focus so column resizes are picked up."""
+
+    def on_activated(self, view):
+        if view.name() == "⚙ ST Settings" and view.is_valid():
+            _State.view = view
+            _refresh()
