@@ -405,9 +405,13 @@ def build_settings_html(width_px=460, em_width=9.0):
 
 def _navigate(href):
     w = sublime.active_window()
-    defaults_raw = sublime.load_resource("Packages/Default/Preferences.sublime-settings")
-    defaults = sublime.decode_value(defaults_raw)
-    user_prefs = sublime.load_settings("Preferences.sublime-settings")
+    try:
+        defaults_raw = sublime.load_resource(_State.settings_resource)
+        defaults = sublime.decode_value(defaults_raw)
+    except Exception:
+        defaults = {}
+    settings_fname = _State.settings_resource.split("/")[-1]
+    user_prefs = sublime.load_settings(settings_fname)
 
     if href == "action://packages":
         pkg_list = _get_all_package_settings()
@@ -450,7 +454,8 @@ def _navigate(href):
         return
 
     if href == "action://open-raw":
-        w.run_command("open_file", {"file": "${packages}/User/Preferences.sublime-settings"})
+        fname = _State.settings_resource.split("/")[-1]
+        w.run_command("open_file", {"file": f"${{packages}}/User/{fname}"})
         return
 
     if href.startswith("action://cat/"):
