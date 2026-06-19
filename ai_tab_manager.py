@@ -218,8 +218,19 @@ def _screenshot_via_mcp(filepath: str) -> bool:
             proc.stdin.write((json.dumps(obj) + "\n").encode())
             proc.stdin.flush()
 
-        def recv():
-            return json.loads(proc.stdout.readline())
+        def recv(expected_id):
+            # Skip notifications (no "id") until we get the response we expect.
+            for _ in range(20):
+                line = proc.stdout.readline()
+                if not line:
+                    break
+                try:
+                    msg = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if msg.get("id") == expected_id:
+                    return msg
+            return {}
 
         send({
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -229,19 +240,19 @@ def _screenshot_via_mcp(filepath: str) -> bool:
                 "clientInfo": {"name": "ai_tab_manager", "version": "1.0"},
             },
         })
-        recv()
+        recv(1)
         send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
         send({
             "jsonrpc": "2.0", "id": 2, "method": "tools/call",
             "params": {"name": "list_windows", "arguments": {}},
         })
-        list_resp = recv()
+        list_resp = recv(2)
         window_id = None
         list_content = list_resp.get("result", {}).get("content", [])
         if list_content:
             windows = json.loads(list_content[0].get("text", "[]"))
             match = next(
-                (w for w in windows if w.get("app", "").lower() == "sublime_text"),
+                (w for w in windows if "sublime" in w.get("app", "").lower()),
                 None,
             )
             if match:
@@ -258,7 +269,7 @@ def _screenshot_via_mcp(filepath: str) -> bool:
                 "arguments": {"window_id": window_id},
             },
         })
-        response = recv()
+        response = recv(3)
         proc.terminate()
 
         content = response.get("result", {}).get("content", [])

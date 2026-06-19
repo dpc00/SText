@@ -51,11 +51,12 @@
     ],
     "font_size": 12,
     "theme": "Default.sublime-theme",
-    "word_wrap": true,
+    "word_wrap": false,
     "show_git_status": true,
     "color_scheme": "Mariana.sublime-color-scheme",
     "font_face": "Cascadia Code Light",
     "show_line_endings": true,
     "wrap_width": 0,
     "sidebar_on_right": false,
+    "detect_indentation": true,
 }
