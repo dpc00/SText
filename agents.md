@@ -8,6 +8,9 @@
 ## What This Project Is
 Sublime Text plugin + Claude Code UI integration. The goal is a zero-fatigue graphical wrapper around Claude Code and MCP — separate panes for chat, config, status, and ideas.
 
+## Critical Assumption
+Plugin edits in `C:\Users\donal\projects\SText\` are NOT live in Sublime Text until copied to `C:\Users\donal\AppData\Roaming\Sublime Text\Packages\User\`. Never assume a plugin behaves correctly or test results are valid until the file has been deployed there. If something isn't working, check deployment before investigating the code.
+
 ## Key Files
 - ai_tab_manager.py — Tab/view management
 - ai_search_app.py — Search functionality

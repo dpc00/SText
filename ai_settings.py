@@ -115,71 +115,65 @@ def _get_desc(key):
     return _DESCRIPTIONS.get(key, "")
 
 
-# ── HTML palette ──────────────────────────────────────────────────────────────
+# ── HTML palette (Windows light theme) ───────────────────────────────────────
 
-BG      = "#1e1e2e"
-BG2     = "#181825"
-SURFACE = "#313244"
-OVERLAY = "#6c7086"
-TEXT    = "#cdd6f4"
-SUBTEXT = "#a6adc8"
-ACCENT  = "#cba6f7"
-BLUE    = "#89b4fa"
-GREEN   = "#a6e3a1"
-RED     = "#f38ba8"
-YELLOW  = "#f9e2af"
-
-CSS = f"""
-body {{
-    background-color:{BG}; color:{TEXT};
-    font-family:"Cascadia Code","Fira Code",Consolas,monospace;
-    font-size:12px; margin:0; padding:12px 16px 30px;
-}}
-h1 {{ color:{ACCENT}; font-size:16px; margin:0 0 2px; }}
-.sub {{ color:{SUBTEXT}; font-size:10px; margin:0 0 10px; }}
-h2 {{
-    color:{BLUE}; font-size:10px; font-weight:bold;
-    margin:14px 0 4px; padding:2px 8px;
-    background-color:{SURFACE}; border-radius:3px;
-    text-transform:uppercase; letter-spacing:0.5px;
-}}
-.row {{
-    padding:3px 0 3px 4px; margin:1px 0;
-    border-left:2px solid {BG2};
-}}
-.row:hover {{ border-left:2px solid {OVERLAY}; }}
-.modified {{ border-left:2px solid {ACCENT}; }}
-.key {{ color:{TEXT}; font-weight:bold; font-size:11px; }}
-.key-mod {{ color:{ACCENT}; font-weight:bold; font-size:11px; }}
-.desc {{ color:{OVERLAY}; font-size:10px; display:block; margin:1px 0 4px 0; padding-right:8px; }}
-.pill {{
-    display:inline; padding:2px 8px; border-radius:3px;
-    font-size:10px; font-weight:bold; margin-right:3px;
-    color:{BG};
-}}
-.pill-on  {{ background-color:{GREEN}; }}
-.pill-off {{ background-color:{SURFACE}; color:{SUBTEXT}; }}
-.pill-active {{ background-color:{ACCENT}; }}
-.pill-inactive {{ background-color:{SURFACE}; color:{SUBTEXT}; }}
-.val {{
-    display:inline; padding:2px 8px; border-radius:3px;
-    font-size:10px; background-color:{SURFACE}; color:{TEXT};
-    margin-right:4px;
-}}
-.star {{ color:{ACCENT}; font-size:10px; }}
-a {{ color:{BLUE}; text-decoration:none; }}
-.actions {{
-    margin-top:16px; padding:6px 8px;
-    background-color:{BG2}; border-radius:4px;
-    border-left:3px solid {ACCENT};
-}}
-.btn {{
-    display:inline; padding:2px 8px; border-radius:3px;
-    font-size:11px; font-weight:bold; margin-right:6px;
-}}
-.btn-a {{ background-color:{ACCENT}; color:{BG}; }}
-.btn-b {{ background-color:{SURFACE}; color:{TEXT}; }}
-.filter-active {{ color:{YELLOW}; font-size:10px; }}
+CSS = """
+body {
+    background-color:#f0f0f0;
+    font-family:"Segoe UI",Arial,sans-serif;
+    font-size:9pt; color:#000000;
+    margin:0; padding:8px 12px 20px;
+}
+h1 { font-size:11pt; color:#003366; margin:0 0 2px; font-weight:bold; }
+.sub { color:#555555; font-size:8pt; margin:0 0 6px; }
+.toolbar {
+    margin-bottom:8px; padding:4px 8px;
+    background:#e1e1e1; border:1px solid #adadad;
+}
+.section-hdr {
+    font-size:9pt; font-weight:bold; color:#003366;
+    background:#dce6f0; padding:3px 8px;
+    margin:10px 0 0;
+    border-top:1px solid #adadad; border-bottom:1px solid #adadad;
+}
+table { width:100%; border-collapse:collapse; background:#ffffff; border:1px solid #adadad; margin-bottom:2px; }
+tr { border-bottom:1px solid #ebebeb; }
+td.lbl  { width:42%; padding:4px 6px 2px 6px; vertical-align:top; border-right:1px solid #e0e0e0; }
+td.lbl2 { width:42%; padding:4px 6px 2px 6px; vertical-align:top; border-right:1px solid #e0e0e0; background:#fffde7; }
+td.ctrl { width:58%; padding:3px 6px; vertical-align:middle; }
+.key    { font-size:9pt; color:#000000; font-weight:bold; }
+.key-mod{ font-size:9pt; color:#0000cc; font-weight:bold; }
+.desc   { font-size:8pt; color:#666666; display:block; margin-top:1px; }
+.star   { color:#cc6600; }
+.chk    { font-size:11pt; color:#000000; }
+.textbox{
+    display:inline; background:#ffffff;
+    border:1px solid #7a7a7a; padding:1px 6px;
+    color:#000000; font-family:"Segoe UI",Arial,sans-serif; font-size:9pt;
+}
+.dropdown{
+    display:inline; background:#ffffff;
+    border:1px solid #7a7a7a; padding:1px 4px 1px 6px;
+    color:#000000; font-family:"Segoe UI",Arial,sans-serif; font-size:9pt;
+}
+.catbar { margin-bottom:6px; }
+.catbtn {
+    display:inline; padding:2px 9px;
+    border:1px solid #adadad; background:#e1e1e1;
+    font-size:8pt; margin-right:3px; color:#000000;
+}
+.catbtn-on { background:#0078d4; color:#ffffff; border:1px solid #005a9e; }
+.btn {
+    display:inline; padding:2px 10px;
+    border:1px solid #adadad; background:#e1e1e1;
+    font-size:9pt; margin-right:4px; color:#000000;
+}
+a { color:#0078d4; text-decoration:none; }
+.filter-active { color:#cc6600; font-size:8pt; }
+.actions {
+    margin-top:12px; padding:5px 8px;
+    background:#e8e8e8; border:1px solid #adadad;
+}
 """
 
 
@@ -226,78 +220,42 @@ def _render_row(key, default_val, user_prefs, parts, wrap_cols=50):
     is_modified = current is not None and current != default_val
     effective = current if current is not None else default_val
 
-    star = '<span class="star"> &#9733;</span>' if is_modified else ""
-    row_cls = "row modified" if is_modified else "row"
+    star    = ' <span class="star">&#9733;</span>' if is_modified else ""
+    lbl_cls = "lbl2" if is_modified else "lbl"
     key_cls = "key-mod" if is_modified else "key"
 
     desc = _get_desc(key)
-    if desc:
-        wrapped = "<br>".join(_e(line) for line in textwrap.wrap(desc, wrap_cols))
-        desc_html = f'<div class="desc">{wrapped}</div>'
-    else:
-        desc_html = ""
+    desc_html = f'<span class="desc">{_e(desc[:110])}</span>' if desc else ""
 
-    # ── boolean ──────────────────────────────────────────────────────────────
+    # ── boolean: checkbox ─────────────────────────────────────────────────────
     if isinstance(default_val, bool):
-        on_cls  = "pill pill-on"  if effective is True  else "pill pill-off"
-        off_cls = "pill pill-off" if effective is True  else "pill pill-on"
-        # clicking the inactive pill sets it
-        if effective is True:
-            ctrl = (
-                f'<a href="action://set/{key}/true">'
-                f'<span class="{on_cls}">&#10003; True</span></a> '
-                f'<a href="action://set/{key}/false">'
-                f'<span class="{off_cls}">False</span></a>'
-            )
-        else:
-            ctrl = (
-                f'<a href="action://set/{key}/true">'
-                f'<span class="{off_cls}">True</span></a> '
-                f'<a href="action://set/{key}/false">'
-                f'<span class="{on_cls}">&#10007; False</span></a>'
-            )
-
-    # ── known enum ────────────────────────────────────────────────────────────
-    elif key in ENUMS and ENUMS[key]:
-        options = ENUMS[key]
-        pills = []
-        for opt in options:
-            active = str(effective).lower() == str(opt).lower()
-            cls = "pill pill-active" if active else "pill pill-inactive"
-            pills.append(
-                f'<a href="action://set/{key}/{opt}">'
-                f'<span class="{cls}">{_e(opt)}</span></a>'
-            )
-        ctrl = " ".join(pills)
-
-    # ── integer ───────────────────────────────────────────────────────────────
-    elif isinstance(default_val, int):
+        symbol  = "&#9745;" if effective else "&#9744;"   # ☑ / ☐
+        new_val = "false" if effective else "true"
         ctrl = (
-            f'<a href="action://input/{key}">'
-            f'<span class="val">{_e(effective)}</span></a>'
+            f'<a href="action://set/{key}/{new_val}">'
+            f'<span class="chk">{symbol}</span></a>'
         )
 
-    # ── string ────────────────────────────────────────────────────────────────
-    elif isinstance(default_val, str):
+    # ── known enum: dropdown ──────────────────────────────────────────────────
+    elif key in ENUMS and ENUMS[key]:
+        ctrl = (
+            f'<a href="action://enum/{key}">'
+            f'<span class="dropdown">{_e(str(effective))}&nbsp;&#9660;</span></a>'
+        )
+
+    # ── integer / string / other: text box ────────────────────────────────────
+    else:
         disp = str(effective)[:30]
         ctrl = (
             f'<a href="action://input/{key}">'
-            f'<span class="val">{_e(disp)}</span></a>'
-        )
-
-    # ── list / other ──────────────────────────────────────────────────────────
-    else:
-        disp = str(effective)[:40]
-        ctrl = (
-            f'<a href="action://input/{key}">'
-            f'<span class="val">{_e(disp)}</span></a>'
+            f'<span class="textbox">{_e(disp)}</span></a>'
         )
 
     parts.append(
-        f'<div class="{row_cls}">'
-        f'<div><span class="{key_cls}">{_e(key)}{star}</span> {ctrl}</div>'
-        f'{desc_html}'
-        f'</div>'
+        f'<tr>'
+        f'<td class="{lbl_cls}"><span class="{key_cls}">{_e(key)}{star}</span>{desc_html}</td>'
+        f'<td class="ctrl">{ctrl}</td>'
+        f'</tr>'
     )
 
 
@@ -331,37 +289,31 @@ def build_settings_html(width_px=460, em_width=9.0):
     title = f"&#9881; {_e(pkg_name)}" if is_prefs else f"&#9881; {_e(pkg_name)} &mdash; {_e(file_name)}"
 
     parts = [f'<html><style>{CSS}</style><body style="max-width:{width_px}px">']
-    parts.append(f'<h1>{title}</h1>')
+    parts.append(f'<h1>&#9881; {title}</h1>')
 
-    filter_display = f' &nbsp;<span class="filter-active">filter: {_e(flt)}</span>' if flt else ""
-    back = '<a href="action://prefs">&#9670; Prefs</a> &nbsp;|&nbsp; ' if not is_prefs else ''
+    filter_display = f'&nbsp; <span class="filter-active">filter: {_e(flt)}</span>' if flt else ""
+    back = f'<a class="btn" href="action://prefs">&#8592; ST Prefs</a> ' if not is_prefs else ''
     parts.append(
-        f'<div class="sub">'
-        f'{modified_count} modified &nbsp;|&nbsp; '
-        f'<a href="action://packages">&#128230; Packages</a> &nbsp;|&nbsp; '
+        f'<div class="toolbar">'
         f'{back}'
-        f'<a href="action://search">&#128269; search</a> &nbsp;|&nbsp; '
-        f'<a href="action://clear-filter">clear</a> &nbsp;|&nbsp; '
-        f'<a href="action://hub">&#9670; Hub</a>'
-        f'{filter_display}'
+        f'<a class="btn" href="action://packages">Packages</a> '
+        f'<a class="btn" href="action://search">Search</a> '
+        f'<a class="btn" href="action://clear-filter">Clear Filter</a> '
+        f'<a class="btn" href="action://open-raw">Open JSON</a> '
+        f'<a class="btn" href="action://hub">Hub</a>'
+        f'&nbsp;&nbsp;<span class="sub">{modified_count} modified{filter_display}</span>'
         f'</div>'
     )
 
-    # Category pills — only for main Preferences
+    # Category filter bar — only for main Preferences
     if is_prefs:
         cat_names = list(CATEGORIES.keys())
-        all_cls = "pill pill-active" if cat is None else "pill pill-inactive"
-        all_pill = f'<a href="action://cat/"><span class="{all_cls}">All</span></a>'
-        cat_pills = []
+        all_cls = "catbtn catbtn-on" if cat is None else "catbtn"
+        parts.append(f'<div class="catbar"><a class="{all_cls}" href="action://cat/">All</a> ')
         for cname in cat_names:
-            c_cls = "pill pill-active" if cat == cname else "pill pill-inactive"
+            c_cls = "catbtn catbtn-on" if cat == cname else "catbtn"
             safe = cname.replace(" ", "_").replace("&", "and")
-            cat_pills.append(f'<a href="action://cat/{safe}"><span class="{c_cls}">{_e(cname)}</span></a>')
-        all_items = [all_pill] + cat_pills
-        parts.append('<div style="margin-bottom:6px;">')
-        for i in range(0, len(all_items), 4):
-            row = " ".join(all_items[i:i + 4])
-            parts.append(f'<div style="margin-bottom:3px;">{row}</div>')
+            parts.append(f'<a class="{c_cls}" href="action://cat/{safe}">{_e(cname)}</a> ')
         parts.append('</div>')
 
     # Determine which keys to show
@@ -388,18 +340,13 @@ def build_settings_html(width_px=460, em_width=9.0):
         if not section_rows:
             continue
 
-        parts.append(f'<h2>{_e(section)}</h2>')
+        parts.append(f'<div class="section-hdr">{_e(section)}</div>')
+        parts.append('<table>')
         for key in section_rows:
             _render_row(key, defaults[key], user_prefs, parts, wrap_cols)
+        parts.append('</table>')
 
-    back_btn = '  <a class="btn btn-a" href="action://prefs">&#8592; ST Prefs</a>\n' if not is_prefs else ''
-    parts.append(f"""
-<div class="actions">
-{back_btn}  <a class="btn btn-b" href="action://packages">&#128230; Packages</a>
-  <a class="btn btn-b" href="action://open-raw">&#128196; Open Raw JSON</a>
-  <a class="btn btn-b" href="action://hub">&#9670; Hub</a>
-</div>
-</body></html>""")
+    parts.append('</body></html>')
     return "".join(parts)
 
 
@@ -502,6 +449,30 @@ def _navigate(href):
         user_prefs.set(key, typed_val)
         sublime.save_settings(settings_fname)
         _refresh()
+        return
+
+    if href.startswith("action://enum/"):
+        key = href[len("action://enum/"):]
+        if key not in ENUMS or not ENUMS[key]:
+            return
+        options = ENUMS[key]
+        current = user_prefs.get(key)
+        effective = current if current is not None else defaults.get(key, options[0])
+        try:
+            selected = options.index(str(effective))
+        except ValueError:
+            selected = 0
+
+        def on_done(idx):
+            if idx < 0:
+                return
+            settings_fname = _State.settings_resource.split("/")[-1]
+            up = sublime.load_settings(settings_fname)
+            up.set(key, options[idx])
+            sublime.save_settings(settings_fname)
+            _refresh()
+
+        w.show_quick_panel(options, on_done, selected_index=selected)
         return
 
     if href.startswith("action://input/"):
