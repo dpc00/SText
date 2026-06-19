@@ -36,12 +36,14 @@ STATE
 - State file: ~/.claude/ai_tab_manager_state.json
 """
 
+import calendar
 import datetime
 import json
 import math
 import os
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 import sublime  # type: ignore
@@ -559,8 +561,7 @@ def _extract_message_text(payload: dict) -> str:
 
 
 def _read_session_info(jsonl_path: Path) -> dict:
-    """Extract project, first prompt, timestamps, and exchange count."""
-    project = "(unknown)"
+    """Extract first prompt, timestamps, and exchange count from a Claude Code JSONL."""
     first_prompt = None
     first_ts = None
     last_ts = None
@@ -579,17 +580,13 @@ def _read_session_info(jsonl_path: Path) -> dict:
                         first_ts = ts
                     last_ts = ts
 
-                payload = obj.get("payload") or {}
-                if obj.get("type") == "session_meta":
-                    project = payload.get("cwd") or project
+                if obj.get("type") != "user":
+                    continue
+                msg = obj.get("message") or {}
+                if msg.get("role") != "user":
                     continue
 
-                if obj.get("type") != "response_item":
-                    continue
-                if payload.get("type") != "message" or payload.get("role") != "user":
-                    continue
-
-                text = _extract_message_text(payload).strip()
+                text = _extract_message_text(msg).strip()
                 if not text or text.startswith("<"):
                     continue
                 exchanges += 1
@@ -599,7 +596,6 @@ def _read_session_info(jsonl_path: Path) -> dict:
         pass
     return {
         "title": jsonl_path.stem,
-        "project": project,
         "first_prompt": first_prompt,
         "first_ts": first_ts,
         "last_ts": last_ts,
@@ -637,10 +633,10 @@ class AiListSessionsCommand(sublime_plugin.WindowCommand):
 
         lines = [f"Recent Ai sessions (last {count}):\n"]
         for mtime, project, jsonl in sessions:
-            info = _read_session_info(str(jsonl))
+            info = _read_session_info(jsonl)
 
             # Header: date + project + exchange count
-            dt = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+            dt = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
             lines.append(f"{dt}  [{project}]  {info['exchanges']} exchanges")
 
             # Session title (AI-generated)
@@ -657,8 +653,10 @@ class AiListSessionsCommand(sublime_plugin.WindowCommand):
             if info["first_ts"] and info["last_ts"]:
                 def fmt_ts(ts):
                     try:
-                        dt_utc = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                        return dt_utc.astimezone().strftime("%Y-%m-%d %H:%M")
+                        s = ts.replace("Z", "").split(".")[0]
+                        dt_utc = datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%S")
+                        epoch = calendar.timegm(dt_utc.timetuple())
+                        return time.strftime("%Y-%m-%d %H:%M", time.localtime(epoch))
                     except Exception:
                         return ts[:16]
                 start = fmt_ts(info["first_ts"])

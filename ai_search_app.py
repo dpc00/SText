@@ -6,8 +6,10 @@ Then open:  http://127.0.0.1:5758
 Or use the Sublime command: Ai: Search Conversations
 """
 
+import calendar
 import json
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -48,7 +50,10 @@ def fmt_ts(ts):
     if not ts:
         return ''
     try:
-        return datetime.fromisoformat(ts.replace('Z', '+00:00')).astimezone().strftime('%Y-%m-%d %H:%M')
+        s = ts.replace('Z', '').split('.')[0]
+        dt_utc = datetime.strptime(s, '%Y-%m-%dT%H:%M:%S')
+        epoch = calendar.timegm(dt_utc.timetuple())
+        return time.strftime('%Y-%m-%d %H:%M', time.localtime(epoch))
     except Exception:
         return ts[:16]
 
