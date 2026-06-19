@@ -607,6 +607,11 @@ def _read_session_info(jsonl_path: Path) -> dict:
     }
 
 
+def _decode_project(folder_name):
+    import re
+    return re.sub(r'^[A-Z]--Users-[^-]+-', '', folder_name)
+
+
 class AiListSessionsCommand(sublime_plugin.WindowCommand):
     """Show recent Ai sessions across all projects."""
 

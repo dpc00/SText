@@ -188,7 +188,7 @@ def do_search(keywords_str, project_filter, date_from_str, date_to_str, search_i
     return results
 
 
-def highlight(text: str, keywords: list[str]) -> str:
+def highlight(text, keywords):
     for kw in keywords:
         text = re.sub(f'({re.escape(kw)})', r'<mark class="bg-warning">\1</mark>', text, flags=re.IGNORECASE)
     return text
