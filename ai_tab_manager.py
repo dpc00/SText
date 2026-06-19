@@ -1,4 +1,4 @@
-﻿"""ai_tab_manager.py â€” robust logging for Ai sessions in Sublime Text.
+﻿"""ai_tab_manager.py ” robust logging for Ai sessions in Sublime Text.
 
 PURPOSE
 =======
@@ -140,9 +140,9 @@ def _clean_text(text: str) -> str:
     text = text.replace("\xa0", " ")
     # Remove zero-width invisible characters
     text = (
-        text.replace("â€‹", "").replace("â€Œ", "").replace("â€", "").replace("ï»¿", "")
+        text.replace("​", "").replace("‌", "").replace("‍", "").replace("﻿", "")
     )
-    # Normalize line endings: \r\n â†’ \n, then bare \r â†’ \n
+    # Normalize line endings: \r\n → \n, then bare \r → \n
     # Bare \r is used by terminals to overwrite the current line; treating as \n
     # splits each overwrite fragment so the status-bar filter can catch them.
     text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -243,7 +243,7 @@ def _detect_anomalies(
     state = _view_state[view_id]
     now = time.time()
 
-    # Detect if buffer shrunk (trim/reload) â€” reset last_line so we re-log current buffer
+    # Detect if buffer shrunk (trim/reload) ” reset last_line so we re-log current buffer
     if current_row_count < last_row_count:
         lost_lines = last_row_count - current_row_count
         if lost_lines > 5:
@@ -253,7 +253,7 @@ def _detect_anomalies(
             state["anomalies"] = state.get("anomalies", 0) + 1
             state["last_line"] = 0
 
-    # Detect long pauses â€” debounced to once per 5 minutes to avoid log flood
+    # Detect long pauses ” debounced to once per 5 minutes to avoid log flood
     if "last_output_time" in state:
         time_since_output = now - state["last_output_time"]
         last_pause_logged = state.get("last_pause_logged_time", 0)
@@ -611,56 +611,57 @@ class AiListSessionsCommand(sublime_plugin.WindowCommand):
     """Show recent Ai sessions across all projects."""
 
     def run(self, count=40):
-        sessions_dir = Path.home() / ".claude" / "sessions"
-        if not sessions_dir.exists():
-            sublime.error_message("No ~/.claude/sessions directory found")
+        projects_dir = Path.home() / ".claude" / "projects"
+        if not projects_dir.exists():
+            sublime.error_message("No ~/.claude/projects directory found")
             return
 
         sessions = []
-        for jsonl in sessions_dir.rglob("*.jsonl"):
-            mtime = jsonl.stat().st_mtime
-            sessions.append((mtime, jsonl))
+        for project_dir in projects_dir.iterdir():
+            if not project_dir.is_dir():
+                continue
+            project = _decode_project(project_dir.name)
+            for jsonl in project_dir.glob("*.jsonl"):
+                if jsonl.parent != project_dir:
+                    continue
+                mtime = jsonl.stat().st_mtime
+                sessions.append((mtime, project, jsonl))
 
         sessions.sort(key=lambda x: x[0], reverse=True)
         sessions = sessions[:count]
 
         lines = [f"Recent Ai sessions (last {count}):\n"]
-        for mtime, jsonl in sessions:
-            info = _read_session_info(jsonl)
+        for mtime, project, jsonl in sessions:
+            info = _read_session_info(str(jsonl))
 
             # Header: date + project + exchange count
             dt = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
-            lines.append(f"{dt}  [{info['project']}]  {info['exchanges']} exchanges")
+            lines.append(f"{dt}  [{project}]  {info[‘exchanges’]} exchanges")
 
             # Session title (AI-generated)
-            lines.append(f"  Title:  {info['title']}")
+            lines.append(f"  Title:  {info[‘title’]}")
 
             # First thing the user actually said
             if info["first_prompt"]:
                 prompt = info["first_prompt"]
                 if len(prompt) == 120:
-                    prompt += "â€¦"
+                    prompt += "…"
                 lines.append(f"  First:  {prompt}")
 
             # Time span
             if info["first_ts"] and info["last_ts"]:
-
                 def fmt_ts(ts):
-                    # Convert UTC ISO string to local time
                     try:
-                        dt_utc = datetime.datetime.fromisoformat(
-                            ts.replace("Z", "+00:00")
-                        )
+                        dt_utc = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
                         return dt_utc.astimezone().strftime("%Y-%m-%d %H:%M")
                     except Exception:
                         return ts[:16]
-
                 start = fmt_ts(info["first_ts"])
                 end = fmt_ts(info["last_ts"])
                 if start == end:
                     lines.append(f"  Time:   {start}")
                 else:
-                    lines.append(f"  Time:   {start} â†’ {end}")
+                    lines.append(f"  Time:   {start} → {end}")
 
             lines.append("")
 
