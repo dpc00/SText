@@ -283,6 +283,7 @@ TEMPLATE = r"""
         <div class="col-12 d-flex gap-2 align-items-center">
           <button type="submit" class="btn btn-primary">Search</button>
           <a href="/" class="btn btn-outline-secondary">Clear</a>
+          <a href="/quit" class="btn btn-outline-danger ms-auto" onclick="fetch('/quit');window.close();return false;">Quit</a>
           {% if searched %}
           <span class="text-muted ms-2">
             {{ total_matches }} match{{ 'es' if total_matches != 1 else '' }}
@@ -490,6 +491,13 @@ def session_view():
         back_url=back_url,
         highlight=highlight,
     )
+
+
+@app.route('/quit')
+def quit_server():
+    import threading
+    threading.Thread(target=lambda: __import__('os')._exit(0), daemon=True).start()
+    return 'bye'
 
 
 if Flask is not None:

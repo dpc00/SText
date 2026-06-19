@@ -6,5 +6,6 @@
     { "caption": "MCP: Browse Variables",        "command": "mcp_browse_variables" },
     { "caption": "PyBackup: Flask App",          "command": "pb_flask_launcher" },
     { "caption": "Ai: List Recent Sessions", "command": "ai_list_sessions" },
-    { "caption": "Ai: Search Conversations", "command": "ai_search_conversations" }
+    { "caption": "Ai: Search Conversations", "command": "ai_search_conversations" },
+    { "caption": "Ai: Quit Flask Apps",     "command": "ai_quit_flask_apps" }
 ]

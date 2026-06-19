@@ -688,6 +688,30 @@ class AiSearchConversationsCommand(sublime_plugin.WindowCommand):
         )
 
 
+_FLASK_APPS = [
+    ("ai_search_app",  5758),
+    ("pybackup",       5757),
+    ("blog7",          5000),
+    ("finance",        5050),
+]
+
+
+class AiQuitFlaskAppsCommand(sublime_plugin.WindowCommand):
+    """Quit all running Flask apps. Command palette: Ai: Quit Flask Apps"""
+
+    def run(self):
+        import urllib.request
+        killed = []
+        for name, port in _FLASK_APPS:
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/quit", timeout=1)
+                killed.append(name)
+            except Exception:
+                pass
+        msg = f"Quit: {', '.join(killed)}" if killed else "No Flask apps were running"
+        sublime.status_message(msg)
+
+
 def plugin_unloaded():
     """Clean up when plugin unloads."""
     v = _ai_view()
