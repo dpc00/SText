@@ -188,47 +188,104 @@ def _ai_view():
     return None
 
 
+def _screenshot_via_mcp(filepath: str) -> bool:
+    """Capture the ST window via screenshot-mcp (works even when window is obscured).
+
+    Spawns screenshot-mcp as a subprocess, exchanges MCP JSON-RPC over stdio,
+    and calls screenshot_window with window_title="Sublime Text".
+    """
+    import base64
+    import json
+
+    try:
+        bun_exe = str(Path.home() / ".bun" / "bin" / "bun.exe")
+        if not os.path.exists(bun_exe):
+            bun_exe = "bun"
+
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+
+        proc = subprocess.Popen(
+            [bun_exe, "x", "screenshot-mcp"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            startupinfo=startupinfo,
+        )
+
+        def send(obj):
+            proc.stdin.write((json.dumps(obj) + "\n").encode())
+            proc.stdin.flush()
+
+        def recv():
+            return json.loads(proc.stdout.readline())
+
+        send({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "ai_tab_manager", "version": "1.0"},
+            },
+        })
+        recv()
+        send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+        send({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "list_windows", "arguments": {}},
+        })
+        list_resp = recv()
+        window_id = None
+        list_content = list_resp.get("result", {}).get("content", [])
+        if list_content:
+            windows = json.loads(list_content[0].get("text", "[]"))
+            match = next(
+                (w for w in windows if w.get("app", "").lower() == "sublime_text"),
+                None,
+            )
+            if match:
+                window_id = match["id"]
+        if not window_id:
+            _diagnostic_log("SCREENSHOT_MCP_FAIL: no sublime_text window found in list_windows")
+            proc.terminate()
+            return False
+
+        send({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {
+                "name": "screenshot_window",
+                "arguments": {"window_id": window_id},
+            },
+        })
+        response = recv()
+        proc.terminate()
+
+        content = response.get("result", {}).get("content", [])
+        for item in content:
+            if item.get("type") == "image":
+                img_bytes = base64.b64decode(item["data"])
+                with open(filepath, "wb") as f:
+                    f.write(img_bytes)
+                return True
+        error_text = next((i.get("text", "") for i in content if i.get("type") == "text"), "")
+        _diagnostic_log(f"SCREENSHOT_MCP_FAIL: {error_text or 'no image in response'}")
+        return False
+    except Exception as e:
+        _diagnostic_log(f"SCREENSHOT_MCP_ERROR: {e}")
+        return False
+
+
 def _take_screenshot(view_id: str) -> None:
-    """Capture screenshot as backup evidence of what's visible on screen."""
+    """Capture ST window screenshot via screenshot-mcp."""
     try:
         os.makedirs(_SCREENSHOT_DIR, exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filepath = os.path.join(_SCREENSHOT_DIR, f"ai_{timestamp}.png")
-
-        # Use PIL to capture full screen (preferred)
-        try:
-            from PIL import ImageGrab
-
-            screenshot = ImageGrab.grab()
-            screenshot.save(filepath, "PNG")
-            _diagnostic_log(f"SCREENSHOT: Captured to {filepath}")
-        except ImportError:
-            # Fallback: use PowerShell screencap (hidden window)
-            ps_script = f"""
-$image = [Windows.Graphics.Capture.GraphicsCaptureSession]::IsSupported()
-Add-Type -AssemblyName System.Windows.Forms
-$screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-$bitmap = New-Object System.Drawing.Bitmap($screen.Width, $screen.Height)
-$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-$graphics.CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size)
-$bitmap.Save("{filepath}")
-$graphics.Dispose()
-$bitmap.Dispose()
-"""
-            # Hide the PowerShell window
-            import subprocess
-
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = subprocess.SW_HIDE
-
-            subprocess.run(
-                ["powershell", "-WindowStyle", "Hidden", "-Command", ps_script],
-                capture_output=True,
-                timeout=10,
-                startupinfo=startupinfo,
-            )
-            _diagnostic_log(f"SCREENSHOT: Captured to {filepath}")
+        if _screenshot_via_mcp(filepath):
+            _diagnostic_log(f"SCREENSHOT: Captured ST window to {filepath}")
+        else:
+            _diagnostic_log("SCREENSHOT: Failed to capture ST window via screenshot-mcp")
     except Exception as e:
         _diagnostic_log(f"SCREENSHOT_ERROR: {e}")
 
@@ -245,15 +302,19 @@ def _detect_anomalies(
     state = _view_state[view_id]
     now = time.time()
 
-    # Detect if buffer shrunk (trim/reload) ” reset last_line so we re-log current buffer
+    # Detect if buffer shrunk (trim/reload) — adjust last_line to match the new top position
+    # so we don't re-log already-captured content.
     if current_row_count < last_row_count:
         lost_lines = last_row_count - current_row_count
         if lost_lines > 5:
+            old_last_line = state.get(“last_line”, 0)
+            new_last_line = max(0, old_last_line - lost_lines)
             _diagnostic_log(
-                f"ANOMALY: {lost_lines} lines deleted from buffer (resetting last_line to re-log)"
+                f”TRIM: {lost_lines} lines removed from buffer top “
+                f”(last_line {old_last_line} → {new_last_line})”
             )
-            state["anomalies"] = state.get("anomalies", 0) + 1
-            state["last_line"] = 0
+            state[“anomalies”] = state.get(“anomalies”, 0) + 1
+            state[“last_line”] = new_last_line
 
     # Detect long pauses ” debounced to once per 5 minutes to avoid log flood
     if "last_output_time" in state:
@@ -429,34 +490,7 @@ class AiCaptureScrollPositionCommand(sublime_plugin.TextCommand):
                 _SCREENSHOT_DIR, f"ai_scroll_line{row+1:04d}_{timestamp}.png"
             )
 
-            try:
-                from PIL import ImageGrab
-
-                screenshot = ImageGrab.grab()
-                screenshot.save(filepath, "PNG")
-            except ImportError:
-                # Fallback to PowerShell
-                ps_script = f"""
-Add-Type -AssemblyName System.Windows.Forms
-$screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-$bitmap = New-Object System.Drawing.Bitmap($screen.Width, $screen.Height)
-$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-$graphics.CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size)
-$bitmap.Save("{filepath}")
-$graphics.Dispose()
-$bitmap.Dispose()
-"""
-                import subprocess
-
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = subprocess.SW_HIDE
-                subprocess.run(
-                    ["powershell", "-WindowStyle", "Hidden", "-Command", ps_script],
-                    capture_output=True,
-                    timeout=10,
-                    startupinfo=startupinfo,
-                )
+            _screenshot_via_mcp(filepath)
 
             msg = f"Screenshot captured at line {row+1}: {filepath}"
             print(msg)
@@ -689,10 +723,10 @@ class AiSearchConversationsCommand(sublime_plugin.WindowCommand):
 
 
 _FLASK_APPS = [
-    ("ai_search_app",  5758),
-    ("pybackup",       5757),
-    ("blog7",          5000),
-    ("finance",        5050),
+    ("ai_search_app",  5758, "GET",  "/quit"),
+    ("pybackup",       5757, "POST", "/api/shutdown"),
+    ("blog7",          5000, "GET",  "/quit"),
+    ("finance",        5050, "GET",  "/quit"),
 ]
 
 
@@ -701,13 +735,21 @@ class AiQuitFlaskAppsCommand(sublime_plugin.WindowCommand):
 
     def run(self):
         import urllib.request
+        import urllib.error
         killed = []
-        for name, port in _FLASK_APPS:
+        for name, port, method, path in _FLASK_APPS:
             try:
-                urllib.request.urlopen(f"http://127.0.0.1:{port}/quit", timeout=1)
+                url = f"http://127.0.0.1:{port}{path}"
+                data = b"{}" if method == "POST" else None
+                req = urllib.request.Request(url, data=data, method=method)
+                if data is not None:
+                    req.add_header("Content-Type", "application/json")
+                urllib.request.urlopen(req, timeout=2)
                 killed.append(name)
-            except Exception:
+            except urllib.error.URLError:
                 pass
+            except Exception:
+                killed.append(name)  # server died before responding — still counts
         msg = f"Quit: {', '.join(killed)}" if killed else "No Flask apps were running"
         sublime.status_message(msg)
 
