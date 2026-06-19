@@ -636,10 +636,10 @@ class AiListSessionsCommand(sublime_plugin.WindowCommand):
 
             # Header: date + project + exchange count
             dt = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
-            lines.append(f"{dt}  [{project}]  {info[‘exchanges’]} exchanges")
+            lines.append(f"{dt}  [{project}]  {info['exchanges']} exchanges")
 
             # Session title (AI-generated)
-            lines.append(f"  Title:  {info[‘title’]}")
+            lines.append(f"  Title:  {info['title']}")
 
             # First thing the user actually said
             if info["first_prompt"]:

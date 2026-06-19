@@ -11,9 +11,15 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, render_template_string, request
-
-app = Flask(__name__)
+try:
+    from flask import Flask, render_template_string, request
+    app = Flask(__name__)
+except ImportError:
+    Flask = render_template_string = request = None
+    class _Stub:
+        def route(self, *a, **k): return lambda f: f
+        jinja_env = type('', (), {'filters': {}})()
+    app = _Stub()
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
 PORT = 5758
@@ -38,7 +44,7 @@ def extract_text(content) -> str:
     return ''
 
 
-def fmt_ts(ts: str | None) -> str:
+def fmt_ts(ts):
     if not ts:
         return ''
     try:
@@ -481,9 +487,9 @@ def session_view():
     )
 
 
-# Register urlencode filter
-from urllib.parse import quote as _quote
-app.jinja_env.filters['urlencode'] = lambda s: _quote(str(s), safe='')
+if Flask is not None:
+    from urllib.parse import quote as _quote
+    app.jinja_env.filters['urlencode'] = lambda s: _quote(str(s), safe='')
 
 
 if __name__ == '__main__':
