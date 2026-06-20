@@ -319,34 +319,23 @@ def _launch(settings_resource=PREFS_RESOURCE):
     )
     python = _find_python()
 
-    startupinfo = None
-    if sys.platform == "win32":
-        import subprocess as _sp
-        startupinfo = _sp.STARTUPINFO()
-        startupinfo.dwFlags |= _sp.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = _sp.SW_HIDE
-
     _browser_proc = subprocess.Popen(
         [python, server_script,
          "--data-file", _data_file,
          "--callback", f"http://127.0.0.1:{callback_port}",
          "--port", str(server_port),
          "--gen", str(_gen)],
-        startupinfo=startupinfo,
+        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
     )
 
     url = f"http://127.0.0.1:{server_port}"
     _server_url = url
 
-    # Only open a new browser tab on the first launch (_gen == 1).
-    # Subsequent launches increment _gen; the existing tab's JS poller
-    # detects the change and reloads automatically.
-    if _gen == 1:
-        def open_browser():
-            time.sleep(1.5)
-            import webbrowser
-            webbrowser.open(url)
-        threading.Thread(target=open_browser, daemon=True).start()
+    def open_browser():
+        time.sleep(1.5)
+        import webbrowser
+        webbrowser.open(url)
+    threading.Thread(target=open_browser, daemon=True).start()
 
     sublime.status_message(f"ST Settings: {url}")
 
@@ -354,7 +343,8 @@ def _launch(settings_resource=PREFS_RESOURCE):
 # ── commands ──────────────────────────────────────────────────────────────────
 
 class AiSettingsOpenCommand(sublime_plugin.WindowCommand):
-    """Open the ST Settings browser in default browser.  Ctrl+Alt+,"""
+    """Open the ST Settings browser in default browser.  Ctrl+Alt+."""
 
     def run(self):
-        _launch()
+        import threading
+        threading.Thread(target=_launch, daemon=True).start()

@@ -14,31 +14,10 @@ import socket
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
-
-def _get_system_fonts():
-    try:
-        import winreg
-        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                             r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts")
-        fonts = set()
-        i = 0
-        while True:
-            try:
-                name, _, _ = winreg.EnumValue(key, i)
-                # Strip trailing " (TrueType)" / " (OpenType)" etc.
-                fname = name.split(" (")[0].strip()
-                if fname and not fname.startswith('@'):
-                    fonts.add(fname)
-                i += 1
-            except OSError:
-                break
-        winreg.CloseKey(key)
-        return sorted(fonts)
-    except Exception:
-        return []
 
 
 # ── HTML / CSS / JS ──────────────────────────────────────────────────────────
@@ -254,13 +233,19 @@ function buildRow(key) {
       onkeydown="if(event.key==='Enter')this.blur()">`;
   } else if (key === 'font_face') {
     const currentFont = String(val) || ((D.effective||{}).font_face) || '';
-    const fontList = (D.fonts || []).slice();
-    if (currentFont && !fontList.includes(currentFont)) fontList.unshift(currentFont);
-    const fontOpts = fontList.map(f =>
-      `<option value="${esc(f)}"${f===currentFont?' selected':''}>${esc(f)}</option>`
-    ).join('');
-    ctrlHtml = `<select id="ctrl-font_face" style="min-width:200px;max-width:300px"
-      onchange="applyChange('${key}',this.value)">${fontOpts}</select>`;
+    const monoFonts = (D.mono_fonts || []).slice();
+    if (currentFont && !monoFonts.includes(currentFont)) monoFonts.unshift(currentFont);
+    if (monoFonts.length > 0) {
+      const opts = monoFonts.map(f =>
+        `<option value="${esc(f)}"${f===currentFont?' selected':''}>${esc(f)}</option>`
+      ).join('');
+      ctrlHtml = `<select id="ctrl-font_face" style="min-width:200px;max-width:300px"
+        onchange="applyChange('${key}',this.value)">${opts}</select>`;
+    } else {
+      ctrlHtml = `<input type="text" value="${esc(currentFont)}" style="min-width:200px;max-width:300px"
+        onchange="applyChange('${key}',this.value.trim())"
+        onkeydown="if(event.key==='Enter')this.blur()">`;
+    }
   } else {
     const display = Array.isArray(val) ? JSON.stringify(val) : String(val);
     ctrlHtml = `<input type="text" value="${esc(display)}"
@@ -505,8 +490,15 @@ def main():
         _data = json.load(f)
     _data["gen"] = args.gen
     _callback_url = args.callback.rstrip("/")
-    _data['fonts'] = _get_system_fonts()
 
+    font_db = Path.home() / ".claude" / "font_db.json"
+    if font_db.exists():
+        try:
+            db = json.loads(font_db.read_text(encoding="utf-8"))
+            _data["fonts"] = db.get("all", [])
+            _data["mono_fonts"] = db.get("mono", [])
+        except Exception:
+            pass
     server = HTTPServer(("127.0.0.1", args.port), _Handler)
     server.serve_forever()
 

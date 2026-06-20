@@ -172,6 +172,47 @@ def _append_log(text: str, session_tag: str = "") -> None:
         _diagnostic_log(f"WRITE_ERROR: Failed to write to log: {e}")
 
 
+def _get_child_process_names() -> dict:
+    """Return a dict mapping parent_pid -> list of child exe names (lowercase).
+    Uses Windows CreateToolhelp32Snapshot. Returns {} on non-Windows or error.
+    """
+    child_map: dict = {}
+    try:
+        import ctypes
+        import ctypes.wintypes
+
+        TH32CS_SNAPPROCESS = 0x00000002
+
+        class PROCESSENTRY32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", ctypes.wintypes.DWORD),
+                ("cntUsage", ctypes.wintypes.DWORD),
+                ("th32ProcessID", ctypes.wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+                ("th32ModuleID", ctypes.wintypes.DWORD),
+                ("cntThreads", ctypes.wintypes.DWORD),
+                ("th32ParentProcessID", ctypes.wintypes.DWORD),
+                ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", ctypes.wintypes.DWORD),
+                ("szExeFile", ctypes.c_char * 260),
+            ]
+
+        snap = ctypes.windll.kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        entry = PROCESSENTRY32()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32)
+        if ctypes.windll.kernel32.Process32First(snap, ctypes.byref(entry)):
+            while True:
+                ppid = entry.th32ParentProcessID
+                name = entry.szExeFile.decode("utf-8", errors="replace").lower()
+                child_map.setdefault(ppid, []).append(name)
+                if not ctypes.windll.kernel32.Process32Next(snap, ctypes.byref(entry)):
+                    break
+        ctypes.windll.kernel32.CloseHandle(snap)
+    except Exception:
+        pass
+    return child_map
+
+
 def _claude_views():
     """Return all Terminus views with a live claude process, with session info."""
     results = []
@@ -179,6 +220,9 @@ def _claude_views():
         from Terminus.terminus.terminal import Terminal  # type: ignore
     except ImportError:
         return results
+
+    child_map = _get_child_process_names()
+
     for w in sublime.windows():
         for v in w.views():
             t = Terminal.from_id(v.id())
@@ -189,8 +233,14 @@ def _claude_views():
                 alive = t.process.isalive()
             except Exception:
                 continue
-            if "claude" in argv0.lower() and alive:
-                pid = t.process.pid
+            if not alive:
+                continue
+            pid = t.process.pid
+            # Direct claude launch OR shell (cmd.exe etc.) with claude child process
+            is_claude = "claude" in argv0.lower()
+            if not is_claude:
+                is_claude = any("claude" in c for c in child_map.get(pid, []))
+            if is_claude:
                 name = v.name() or f"view{v.id()}"
                 results.append((v, pid, name))
     return results
@@ -466,6 +516,30 @@ def _detect_anomalies(
             state["last_pause_logged_time"] = now
 
 
+def _flush_view(view: "sublime.View", session_tag: str = "") -> None:
+    """Log any unlogged content from view since last tick. Updates state in place."""
+    vid = str(view.id())
+    try:
+        row_count = view.rowcol(view.size())[0] + 1
+        last_line = _view_state.get(vid, {}).get("last_line", 0)
+        if last_line >= row_count:
+            return
+        start_point = view.text_point(last_line, 0)
+        end_point = view.size()
+        if start_point >= end_point:
+            return
+        new_text = view.substr(sublime.Region(start_point, end_point))
+        if not new_text.strip():
+            return
+        _append_log(new_text, session_tag)
+        state = _view_state.setdefault(vid, {})
+        state["last_line"] = row_count
+        state["last_output_time"] = time.time()
+        _save_state()
+    except Exception as e:
+        _diagnostic_log(f"FLUSH_ERROR: {e}")
+
+
 def _tick():
     """Main polling loop: check for new content every _CHECK_MS milliseconds."""
     global _last_cleanup_time
@@ -506,18 +580,7 @@ def _tick():
         _detect_anomalies(vid, row_count, last_row_count)
         state["last_row_count"] = row_count
 
-        if row_count > last_line:
-            try:
-                start_point = v.text_point(last_line, 0) if last_line < row_count else v.size()
-                end_point = v.size()
-                if start_point < end_point:
-                    new_text = v.substr(sublime.Region(start_point, end_point))
-                    _append_log(new_text, session_tag)
-                    state["last_line"] = row_count
-                    state["last_output_time"] = __import__("time").time()
-                    _save_state()
-            except Exception as e:
-                _diagnostic_log(f"LOG_ERROR: Failed to log lines: {e}")
+        _flush_view(v, session_tag)
 
     # Periodic screenshot — unconditional, not tied to Ai view
     import time
@@ -673,26 +736,17 @@ class AiEventListener(sublime_plugin.EventListener):
     def _flush_ai_view(self, view: sublime.View) -> None:
         if not _is_ai_view(view):
             return
-        try:
-            vid = str(view.id())
-            row_count = view.rowcol(view.size())[0] + 1
-            last_line = _view_state.get(vid, {}).get("last_line", 0)
-            if last_line >= row_count:
-                return  # nothing new since last tick
-            start_point = view.text_point(last_line, 0)
-            end_point = view.size()
-            if start_point >= end_point:
-                return
-            new_text = view.substr(sublime.Region(start_point, end_point))
-            if not new_text.strip():
-                return
-            _append_log(new_text)
-            if vid in _view_state:
-                _view_state[vid]["last_line"] = row_count
-            _save_state()
-            _diagnostic_log(f"CLOSE_FLUSH: saved {len(new_text)} chars from Ai view")
-        except Exception as e:
-            _diagnostic_log(f"CLOSE_FLUSH_ERROR: {e}")
+        _flush_view(view)
+
+    def on_load(self, view: sublime.View) -> None:
+        if view.settings().get('terminus_view'):
+            view.settings().set('gutter', True)
+            view.settings().set('line_numbers', True)
+
+    def on_activated(self, view: sublime.View) -> None:
+        if view.settings().get('terminus_view') and not view.settings().get('gutter'):
+            view.settings().set('gutter', True)
+            view.settings().set('line_numbers', True)
 
     def on_pre_close(self, view: sublime.View) -> None:
         self._flush_ai_view(view)
@@ -896,17 +950,6 @@ def plugin_unloaded():
     """Clean up when plugin unloads."""
     v = _ai_view()
     if v:
-        try:
-            vid = str(v.id())
-            row_count = v.rowcol(v.size())[0] + 1
-            last_line = _view_state.get(vid, {}).get("last_line", 0)
-            if last_line < row_count:
-                start_point = v.text_point(last_line, 0)
-                new_text = v.substr(sublime.Region(start_point, v.size()))
-                if new_text.strip():
-                    _append_log(new_text)
-                    _diagnostic_log(f"UNLOAD_FLUSH: saved {len(new_text)} chars")
-        except Exception:
-            pass
+        _flush_view(v)
     _save_state()
     _diagnostic_log("plugin_unloaded")

@@ -1,4 +1,4 @@
-﻿"""dedup_logs.py â€” remove duplicate sections from Ai conversation logs.
+﻿"""dedup_logs.py â€" remove duplicate sections from Ai conversation logs.
 
 When the ai_tab_manager plugin reloads (e.g. after a file save), it
 sometimes re-logs a block of buffer content that was already written. This
@@ -14,9 +14,9 @@ Algorithm:
   5. Write the cleaned file in-place (original backed up as .bak).
 
 Tuning:
-  SEED_WINDOW  â€” lines that must match to trigger candidate check (default 8).
+  SEED_WINDOW  â€" lines that must match to trigger candidate check (default 8).
                  Lower = catches shorter dups but more false positives.
-  MIN_BLOCK    â€” minimum block length to actually remove (default 20).
+  MIN_BLOCK    â€" minimum block length to actually remove (default 20).
                  Prevents removing coincidentally repeated short phrases.
 """
 
@@ -108,7 +108,7 @@ def deduplicate(lines: List[str]) -> Tuple[List[str], List[Tuple[int, int]]]:
 
 import re as _re
 
-_TRAIL_JUNK = _re.compile("[\s─-╿▀-▟]+$")
+_TRAIL_JUNK = _re.compile(r"[\s─-╿▀-▟]+$")
 # Wide status-bar lines: non-space, big gap (20+ spaces), non-space
 _STATUS_BAR_GAP = _re.compile(r"\S\s{20,}\S")
 # Narrow status-bar content patterns (may be merged with no big gap)
@@ -141,20 +141,31 @@ def process_file(path: Path, dry_run: bool = False) -> None:
     lines = [_clean_line(l) for l in raw.splitlines(keepends=True)]
     original_count = len(lines)
 
-    cleaned, ranges = deduplicate(lines)
-    removed = original_count - len(cleaned)
+    all_ranges: list[tuple[int, int]] = []
+    total_removed = 0
+    current = lines
+    passes = 0
+    for _ in range(200):  # safety cap; each pass removes >=1 block
+        cleaned, ranges = deduplicate(current)
+        if not ranges:
+            break
+        total_removed += len(current) - len(cleaned)
+        all_ranges.extend(ranges)
+        current = cleaned
+        passes += 1
 
-    if not ranges:
+    if not all_ranges:
         print(f"  {path.name}: no duplicates found ({original_count} lines)")
         return
 
+    pass_word = "pass" if passes == 1 else "passes"
     print(
-        f"  {path.name}: {original_count} lines -> {len(cleaned)} lines "
-        f"(removed {removed} lines in {len(ranges)} block(s))"
+        f"  {path.name}: {original_count} lines -> {len(current)} lines "
+        f"(removed {total_removed} lines in {len(all_ranges)} block(s), {passes} {pass_word})"
     )
-    for start, end in ranges:
-        preview = lines[start].rstrip()[:60]
-        print(f"    lines {start + 1}â€“{end + 1}: '{preview}â€¦'")
+    for start, end in all_ranges[:10]:
+        preview = lines[start].rstrip()[:60] if start < len(lines) else "..."
+        print(f"    lines {start + 1}-{end + 1}: '{preview}...'")
 
     if dry_run:
         return
@@ -162,14 +173,14 @@ def process_file(path: Path, dry_run: bool = False) -> None:
     backup = path.with_suffix(".log.bak")
     backup.unlink(missing_ok=True)
     path.rename(backup)
-    path.write_bytes("".join(cleaned).encode("utf-8"))
+    path.write_bytes("".join(current).encode("utf-8"))
     print(f"    backed up original to {backup.name}")
 
 
 def main() -> None:
     dry_run = "--dry-run" in sys.argv
     if dry_run:
-        print("DRY RUN â€” no files will be changed\n")
+        print("DRY RUN â€ no files will be changed")
 
     log_files = sorted(LOG_DIR.glob("*.log"))
     if not log_files:
