@@ -24,6 +24,7 @@ except ImportError:
     app = _Stub()
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
+PROJECTS_ROOT = Path.home() / "projects"
 PORT = 5758
 
 
@@ -193,6 +194,80 @@ def do_search(keywords_str, project_filter, date_from_str, date_to_str, search_i
     return results
 
 
+def get_git_repos():
+    if not PROJECTS_ROOT.exists():
+        return []
+    return sorted(d for d in PROJECTS_ROOT.iterdir()
+                  if d.is_dir() and (d / ".git").exists())
+
+
+def _trim_snippet(diff_lines, keywords, max_lines=20):
+    result = []
+    seen = set()
+    for i, line in enumerate(diff_lines):
+        if any(kw.lower() in line.lower() for kw in keywords):
+            for j in range(max(0, i - 1), min(len(diff_lines), i + 2)):
+                if j not in seen:
+                    seen.add(j)
+                    result.append(diff_lines[j])
+        elif line.startswith('@@') or line.startswith('diff --git'):
+            if i not in seen:
+                seen.add(i)
+                result.append(line)
+        if len(result) >= max_lines:
+            break
+    return '\n'.join(result)
+
+
+def do_git_search(keywords, date_from_str=None, date_to_str=None):
+    import subprocess
+    if not keywords:
+        return []
+    repos = get_git_repos()
+    first_kw = keywords[0]
+    all_commits = []
+
+    for repo in repos:
+        try:
+            cmd = ['git', 'log', '--all', '-S', first_kw,
+                   '--format=COMMIT|||%H|||%cd|||%s', '--date=short',
+                   '-p', '--unified=1']
+            if date_from_str:
+                cmd.append(f'--after={date_from_str}')
+            if date_to_str:
+                cmd.append(f'--before={date_to_str}')
+            r = subprocess.run(cmd, cwd=str(repo), capture_output=True,
+                               text=True, timeout=20, errors='replace')
+            if not r.stdout:
+                continue
+            current = None
+            diff_lines = []
+            for line in r.stdout.splitlines():
+                if line.startswith('COMMIT|||'):
+                    if current is not None:
+                        current['snippet'] = _trim_snippet(diff_lines, keywords)
+                        all_commits.append(current)
+                    parts = line.split('|||', 3)
+                    current = {
+                        'repo': repo.name,
+                        'sha': parts[1][:8] if len(parts) > 1 else '',
+                        'date': parts[2] if len(parts) > 2 else '',
+                        'subject': parts[3] if len(parts) > 3 else '',
+                        'snippet': '',
+                    }
+                    diff_lines = []
+                elif current is not None:
+                    diff_lines.append(line)
+            if current is not None:
+                current['snippet'] = _trim_snippet(diff_lines, keywords)
+                all_commits.append(current)
+        except Exception:
+            continue
+
+    all_commits.sort(key=lambda c: c['date'], reverse=True)
+    return all_commits[:60]
+
+
 def highlight(text, keywords):
     for kw in keywords:
         text = re.sub(f'({re.escape(kw)})', r'<mark class="bg-warning">\1</mark>', text, flags=re.IGNORECASE)
@@ -280,14 +355,22 @@ TEMPLATE = r"""
           </select>
         </div>
 
+        <div class="col-md-3 d-flex align-items-end">
+          <div class="form-check mb-2">
+            <input class="form-check-input" type="checkbox" name="git" id="git" value="1" {% if include_git %}checked{% endif %}>
+            <label class="form-check-label fw-semibold" for="git">Also search git history</label>
+          </div>
+        </div>
+
         <div class="col-12 d-flex gap-2 align-items-center">
           <button type="submit" class="btn btn-primary">Search</button>
           <a href="/" class="btn btn-outline-secondary">Clear</a>
-          <a href="/quit" class="btn btn-outline-danger ms-auto" onclick="fetch('/quit');window.close();return false;">Quit</a>
+          <button type="button" class="btn btn-danger ms-auto" onclick="doClose()">&#10005;&nbsp; Close</button>
           {% if searched %}
           <span class="text-muted ms-2">
             {{ total_matches }} match{{ 'es' if total_matches != 1 else '' }}
             in {{ total_sessions }} session{{ 's' if total_sessions != 1 else '' }}
+            {% if git_commits %}&mdash; {{ git_commits|length }} git commit{{ 's' if git_commits|length != 1 else '' }}{% endif %}
             &mdash; {{ elapsed_ms }}ms
           </span>
           {% endif %}
@@ -299,6 +382,31 @@ TEMPLATE = r"""
 
   {% if searched and not results %}
   <div class="alert alert-secondary">No results found.</div>
+  {% endif %}
+
+  {% if git_commits %}
+  <h5 class="mt-4 mb-3" style="color:#495057;">&#9906; Git History</h5>
+  <style>
+    .git-card { background:white; border-radius:8px; margin-bottom:.8rem; box-shadow:0 1px 4px rgba(0,0,0,.08); overflow:hidden; }
+    .git-header { background:#2d3b2d; color:white; padding:.5rem 1rem; font-size:.85rem; display:flex; justify-content:space-between; align-items:center; gap:.5rem; flex-wrap:wrap; }
+    .git-header .repo { color:#8bc48b; font-size:.8rem; }
+    .git-snippet { font-family:"Cascadia Code","Consolas",monospace; font-size:.78rem; padding:.6rem 1rem; white-space:pre-wrap; word-break:break-all; background:#f8f9fa; border-left:3px solid #5a8a5a; color:#333; }
+    .git-snippet .add { color:#1a7f1a; }
+    .git-snippet .del { color:#c0392b; }
+    .git-snippet .hunk { color:#888; }
+  </style>
+  {% for c in git_commits %}
+  <div class="git-card">
+    <div class="git-header">
+      <span><code style="color:#8bc48b;">{{ c.sha }}</code>&nbsp; {{ c.subject }}</span>
+      <span class="repo">{{ c.repo }} &mdash; {{ c.date }}</span>
+    </div>
+    {% if c.snippet %}
+    <div class="git-snippet">{% for line in c.snippet.splitlines() %}<span class="{% if line.startswith('+') %}add{% elif line.startswith('-') %}del{% elif line.startswith('@@') %}hunk{% endif %}">{{ highlight(line, keywords) | safe }}</span>
+{% endfor %}</div>
+    {% endif %}
+  </div>
+  {% endfor %}
   {% endif %}
 
   {% for r in results %}
@@ -345,6 +453,10 @@ function expand(btn) {
   box.classList.remove('collapsed-text');
   btn.remove();
 }
+async function doClose() {
+  await fetch('/close', {method: 'POST'});
+  window.close();
+}
 </script>
 </body>
 </html>
@@ -366,8 +478,10 @@ def index():
     project_filter= request.args.get('project', '').strip()
     search_in     = request.args.get('in', 'both')
 
+    include_git   = bool(request.args.get('git', ''))
     searched = bool(q or title_filter or date_from or date_to or project_filter)
     results = []
+    git_commits = []
     total_matches = total_sessions = elapsed_ms = 0
     keywords = [k.strip().lower() for k in q.split() if k.strip()] if q else []
 
@@ -375,6 +489,8 @@ def index():
         import time
         t0 = time.time()
         results = do_search(q, project_filter, date_from, date_to, search_in, title_filter)
+        if include_git and keywords:
+            git_commits = do_git_search(keywords, date_from, date_to)
         elapsed_ms = round((time.time() - t0) * 1000)
         total_sessions = len(results)
         total_matches = sum(len(r['matching_turns']) for r in results)
@@ -388,8 +504,10 @@ def index():
         date_to=date_to,
         project_filter=project_filter,
         search_in=search_in,
+        include_git=include_git,
         searched=searched,
         results=results,
+        git_commits=git_commits,
         total_matches=total_matches,
         total_sessions=total_sessions,
         elapsed_ms=elapsed_ms,
@@ -493,11 +611,11 @@ def session_view():
     )
 
 
-@app.route('/quit')
-def quit_server():
-    import threading
-    threading.Thread(target=lambda: __import__('os')._exit(0), daemon=True).start()
-    return 'bye'
+@app.route('/close', methods=['POST'])
+def close_server():
+    import threading, os
+    threading.Timer(0.1, lambda: os._exit(0)).start()
+    return '', 204
 
 
 if Flask is not None:

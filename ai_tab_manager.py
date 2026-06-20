@@ -196,6 +196,24 @@ def _claude_views():
     return results
 
 
+def _is_ai_view(v):
+    """Return True if v is a tracked claude Terminus view."""
+    if str(v.id()) in _view_state:
+        return True
+    try:
+        from Terminus.terminus.terminal import Terminal
+        t = Terminal.from_id(v.id())
+        return bool(t and t.process and "claude" in (t.process.argv[0] if t.process.argv else "").lower())
+    except Exception:
+        return False
+
+
+def _ai_view():
+    """Return the primary claude Terminus view, or None."""
+    views = _claude_views()
+    return views[0][0] if views else None
+
+
 def _screenshot_via_mcp(filepath: str) -> bool:
     """Capture the ST window via screenshot-mcp (works even when window is obscured).
 
@@ -301,8 +319,86 @@ def _screenshot_hash(filepath: str) -> str:
         return hashlib.md5(f.read()).hexdigest()
 
 
+def _perceptual_hash(filepath: str, hash_size: int = 8) -> int:
+    """
+    Compute dHash via Windows GDI+ (no PIL needed).
+    Resizes image to (hash_size+1) x hash_size, converts to grayscale, compares
+    adjacent pixels left-to-right per row to produce a 64-bit integer hash.
+    Returns 0 on any failure (caller falls back to MD5).
+    """
+    import ctypes
+
+    class _StartupInput(ctypes.Structure):
+        _fields_ = [("version", ctypes.c_uint32), ("callback", ctypes.c_void_p),
+                    ("suppress_bg", ctypes.c_bool), ("suppress_ec", ctypes.c_bool)]
+
+    class _BitmapData(ctypes.Structure):
+        _fields_ = [("Width", ctypes.c_uint), ("Height", ctypes.c_uint),
+                    ("Stride", ctypes.c_int), ("PixelFormat", ctypes.c_int),
+                    ("Scan0", ctypes.c_void_p), ("Reserved", ctypes.c_void_p)]
+
+    try:
+        gdi = ctypes.WinDLL("gdiplus", use_last_error=True)
+        token = ctypes.c_ulong(0)
+        si = _StartupInput(1, None, False, False)
+        if gdi.GdiplusStartup(ctypes.byref(token), ctypes.byref(si), None) != 0:
+            return 0
+
+        img = ctypes.c_void_p(0)
+        try:
+            path_w = ctypes.create_unicode_buffer(str(filepath))
+            if gdi.GdipLoadImageFromFile(path_w, ctypes.byref(img)) != 0:
+                return 0
+
+            tw, th = hash_size + 1, hash_size
+            thumb = ctypes.c_void_p(0)
+            if gdi.GdipGetImageThumbnailImage(img, tw, th, ctypes.byref(thumb), None, None) != 0:
+                return 0
+
+            bd = _BitmapData()
+            rect = (ctypes.c_int * 4)(0, 0, tw, th)
+            PIXEL_FORMAT_32BPP_ARGB = 0x0026200A
+            if gdi.GdipBitmapLockBits(thumb, rect, 1, PIXEL_FORMAT_32BPP_ARGB, ctypes.byref(bd)) != 0:
+                gdi.GdipDisposeImage(thumb)
+                return 0
+
+            try:
+                buf = (ctypes.c_uint8 * (tw * th * 4)).from_address(bd.Scan0)
+                gray = [
+                    int(0.299 * buf[i * 4 + 2] + 0.587 * buf[i * 4 + 1] + 0.114 * buf[i * 4])
+                    for i in range(tw * th)
+                ]
+            finally:
+                gdi.GdipBitmapUnlockBits(thumb, ctypes.byref(bd))
+                gdi.GdipDisposeImage(thumb)
+
+            h = 0
+            for row in range(th):
+                for col in range(hash_size):
+                    if gray[row * tw + col] > gray[row * tw + col + 1]:
+                        h |= 1 << (row * hash_size + col)
+            return h
+        finally:
+            if img:
+                gdi.GdipDisposeImage(img)
+            gdi.GdiplusShutdown(token)
+    except Exception:
+        return 0
+
+
+def _images_similar(fp1: str, fp2: str, threshold: int = 8) -> bool:
+    """True if two screenshots are perceptually similar (Hamming distance <= threshold)."""
+    h1 = _perceptual_hash(fp1)
+    h2 = _perceptual_hash(fp2)
+    if h1 and h2:
+        return bin(h1 ^ h2).count("1") <= threshold
+    return _screenshot_hash(fp1) == _screenshot_hash(fp2)
+
+
 def _take_screenshot(view_id: str) -> None:
-    """Capture ST window screenshot via screenshot-mcp, skipping duplicates."""
+    """Capture ST window screenshot via screenshot-mcp, skipping near-duplicates."""
+    import threading
+
     try:
         os.makedirs(_SCREENSHOT_DIR, exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -310,17 +406,24 @@ def _take_screenshot(view_id: str) -> None:
         if not _screenshot_via_mcp(filepath):
             _diagnostic_log("SCREENSHOT: Failed to capture ST window via screenshot-mcp")
             return
-        # Dedup: delete if identical to the most recent existing screenshot
-        existing = sorted(
-            f for f in os.listdir(_SCREENSHOT_DIR)
-            if f.endswith(".png") and f != os.path.basename(filepath)
-        )
-        if existing:
-            prev = os.path.join(_SCREENSHOT_DIR, existing[-1])
-            if _screenshot_hash(filepath) == _screenshot_hash(prev):
-                os.remove(filepath)
-                return
-        _diagnostic_log(f"SCREENSHOT: Captured ST window to {filepath}")
+
+        def _dedup(fp):
+            try:
+                existing = sorted(
+                    f for f in os.listdir(_SCREENSHOT_DIR)
+                    if f.endswith(".png") and f != os.path.basename(fp)
+                )
+                if existing:
+                    prev = os.path.join(_SCREENSHOT_DIR, existing[-1])
+                    if _images_similar(fp, prev):
+                        os.remove(fp)
+                        return
+                _diagnostic_log(f"SCREENSHOT: Captured ST window to {fp}")
+            except Exception as e:
+                _diagnostic_log(f"SCREENSHOT_DEDUP_ERROR: {e}")
+
+        threading.Thread(target=_dedup, args=(filepath,), daemon=True).start()
+
     except Exception as e:
         _diagnostic_log(f"SCREENSHOT_ERROR: {e}")
 
@@ -739,13 +842,22 @@ class AiSearchConversationsCommand(sublime_plugin.WindowCommand):
     """Launch the Ai conversation search Flask app in a browser."""
 
     def run(self):
-        script = str(Path(__file__).parent / "ai_search_app.py")
-        import subprocess
+        import socket, subprocess, webbrowser
+        url = "http://127.0.0.1:5758"
 
-        subprocess.Popen(
-            ["python", script],
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
+        def _port_free(p):
+            with socket.socket() as s:
+                try: s.connect(("127.0.0.1", p)); return False
+                except OSError: return True
+
+        if _port_free(5758):
+            script = str(Path(__file__).parent / "ai_search_app.py")
+            subprocess.Popen(
+                ["python", script],
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        else:
+            webbrowser.open(url)
 
 
 _FLASK_APPS = [
