@@ -5,5 +5,12 @@
         "args": {
             "paths": []
         }
+    },
+    {
+        "caption": "Launch Claude Code here...",
+        "command": "claude_code_here",
+        "args": {
+            "paths": []
+        }
     }
 ]

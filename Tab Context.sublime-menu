@@ -9,5 +9,9 @@
     {
         "caption": "Open Ai in Terminus here...",
         "command": "open_ai_terminus_in_editor"
+    },
+    {
+        "caption": "Launch Claude Code here...",
+        "command": "claude_code_here"
     }
 ]
