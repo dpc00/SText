@@ -235,7 +235,7 @@ def _navigate(href):
     elif href == "action://open-inbox":
         w.open_file(str(INBOX_PATH))
     elif href == "action://settings":
-        w.run_command("ai_settings_open")
+        w.run_command("st_settings_open")
     elif href == "action://open-hub-py":
         import User.ai_hub as _self
         w.open_file(_self.__file__)

@@ -4,6 +4,5 @@
 	{ "keys": ["ctrl+alt+i"], "command": "capture_idea" },
 	{ "keys": ["ctrl+alt+o"], "command": "open_idea_inbox" },
 	{ "keys": ["ctrl+alt+h"], "command": "ai_hub_open" },
-	{ "keys": ["ctrl+alt+."], "command": "ai_settings_open" },
 	{ "keys": ["ctrl+alt+l"], "command": "ccstatusline_editor_open" }
 ]

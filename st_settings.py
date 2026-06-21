@@ -1,33 +1,307 @@
-"""ai_settings_server.py — Award-winning ST Settings browser.
+"""st_settings.py — ST Settings browser, fully self-contained.
 
-Launched as a subprocess by ai_settings.py. Uses only Python stdlib.
-Communicates changes back to ST via a callback HTTP server in the plugin.
-
-Usage:
-    python ai_settings_server.py --data FILE --callback URL --port PORT
+Runs an HTTP server in-process (ST's own Python, no subprocess).
+Opens the settings UI in the default browser.
 """
 
-import argparse
 import json
 import os
+import re
 import socket
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
-from urllib.parse import parse_qs, urlparse
-from urllib.request import Request, urlopen
+
+import sublime
+import sublime_plugin
+
+# ── known enum options ─────────────────────────────────────────────────────────
+
+ENUMS = {
+    "caret_style":                  ["smooth", "phase", "blink", "wide", "solid"],
+    "auto_complete_preserve_order": ["none", "some", "strict"],
+    "default_line_ending":          ["system", "windows", "unix"],
+    "control_character_style":      ["hex", "abbreviation", "replacement"],
+    "mini_diff":                    ["true", "false", "auto"],
+    "word_wrap":                    ["true", "false", "auto"],
+    "show_git_status":              ["true", "false", "auto"],
+    "highlight_modified_tabs":      ["true", "false", "auto"],
+    "draw_white_space":             ["none", "selection", "leading", "enclosed", "trailing", "isolated", "all"],
+}
+
+# ── categories ────────────────────────────────────────────────────────────────
+
+CATEGORIES = {
+    "Font & Display": [
+        "font_face", "font_size", "font_options", "line_numbers", "gutter",
+        "margin", "fold_buttons", "fade_fold_buttons", "rulers",
+        "draw_minimap_border", "always_show_minimap_viewport",
+        "draw_white_space", "draw_unicode_white_space", "draw_indent_guides",
+        "indent_guide_options", "highlight_line", "caret_style",
+        "caret_extra_top", "caret_extra_bottom", "caret_extra_width",
+        "block_caret", "animation_enabled",
+    ],
+    "Editor Behavior": [
+        "tab_size", "translate_tabs_to_spaces", "use_tab_stops",
+        "auto_indent", "smart_indent", "indent_to_bracket",
+        "trim_trailing_white_space_on_save", "ensure_newline_at_eof_on_save",
+        "default_line_ending", "word_wrap", "wrap_width",
+        "word_separators", "detect_indentation",
+    ],
+    "Autocomplete": [
+        "auto_complete", "auto_complete_delay", "auto_complete_commit_on_tab",
+        "auto_complete_cycle", "auto_complete_use_history",
+        "auto_complete_use_index", "auto_complete_preserve_order",
+        "auto_complete_with_fields", "tab_completion",
+        "auto_match_enabled", "auto_close_tags",
+    ],
+    "Files & Save": [
+        "hot_exit", "remember_open_files", "always_prompt_for_file_reload",
+        "atomic_save", "backup_on_save", "create_window_at_startup",
+        "save_on_focus_lost", "close_windows_when_empty",
+        "default_encoding", "fallback_encoding",
+        "binary_file_patterns", "file_exclude_patterns",
+        "folder_exclude_patterns",
+    ],
+    "UI": [
+        "theme", "color_scheme", "dark_color_scheme", "light_color_scheme",
+        "show_tabs", "enable_tab_scrolling", "show_encoding",
+        "show_indentation", "show_line_endings", "show_sidebar",
+        "sidebar_no_dir_prefix", "bold_folder_labels",
+        "mouse_wheel_switches_tabs", "auto_hide_tabs", "auto_hide_menu",
+        "auto_hide_status_bar", "adaptive_dividers",
+        "mini_diff", "show_definitions",
+    ],
+    "Spell Check": [
+        "spell_check", "dictionary", "added_words", "ignored_words",
+    ],
+    "Performance": [
+        "index_files", "index_workers", "index_exclude_patterns",
+        "scroll_speed", "tree_animation_enabled",
+    ],
+}
+
+PREFS_RESOURCE = "Packages/Default/Preferences.sublime-settings"
 
 
+# ── data builders ─────────────────────────────────────────────────────────────
 
-# ── HTML / CSS / JS ──────────────────────────────────────────────────────────
+def _get_all_package_settings():
+    results = []
+    seen = set()
+    for path in sublime.find_resources("*.sublime-settings"):
+        m = re.match(r"Packages/([^/]+)/(.+\.sublime-settings)$", path)
+        if not m or m.group(1) == "User":
+            continue
+        pkg = m.group(1)
+        fname = m.group(2)
+        label = f"{pkg}  —  {fname}"
+        if label not in seen:
+            seen.add(label)
+            results.append((label, path))
+    results.sort(key=lambda x: x[0].lower())
+    return results
+
+
+def _build_all_keys_index():
+    results = []
+    seen = set()
+    for path in sublime.find_resources("*.sublime-settings"):
+        m = re.match(r"Packages/([^/]+)/(.+\.sublime-settings)$", path)
+        if not m or m.group(1) == "User":
+            continue
+        pkg = m.group(1)
+        fname = m.group(2)
+        pkg_label = f"{pkg} — {fname}"
+        try:
+            raw = sublime.load_resource(path)
+            keys = sublime.decode_value(raw)
+            if not isinstance(keys, dict):
+                continue
+        except Exception:
+            continue
+        for key in keys:
+            uid = f"{path}::{key}"
+            if uid not in seen:
+                seen.add(uid)
+                results.append({"key": key, "resource": path, "pkg": pkg_label})
+    return results
+
+
+_FONT_FALLBACK = [
+    "Cascadia Code", "Cascadia Mono", "Consolas", "Courier New",
+    "DejaVu Sans Mono", "Fira Code", "Inconsolata", "JetBrains Mono",
+    "Lucida Console", "Menlo", "Monaco", "Roboto Mono", "Source Code Pro",
+]
+
+
+def _family_from_filename(fname):
+    name = os.path.splitext(fname)[0]
+    name = re.sub(
+        r'[-_ ](Regular|Bold|Italic|Light|Medium|SemiBold|ExtraLight|'
+        r'Thin|Black|Heavy|Condensed|Oblique).*$',
+        '', name, flags=re.IGNORECASE)
+    return name.strip()
+
+
+def _get_installed_fonts(current_font=""):
+    fonts = set()
+    try:
+        if sys.platform == "win32":
+            import winreg
+            for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+                try:
+                    key = winreg.OpenKey(hive,
+                        r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts")
+                    i = 0
+                    while True:
+                        try:
+                            name, _, _ = winreg.EnumValue(key, i)
+                            name = re.sub(r'\s*\(.*?\)\s*$', '', name).strip()
+                            if name:
+                                fonts.add(name)
+                            i += 1
+                        except OSError:
+                            break
+                    winreg.CloseKey(key)
+                except OSError:
+                    pass
+
+        elif sys.platform == "darwin":
+            dirs = ["/System/Library/Fonts", "/Library/Fonts",
+                    os.path.expanduser("~/Library/Fonts")]
+            for d in dirs:
+                try:
+                    for f in os.listdir(d):
+                        if f.lower().endswith((".ttf", ".otf", ".ttc")):
+                            fonts.add(_family_from_filename(f))
+                except OSError:
+                    pass
+
+        else:
+            try:
+                import subprocess
+                out = subprocess.check_output(
+                    ["fc-list", "--format=%{family}\n"],
+                    timeout=3, text=True, stderr=subprocess.DEVNULL)
+                for line in out.splitlines():
+                    name = line.strip().split(",")[0].strip()
+                    if name:
+                        fonts.add(name)
+            except Exception:
+                for d in ["/usr/share/fonts", "/usr/local/share/fonts",
+                          os.path.expanduser("~/.fonts"),
+                          os.path.expanduser("~/.local/share/fonts")]:
+                    try:
+                        for root, _, files in os.walk(d):
+                            for f in files:
+                                if f.lower().endswith((".ttf", ".otf")):
+                                    fonts.add(_family_from_filename(f))
+                    except OSError:
+                        pass
+
+    except Exception:
+        pass
+
+    if not fonts:
+        fonts = set(_FONT_FALLBACK)
+
+    result = sorted(fonts, key=str.lower)
+    if current_font and current_font not in fonts:
+        result.insert(0, current_font)
+    return result
+
+
+_DESCRIPTIONS = {}
+
+
+def _get_descriptions():
+    global _DESCRIPTIONS
+    if _DESCRIPTIONS:
+        return _DESCRIPTIONS
+    try:
+        raw = sublime.load_resource(PREFS_RESOURCE)
+        pending = []
+        for line in raw.splitlines():
+            s = line.strip()
+            if s.startswith("//"):
+                pending.append(s[2:].strip())
+            elif s.startswith('"'):
+                m = re.match(r'"(\w+)"\s*:', s)
+                if m:
+                    _DESCRIPTIONS[m.group(1)] = " ".join(pending).strip()
+                    pending = []
+            else:
+                if s not in ("{", "}"):
+                    pending = []
+    except Exception:
+        pass
+    return _DESCRIPTIONS
+
+
+def _build_data(settings_resource):
+    try:
+        raw = sublime.load_resource(settings_resource)
+        defaults = sublime.decode_value(raw)
+    except Exception:
+        defaults = {}
+
+    settings_fname = settings_resource.split("/")[-1]
+    try:
+        user_raw = sublime.load_resource(f"Packages/User/{settings_fname}")
+        user_prefs = sublime.decode_value(user_raw)
+    except Exception:
+        user_prefs = {}
+
+    descs = _get_descriptions()
+    is_prefs = (settings_resource == PREFS_RESOURCE)
+
+    if is_prefs:
+        categorised = {k for ks in CATEGORIES.values() for k in ks}
+        other = [k for k in defaults if k not in categorised]
+        show_order = list(CATEGORIES.items())
+        if other:
+            show_order.append(("Other", other))
+    else:
+        show_order = [("Settings", list(defaults.keys()))]
+
+    live = sublime.load_settings(settings_fname)
+    m = re.match(r"Packages/([^/]+)/(.+)", settings_resource)
+    pkg_name  = m.group(1) if m else "Settings"
+    file_name = m.group(2) if m else settings_fname
+    package_label = "Sublime Text Preferences" if is_prefs else f"{pkg_name} — {file_name}"
+
+    current_font = live.get("font_face", "")
+    mono_fonts = _get_installed_fonts(current_font)
+
+    return {
+        "defaults": defaults,
+        "user_prefs": user_prefs,
+        "effective": {"font_face": current_font},
+        "mono_fonts": mono_fonts,
+        "descriptions": {k: descs.get(k, "") for k in defaults},
+        "enums": ENUMS,
+        "categories": {k: list(v) for k, v in CATEGORIES.items()} if is_prefs else {},
+        "show_order": [[s, ks] for s, ks in show_order],
+        "settings_fname": settings_fname,
+        "settings_resource": settings_resource,
+        "package_label": package_label,
+        "package_list": [{"label": lbl, "resource": res}
+                         for lbl, res in _get_all_package_settings()],
+        "is_prefs": is_prefs,
+        "prefs_resource": PREFS_RESOURCE,
+        "all_keys": _build_all_keys_index(),
+    }
+
+
+# ── HTML ──────────────────────────────────────────────────────────────────────
 
 HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title id="page-title">Sublime Text Settings</title>
+<title>Sublime Text Settings</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -204,6 +478,7 @@ footer{height:var(--foot);background:var(--panel);
     <div class="modal-list" id="pkg-list"></div>
   </div>
 </div>
+
 <div style="position:relative;flex:1;display:flex;flex-direction:column;overflow:hidden">
   <div id="xpkg-panel">
     <div class="xpkg-hdr">All Packages — matching settings</div>
@@ -214,6 +489,7 @@ footer{height:var(--foot);background:var(--panel);
     <main id="main"></main>
   </div>
 </div>
+
 <footer>
   <span id="status-msg">Ready</span>
   <div class="spacer"></div>
@@ -221,7 +497,7 @@ footer{height:var(--foot);background:var(--panel);
 </footer>
 
 <script>
-const D = __DATA__;   // injected by server
+const D = __DATA__;
 
 let _modifiedKeys = new Set(Object.keys(D.user_prefs));
 let _activeSection = null;
@@ -257,7 +533,7 @@ function buildSidebar() {
 function buildMain() {
   const main = document.getElementById('main');
   main.innerHTML = '';
-  const sections = D.show_order;  // [[section, [keys]], ...]
+  const sections = D.show_order;
   sections.forEach(([section, keys]) => {
     const div = document.createElement('div');
     div.className = 'section';
@@ -268,8 +544,7 @@ function buildMain() {
     const tbody = document.getElementById('tbody-' + CSS.escape(section));
     keys.forEach(key => {
       if (!(key in D.defaults)) return;
-      const tr = buildRow(key);
-      tbody.appendChild(tr);
+      tbody.appendChild(buildRow(key));
     });
   });
 }
@@ -329,7 +604,7 @@ function buildRow(key) {
     <td class="ctrl">
       <div class="ctrl-row">
         ${ctrlHtml}
-        ${hasUsefulDefault ? `<button class="reset-lnk" title="Restore default value" onclick="resetKey('${key}')">↩ default</button>` : ''}
+        ${hasUsefulDefault ? `<button class="reset-lnk" title="Restore default value" onclick="resetKey('${key}')">&#8617; default</button>` : ''}
       </div>
     </td>`;
   return tr;
@@ -454,7 +729,6 @@ function updateCounts() {
     mod ? `${mod} of ${total} modified` : `${total} settings`;
   document.getElementById('hdr-info').textContent =
     mod ? `${mod} modified` : '';
-  // update sidebar badges
   document.querySelectorAll('.nav-item').forEach(el => {
     const cat = el.dataset.cat;
     const keys = cat === 'All' ? Object.keys(D.defaults) : (D.categories[cat] || []);
@@ -472,7 +746,6 @@ function setStatus(msg, cls) {
 }
 
 function closeApp() {
-  setStatus('Closing…', '');
   fetch('/close').finally(() => window.close());
 }
 
@@ -517,7 +790,7 @@ function filterPkgs() {
   });
 }
 
-// Poll for server restart and auto-reload this tab
+// Poll for data updates and auto-reload
 (function() {
   const gen = D.gen;
   setInterval(function() {
@@ -538,7 +811,8 @@ if (!D.is_prefs) {
 buildSidebar();
 buildMain();
 updateCounts();
-// Scroll to key if we navigated here from a search result
+
+// Scroll to key if navigated here from a search result
 (function() {
   const key = sessionStorage.getItem('focusKey');
   if (!key) return;
@@ -557,23 +831,25 @@ updateCounts();
 </html>
 """
 
+
 # ── HTTP server ───────────────────────────────────────────────────────────────
 
 _data = {}
-_callback_url = ""
-_data_file_path = ""
+_gen  = 0
+_server = None
+_port   = None
+_lock   = threading.Lock()
 
 
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
-        pass  # suppress request logs
+        pass
 
     def _send(self, body, status=200, ct="text/html; charset=utf-8"):
         b = body.encode() if isinstance(body, str) else body
         self.send_response(status)
         self.send_header("Content-Type", ct)
         self.send_header("Content-Length", str(len(b)))
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(b)
 
@@ -581,54 +857,67 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(json.dumps(obj), status, "application/json")
 
     def _read_json(self):
-        length = int(self.headers.get("Content-Length", 0))
-        raw = self.rfile.read(length)
-        return json.loads(raw)
+        n = int(self.headers.get("Content-Length", 0))
+        return json.loads(self.rfile.read(n))
 
     def do_GET(self):
-        path = urlparse(self.path).path
+        path = self.path.split("?")[0]
         if path in ("/", "/index.html"):
-            page = HTML.replace("__DATA__", json.dumps(_data))
+            with _lock:
+                page = HTML.replace("__DATA__", json.dumps(_data))
             self._send(page)
         elif path == "/ping":
-            try:
-                with open(_data_file_path, encoding="utf-8") as f:
-                    fresh = json.load(f)
-                if fresh.get("gen", 0) != _data.get("gen", 0):
-                    _data.clear()
-                    _data.update(fresh)
-            except Exception:
-                pass
-            self._json({"gen": _data.get("gen", 0)})
+            with _lock:
+                gen = _data.get("gen", 0)
+            self._json({"gen": gen})
         elif path == "/close":
-            self._send("Closing...")
-            threading.Thread(target=_shutdown, daemon=True).start()
+            self._send("ok")
         else:
             self._send("Not found", 404)
 
     def do_POST(self):
-        path = urlparse(self.path).path
         try:
             body = self._read_json()
-        except Exception:
-            self._json({"ok": False, "error": "bad JSON"}, 400)
+        except Exception as e:
+            self._json({"ok": False, "error": str(e)}, 400)
             return
 
-        if path in ("/apply", "/reset", "/navigate"):
-            try:
-                req = Request(
-                    _callback_url + path,
-                    data=json.dumps(body).encode(),
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                with urlopen(req, timeout=5) as resp:
-                    result = json.loads(resp.read())
-                self._json(result)
-            except Exception as e:
-                self._json({"ok": False, "error": str(e)}, 500)
+        path = self.path.split("?")[0]
+
+        if path == "/apply":
+            key   = body.get("key", "")
+            value = body.get("value")
+            fname = body.get("settings_fname", "Preferences.sublime-settings")
+            def apply():
+                try:
+                    s = sublime.load_settings(fname)
+                    s.set(key, value)
+                    sublime.save_settings(fname)
+                except Exception as e:
+                    print(f"st_settings apply error: {e}")
+            sublime.set_timeout(apply, 0)
+            self._json({"ok": True})
+
+        elif path == "/reset":
+            key   = body.get("key", "")
+            fname = body.get("settings_fname", "Preferences.sublime-settings")
+            def reset():
+                try:
+                    s = sublime.load_settings(fname)
+                    s.erase(key)
+                    sublime.save_settings(fname)
+                except Exception as e:
+                    print(f"st_settings reset error: {e}")
+            sublime.set_timeout(reset, 0)
+            self._json({"ok": True})
+
+        elif path == "/navigate":
+            resource = body.get("resource", PREFS_RESOURCE)
+            threading.Thread(target=_update_data, args=(resource,), daemon=True).start()
+            self._json({"ok": True})
+
         else:
-            self._json({"ok": False, "error": "unknown endpoint"}, 404)
+            self._json({"ok": False, "error": "unknown"}, 404)
 
     def do_OPTIONS(self):
         self.send_response(200)
@@ -638,39 +927,53 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
 
-def _shutdown():
-    import time
-    time.sleep(0.3)
-    os._exit(0)
+class _Server(HTTPServer):
+    allow_reuse_address = True
 
 
-def main():
-    global _data, _callback_url, _data_file_path
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--data-file", required=True)
-    parser.add_argument("--callback", required=True)
-    parser.add_argument("--port", type=int, required=True)
-    parser.add_argument("--gen", type=int, default=0)
-    args = parser.parse_args()
-
-    _data_file_path = args.data_file
-    with open(args.data_file, encoding="utf-8") as f:
-        _data = json.load(f)
-    _data["gen"] = args.gen
-    _callback_url = args.callback.rstrip("/")
-
-    font_db = Path.home() / ".claude" / "font_db.json"
-    if font_db.exists():
-        try:
-            db = json.loads(font_db.read_text(encoding="utf-8"))
-            _data["fonts"] = db.get("all", [])
-            _data["mono_fonts"] = db.get("mono", [])
-        except Exception:
-            pass
-    server = HTTPServer(("127.0.0.1", args.port), _Handler)
-    server.serve_forever()
+_FIXED_PORT = 57321
 
 
-if __name__ == "__main__":
-    main()
+def _ensure_server():
+    global _server, _port
+    if _server is not None:
+        return
+    _server = _Server(("127.0.0.1", _FIXED_PORT), _Handler)
+    _port = _FIXED_PORT
+    t = threading.Thread(target=_server.serve_forever, daemon=True)
+    t.start()
+
+
+def _update_data(settings_resource):
+    global _gen
+    data = _build_data(settings_resource)
+    with _lock:
+        _gen += 1
+        data["gen"] = _gen
+        _data.clear()
+        _data.update(data)
+
+
+def _open(settings_resource=PREFS_RESOURCE):
+    import webbrowser
+    _ensure_server()          # binds port synchronously
+    _update_data(settings_resource)
+    webbrowser.open(f"http://127.0.0.1:{_port}")
+    sublime.status_message(f"ST Settings: http://127.0.0.1:{_port}")
+
+
+# ── ST lifecycle ──────────────────────────────────────────────────────────────
+
+def plugin_unloaded():
+    global _server
+    if _server:
+        _server.shutdown()
+        _server.server_close()
+        _server = None
+
+
+# ── commands ──────────────────────────────────────────────────────────────────
+
+class StSettingsOpenCommand(sublime_plugin.WindowCommand):
+    def run(self):
+        threading.Thread(target=_open, daemon=True).start()
