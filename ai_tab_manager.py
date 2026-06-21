@@ -517,23 +517,65 @@ def _detect_anomalies(
 
 
 def _flush_view(view: "sublime.View", session_tag: str = "") -> None:
-    """Log any unlogged content from view since last tick. Updates state in place."""
+    """Tee newly-finalized terminal lines to today's log, each line exactly once.
+
+    Logs ONLY Terminus committed history — the view rows above ``terminal.offset``,
+    i.e. lines that have scrolled out of the live screen and can no longer be
+    repainted. The live screen region below the offset (spinner, status bar, input
+    box, boot banner) is never logged; re-logging that repainting region is what
+    used to cause the massive duplication. A short content anchor (the last few
+    logged lines) keeps us aligned across scrollback trimming, which shifts row
+    numbers but never the line content.
+    """
     vid = str(view.id())
     try:
-        row_count = view.rowcol(view.size())[0] + 1
-        last_line = _view_state.get(vid, {}).get("last_line", 0)
-        if last_line >= row_count:
+        from Terminus.terminus.terminal import Terminal  # type: ignore
+        term = Terminal.from_id(view.id())
+    except Exception:
+        term = None
+    if term is None:
+        return
+    try:
+        total = view.rowcol(view.size())[0] + 1
+        offset = int(getattr(term, "offset", 0) or 0)
+        offset = max(0, min(offset, total))
+        if offset <= 0:
+            return  # nothing has scrolled into committed history yet
+
+        committed = view.substr(sublime.Region(0, view.text_point(offset, 0)))
+        lines = committed.split("\n")
+        if lines and lines[-1] == "":
+            lines.pop()  # drop trailing-newline artifact
+        if not lines:
             return
-        start_point = view.text_point(last_line, 0)
-        end_point = view.size()
-        if start_point >= end_point:
-            return
-        new_text = view.substr(sublime.Region(start_point, end_point))
-        if not new_text.strip():
-            return
-        _append_log(new_text, session_tag)
+
         state = _view_state.setdefault(vid, {})
-        state["last_line"] = row_count
+        anchor = state.get("anchor") or []
+        if not anchor:
+            if "last_line" in state:
+                # Carried over from the previous (row-count) logger: this view's
+                # current scrollback is already in the log. Adopt an anchor and
+                # skip re-baselining so we don't duplicate at the upgrade seam.
+                state.pop("last_line", None)
+                new_lines = []
+            else:
+                new_lines = lines  # brand-new view: capture its existing history once
+        else:
+            k = len(anchor)
+            start = None
+            for i in range(len(lines) - 1, k - 2, -1):
+                if lines[i - k + 1:i + 1] == anchor:
+                    start = i + 1
+                    break
+            if start is None:
+                _diagnostic_log("TEE: anchor not found (scrolled past between ticks); re-syncing")
+                new_lines = []  # don't risk duplicating; accept a rare small gap
+            else:
+                new_lines = lines[start:]
+
+        if new_lines:
+            _append_log("\n".join(new_lines), session_tag)
+        state["anchor"] = lines[-8:]
         state["last_output_time"] = time.time()
         _save_state()
     except Exception as e:
@@ -556,29 +598,14 @@ def _tick():
 
     for v, pid, name in claude_views:
         vid = str(v.id())
-        row_count = v.rowcol(v.size())[0] + 1
         session_tag = f"pid={pid} {name}" if multi else ""
 
         # Initialize state for this view
         if vid not in _view_state:
             _view_state[vid] = {
-                "last_line": 0,
-                "last_row_count": row_count,
+                "anchor": [],
                 "started_at": datetime.datetime.now().isoformat(),
-                "anomalies": 0,
             }
-
-        state = _view_state[vid]
-        last_line = state.get("last_line", 0)
-        last_row_count = state.get("last_row_count", 0)
-
-        if last_line > row_count:
-            _diagnostic_log(f"RESET: last_line={last_line} > row_count={row_count}, resetting to 0")
-            state["last_line"] = 0
-            last_line = 0
-
-        _detect_anomalies(vid, row_count, last_row_count)
-        state["last_row_count"] = row_count
 
         _flush_view(v, session_tag)
 

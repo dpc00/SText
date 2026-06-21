@@ -1,0 +1,8 @@
+{
+    "python_path": "C:/Users/donal/AppData/Local/Programs/Python/Python312/python.exe",
+    "default_model": "sonnet",
+    "allowed_tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "WebFetch", "WebSearch"],
+    "permission_mode": "acceptEdits",
+    "submit_with_modifier": true,
+    "claude_bin": "C:/Users/donal/.local/bin/claude.EXE"
+}

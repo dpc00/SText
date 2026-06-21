@@ -50,10 +50,10 @@
         "*.sublime-workspace"
     ],
     /*"font_size": 12,*/
-    "theme": "Default.sublime-theme",
+    /*"theme": "Default.sublime-theme",*/
     "word_wrap": false,
     "show_git_status": true,
-    "color_scheme": "Mariana.sublime-color-scheme",
+    /*"color_scheme": "Mariana.sublime-color-scheme",*/
     /*"font_face": "Cascadia Code Light",*/
     "show_line_endings": true,
     "wrap_width": 0,
@@ -61,7 +61,7 @@
     "detect_indentation": true,
     "always_prompt_for_file_reload": false,
     "close_windows_when_empty": true,
-    "enable_tab_scrolling": false,
+    /*"enable_tab_scrolling": false,*/
     /*"font_face": "Courier New",*/
     /*"font_face": "Fira Mono",*/
     /*"font_face": "Consolas",*/
@@ -71,7 +71,18 @@
     /*"font_face": "Liberation Mono",*/
     /*"font_face": "JetBrains Mono",*/
     /*"font_face": "Verdana",*/
-    "font_face": "Verdana Bold",
+    "font_face": "Lucida Sans Typewriter Regular",
     /*"font_size": 16,*/
-    "font_size": 14,
+    /*"font_size": 15,*/
+    "font_size": 13,
+    "trim_trailing_white_space_on_save": "all",
+    "ensure_newline_at_eof_on_save": true,
+    "auto_complete": false,
+    "tab_completion": false,
+    "auto_match_enabled": false,
+    "auto_close_tags": false,
+    "auto_hide_menu": true,
+    "auto_hide_status_bar": false,
+    /*"scroll_speed": "0",*/
+    "tree_animation_enabled": false,
 }
