@@ -31,4 +31,5 @@
     "scrollback": 600,
     "scrollback_history_size": 600,
     "theme": "brogrammer",
+    "debug": false,
 }
