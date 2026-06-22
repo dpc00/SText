@@ -1,0 +1,75 @@
+%YAML 1.2
+---
+name: AI Log
+file_extensions: [log]
+scope: text.ailog
+
+contexts:
+  main:
+    # Context compacted marker
+    - match: '^\s*---\s+context compacted\s+---\s*$'
+      scope: comment.line.ailog
+
+    # User turn header
+    - match: '^\[(\d{2}:\d{2}:\d{2})\] (You): '
+      captures:
+        1: constant.numeric.ailog
+        2: entity.name.tag.ailog
+      push: user_text
+
+    # Claude turn header
+    - match: '^\[(\d{2}:\d{2}:\d{2})\] (Claude):'
+      captures:
+        1: constant.numeric.ailog
+        2: markup.heading.ailog
+      push: claude_text
+
+    # Tool call line (indented)
+    - match: '^(  \[)(\d{2}:\d{2}:\d{2})(\] -> )(\w[\w.]*)(: ?)(.*)'
+      captures:
+        1: punctuation.ailog
+        2: constant.numeric.ailog
+        3: punctuation.ailog
+        4: support.function.ailog
+        5: punctuation.ailog
+        6: string.unquoted.ailog
+
+    # Tool result ok
+    - match: '^(  \[)(\d{2}:\d{2}:\d{2})(\] )(ok)( \w[\w.]*)(: ?)(.*)'
+      captures:
+        1: punctuation.ailog
+        2: constant.numeric.ailog
+        3: punctuation.ailog
+        4: markup.inserted.ailog
+        5: support.function.ailog
+        6: punctuation.ailog
+        7: comment.block.ailog
+
+    # Tool result error
+    - match: '^(  \[)(\d{2}:\d{2}:\d{2})(\] )(x)( \w[\w.]*)(: ?)(.*)'
+      captures:
+        1: punctuation.ailog
+        2: constant.numeric.ailog
+        3: punctuation.ailog
+        4: invalid.ailog
+        5: support.function.ailog
+        6: punctuation.ailog
+        7: comment.block.ailog
+
+    # Duration / timing line
+    - match: '^  \[\d{2}:\d{2}:\d{2}\] \d+\.\d+s\s*$'
+      scope: comment.line.ailog
+
+    # API error
+    - match: '^  \[.*\] API error:.*$'
+      scope: invalid.ailog
+
+  user_text:
+    - meta_scope: markup.quote.ailog
+    - match: '$'
+      pop: true
+
+  claude_text:
+    - meta_scope: markup.raw.block.ailog
+    - match: '^(?=\[|\s*$)'
+      pop: true
