@@ -24,8 +24,8 @@ import sublime_plugin  # type: ignore
 
 # -- minimal log helpers (duplicated from ai_logger.py for independence) ------
 
-_LOG_DIR = str(Path.home() / ".claude" / "conversation_logs")
-_DIAGNOSTICS_FILE = str(Path.home() / ".claude" / "ai_diagnostics.log")
+_LOG_DIR = str(Path.home() / ".cache" / "claude-logs")
+_DIAGNOSTICS_FILE = str(Path.home() / ".cache" / "ai_diagnostics.log")
 
 
 def _diagnostic_log(message: str) -> None:
@@ -200,7 +200,7 @@ class AiDumpBufferCommand(sublime_plugin.TextCommand):
             entire_content = v.substr(sublime.Region(0, v.size()))
 
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            export_dir = Path.home() / ".claude" / "buffer_exports"
+            export_dir = Path.home() / ".cache" / "claude-buffer-exports"
             export_dir.mkdir(parents=True, exist_ok=True)
             export_file = export_dir / f"ai_buffer_dump_{timestamp}.txt"
 
