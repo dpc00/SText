@@ -42,16 +42,27 @@ _jsonl_state          = {}   # jsonl_path -> {"offset": int}
 _id2name              = {}   # tool_use id -> tool name
 _last_screenshot_time = {}
 _last_cleanup_time    = 0
+_last_record_ts       = ""   # ISO timestamp of last record written to log
+_current_jsonl        = None # path currently being flushed
+_seen_uuids           = {}   # uuid -> order (insertion counter, for trimming)
+_seen_uuid_counter    = 0    # monotonic insertion counter
+_SEEN_UUIDS_MAX       = 2000 # max UUIDs kept across reloads
 
 
 # -- state persistence --------------------------------------------------------
 
 def _load_state():
-    global _jsonl_state
+    global _jsonl_state, _last_record_ts, _current_jsonl, _seen_uuids, _seen_uuid_counter
     try:
         if os.path.exists(_STATE_FILE):
             with open(_STATE_FILE, "r", encoding="utf-8") as f:
-                _jsonl_state = json.load(f)
+                data = json.load(f)
+            _last_record_ts   = data.pop("__last_record_ts__", "")
+            _current_jsonl    = data.pop("__current_jsonl__", None)
+            saved_uuids       = data.pop("__seen_uuids__", [])
+            _seen_uuids       = {u: i for i, u in enumerate(saved_uuids)}
+            _seen_uuid_counter = len(_seen_uuids)
+            _jsonl_state = data
     except (OSError, json.JSONDecodeError):
         _jsonl_state = {}
 
@@ -59,8 +70,14 @@ def _load_state():
 def _save_state():
     try:
         os.makedirs(os.path.dirname(_STATE_FILE), exist_ok=True)
+        data = dict(_jsonl_state)
+        data["__last_record_ts__"] = _last_record_ts
+        data["__current_jsonl__"]  = _current_jsonl
+        # Save UUIDs sorted by insertion order (most recent last), trimmed to max
+        sorted_uuids = sorted(_seen_uuids, key=lambda u: _seen_uuids[u])
+        data["__seen_uuids__"] = sorted_uuids[-_SEEN_UUIDS_MAX:]
         with open(_STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(_jsonl_state, f, indent=2)
+            json.dump(data, f, indent=2)
     except OSError as e:
         print(f"ai_logger: ERROR saving state: {e}")
 
@@ -260,8 +277,11 @@ def _take_screenshot(key: str) -> None:
 
 # -- JSONL discovery ----------------------------------------------------------
 
+_SWITCH_TIMEOUT = 10  # seconds current JSONL must be idle before switching
+
+
 def _find_active_transcript():
-    """Return path to the most recently modified .jsonl under ~/.claude/projects/."""
+    """Return path to the active .jsonl, sticky until current goes cold."""
     projects = Path(_PROJECTS_DIR)
     if not projects.exists():
         return None
@@ -279,6 +299,17 @@ def _find_active_transcript():
                     pass
     except OSError:
         pass
+    if not best:
+        return _current_jsonl
+    # Stick with the current transcript until it goes cold, to avoid oscillating
+    # between the old and new JSONL files during a /cd switch.
+    if _current_jsonl and _current_jsonl != best:
+        try:
+            current_mtime = Path(_current_jsonl).stat().st_mtime
+            if time.time() - current_mtime < _SWITCH_TIMEOUT:
+                return _current_jsonl
+        except OSError:
+            pass  # current file gone — switch immediately
     return best
 
 
@@ -426,7 +457,11 @@ def _append_log(text):
 
 def _flush_jsonl(path):
     """Read any new records from path since last offset and log them."""
+    global _last_record_ts, _current_jsonl, _seen_uuids, _seen_uuid_counter
     state = _jsonl_state.setdefault(path, {"offset": 0})
+    if path != _current_jsonl:
+        _current_jsonl = path
+
     try:
         if not os.path.exists(path):
             return
@@ -445,6 +480,19 @@ def _flush_jsonl(path):
                 continue
             try:
                 record = json.loads(line)
+                uid = record.get("uuid")
+                if uid:
+                    if uid in _seen_uuids:
+                        continue  # already logged — replayed record from /cd
+                    _seen_uuids[uid] = _seen_uuid_counter
+                    _seen_uuid_counter += 1
+                    # Trim oldest when over limit
+                    if len(_seen_uuids) > _SEEN_UUIDS_MAX * 2:
+                        cutoff = _seen_uuid_counter - _SEEN_UUIDS_MAX
+                        _seen_uuids = {u: c for u, c in _seen_uuids.items() if c >= cutoff}
+                ts = record.get("timestamp", "")
+                if ts:
+                    _last_record_ts = ts
             except json.JSONDecodeError:
                 continue
             lines_out.extend(_record_to_lines(record, _id2name))
