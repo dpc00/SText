@@ -32,5 +32,5 @@
     "scrollback_history_size": 600,
     "theme": "brogrammer",
     "debug": false,
-    "max_columns": 100,
+    /*"max_columns": 100,*/
 }

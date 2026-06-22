@@ -1,15 +1,4 @@
 [
-  {
-    "args": {
-      "cwd": "${file_path:${folder}}"
-    },
-    "caption": "Open Terminus here...",
-    "command": "terminus_open",
-    "children": []
-  },
-  {
-    "caption": "Open Ai in Terminus here...",
-    "command": "open_ai_terminus_in_editor",
-    "children": []
-  }
+	{"caption": "Open Terminus here...", "command": "terminus_open", "args": {"cwd": "${file_path:${folder}}"}},
+	{"caption": "Open Ai in Terminus here...", "command": "open_ai_terminus_in_editor"}
 ]
