@@ -22,7 +22,7 @@ _AI_VIEW_SETTING = "ai_logger"
 _PANIC_REPLY_FILE = os.path.join(os.path.expanduser("~"), ".claude", "panic_reply.txt")
 _PANIC_VIEW_SETTING = "panic_reply_view"
 _RESPONSE_VIEW = "Panic: Response"
-_REPLY_VIEW = "Panic: Reply"
+_REPLY_VIEW = "Panic: Reply — Ctrl+Enter to Send"
 _QUOTE_KEY = "panic_quotes"
 _BTN_KEY = "panic_send"
 
@@ -94,16 +94,17 @@ def _set_view_text(view, text):
 
 
 def _close_panic():
+    target_window = None
     for name in (_RESPONSE_VIEW, _REPLY_VIEW):
         w, v = _find_view(name)
         if v:
             _phantom_sets.pop(v.id(), None)
             _phantom_sets.pop(str(v.id()) + "_btn", None)
+            if w:
+                target_window = w
             v.close()
-    # Restore pre-panic layout
-    if _saved_layout:
-        for w in sublime.windows():
-            w.set_layout(_saved_layout.get("layout", _PANIC_LAYOUT))
+    if _saved_layout and target_window:
+        target_window.set_layout(_saved_layout.get("layout", _PANIC_LAYOUT))
         _saved_layout.clear()
 
 
@@ -127,17 +128,12 @@ def _send_area_html():
         'padding:5px 22px;text-decoration:none;border-radius:3px;'
         'font-size:13px;font-weight:bold;font-family:system-ui;">Send reply</a>'
     )
-    cancel = (
-        '&nbsp;&nbsp;&nbsp;'
-        '<a href="cancel:" style="color:#888;font-size:12px;font-family:system-ui;'
-        'text-decoration:underline;">cancel</a>'
-    )
     hint = (
         '&nbsp;&nbsp;&nbsp;'
-        '<span style="color:#4a4a4a;font-size:11px;font-family:system-ui;">'
-        'Ctrl+Enter in Reply</span>'
+        '<span style="color:#666;font-size:11px;font-family:system-ui;">'
+        'empty = close</span>'
     )
-    return rule + '<br>' + send + cancel + hint
+    return rule + '<br>' + send + hint
 
 
 def _build_action_buttons(resp_view):
@@ -151,9 +147,9 @@ def _build_action_buttons(resp_view):
 
 def _on_action(href):
     if href == "send:":
-        for w in sublime.windows():
+        w, _ = _find_view(_REPLY_VIEW)
+        if w:
             _do_send(w)
-            return
     elif href == "cancel:":
         _close_panic()
 
@@ -199,20 +195,13 @@ def _do_send(window):
         return
     text = reply.substr(sublime.Region(0, reply.size())).strip()
     if not text:
-        sublime.status_message("Panic: reply is empty")
+        _close_panic()
         return
     os.makedirs(os.path.dirname(_PANIC_REPLY_FILE), exist_ok=True)
     with open(_PANIC_REPLY_FILE, "w", encoding="utf-8") as f:
         f.write(text)
-    for view in w.views():
-        if view.settings().get(_AI_VIEW_SETTING):
-            view.run_command("terminus_send_string", {"string": "read panic\n"})
-            w.focus_view(view)
-            break
-    else:
-        sublime.error_message("No Ai terminal found — open Claude Code first.")
-        return
     _close_panic()
+    # ai_logger._tick() detects the file and sends "read panic\n" to the Ai terminal
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
@@ -223,9 +212,10 @@ class PanicOpenCommand(sublime_plugin.WindowCommand):
     def run(self, response_text=None):
         if response_text is None:
             response_text = _last_claude_response()
-        if not response_text:
-            sublime.error_message("No Claude response found in transcript.")
-            return
+        if not (response_text or "").strip():
+            response_text = "(no text response — type your reply below)"
+        if not response_text.endswith("\n"):
+            response_text += "\n"
 
         # Save current layout to restore on close
         _saved_layout["layout"] = self.window.get_layout()
@@ -242,8 +232,6 @@ class PanicOpenCommand(sublime_plugin.WindowCommand):
         resp = _get_or_create_view(self.window, _RESPONSE_VIEW)
         _set_view_text(resp, response_text)
         resp.set_read_only(True)
-        _build_quote_phantoms(resp)
-        _build_action_buttons(resp)   # Send/Cancel at bottom of read-only Response
         self.window.set_view_index(resp, 2, 0)
 
         reply = _get_or_create_view(self.window, _REPLY_VIEW)
@@ -251,6 +239,11 @@ class PanicOpenCommand(sublime_plugin.WindowCommand):
         reply.settings().set(_PANIC_VIEW_SETTING, True)
         self.window.set_view_index(reply, 3, 0)
         self.window.focus_view(reply)
+
+        def _build(_r=resp):
+            _build_quote_phantoms(_r)
+            _build_action_buttons(_r)
+        sublime.set_timeout(_build, 100)
 
         sublime.status_message("Panic: Ctrl+Enter — Send  |  Escape — Cancel")
 
@@ -271,3 +264,12 @@ class PanicCancelCommand(sublime_plugin.WindowCommand):
 
     def run(self):
         _close_panic()
+
+
+def plugin_loaded():
+    def _restore():
+        _, resp = _find_view(_RESPONSE_VIEW)
+        if resp:
+            _build_quote_phantoms(resp)
+            _build_action_buttons(resp)
+    sublime.set_timeout(_restore, 200)

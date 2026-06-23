@@ -21,35 +21,39 @@ import threading
 import time
 from pathlib import Path
 
-import sublime          # type: ignore
-import sublime_plugin   # type: ignore
+import sublime  # type: ignore
+import sublime_plugin  # type: ignore
 
 
 # -- constants ----------------------------------------------------------------
 
-_LOG_DIR          = str(Path.home() / ".cache" / "claude-logs")
-_STATE_FILE       = str(Path.home() / ".cache" / "ai_logger_state.json")
-_SCREENSHOT_DIR   = str(Path.home() / ".cache" / "claude-screenshots")
+_LOG_DIR = str(Path.home() / ".cache" / "claude-logs")
+_STATE_FILE = str(Path.home() / ".cache" / "ai_logger_state.json")
+_SCREENSHOT_DIR = str(Path.home() / ".cache" / "claude-screenshots")
 _DIAGNOSTICS_FILE = str(Path.home() / ".cache" / "ai_diagnostics.log")
-_PROJECTS_DIR     = str(Path.home() / ".claude" / "projects")
-_CHECK_MS                  = 2000
-_SCREENSHOT_INTERVAL       = 60
+_PROJECTS_DIR = str(Path.home() / ".claude" / "projects")
+_CHECK_MS = 500
+_SCREENSHOT_INTERVAL = 60
 _SCREENSHOT_RETENTION_DAYS = 7
+_PANIC_THRESHOLD = 100  # output_tokens — trigger on almost any real response
+_PANIC_RESPONSE_VIEW = "Panic: Response"
+_AI_VIEW_SETTING = "ai_logger"
 
 # -- globals ------------------------------------------------------------------
 
-_jsonl_state          = {}   # jsonl_path -> {"offset": int}
-_id2name              = {}   # tool_use id -> tool name
+_jsonl_state = {}  # jsonl_path -> {"offset": int}
+_id2name = {}  # tool_use id -> tool name
 _last_screenshot_time = {}
-_last_cleanup_time    = 0
-_last_record_ts       = ""   # ISO timestamp of last record written to log
-_current_jsonl        = None # path currently being flushed
-_seen_uuids           = {}   # uuid -> order (insertion counter, for trimming)
-_seen_uuid_counter    = 0    # monotonic insertion counter
-_SEEN_UUIDS_MAX       = 2000 # max UUIDs kept across reloads
+_last_cleanup_time = 0
+_last_record_ts = ""  # ISO timestamp of last record written to log
+_current_jsonl = None  # path currently being flushed
+_seen_uuids = {}  # uuid -> order (insertion counter, for trimming)
+_seen_uuid_counter = 0  # monotonic insertion counter
+_SEEN_UUIDS_MAX = 2000  # max UUIDs kept across reloads
 
 
 # -- state persistence --------------------------------------------------------
+
 
 def _load_state():
     global _jsonl_state, _last_record_ts, _current_jsonl, _seen_uuids, _seen_uuid_counter
@@ -57,10 +61,10 @@ def _load_state():
         if os.path.exists(_STATE_FILE):
             with open(_STATE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            _last_record_ts   = data.pop("__last_record_ts__", "")
-            _current_jsonl    = data.pop("__current_jsonl__", None)
-            saved_uuids       = data.pop("__seen_uuids__", [])
-            _seen_uuids       = {u: i for i, u in enumerate(saved_uuids)}
+            _last_record_ts = data.pop("__last_record_ts__", "")
+            _current_jsonl = data.pop("__current_jsonl__", None)
+            saved_uuids = data.pop("__seen_uuids__", [])
+            _seen_uuids = {u: i for i, u in enumerate(saved_uuids)}
             _seen_uuid_counter = len(_seen_uuids)
             _jsonl_state = data
     except (OSError, json.JSONDecodeError):
@@ -72,7 +76,7 @@ def _save_state():
         os.makedirs(os.path.dirname(_STATE_FILE), exist_ok=True)
         data = dict(_jsonl_state)
         data["__last_record_ts__"] = _last_record_ts
-        data["__current_jsonl__"]  = _current_jsonl
+        data["__current_jsonl__"] = _current_jsonl
         # Save UUIDs sorted by insertion order (most recent last), trimmed to max
         sorted_uuids = sorted(_seen_uuids, key=lambda u: _seen_uuids[u])
         data["__seen_uuids__"] = sorted_uuids[-_SEEN_UUIDS_MAX:]
@@ -83,6 +87,7 @@ def _save_state():
 
 
 # -- diagnostic log -----------------------------------------------------------
+
 
 def _diagnostic_log(message: str) -> None:
     try:
@@ -95,6 +100,7 @@ def _diagnostic_log(message: str) -> None:
 
 
 # -- screenshot cleanup -------------------------------------------------------
+
 
 def _cleanup_old_screenshots() -> None:
     try:
@@ -112,15 +118,19 @@ def _cleanup_old_screenshots() -> None:
                 except OSError:
                     pass
         if deleted:
-            _diagnostic_log(f"CLEANUP: {deleted} screenshots, {freed/1048576:.1f}MB freed")
+            _diagnostic_log(
+                f"CLEANUP: {deleted} screenshots, {freed/1048576:.1f}MB freed"
+            )
     except Exception as e:
         _diagnostic_log(f"CLEANUP_ERROR: {e}")
 
 
 # -- screenshot ---------------------------------------------------------------
 
+
 def _screenshot_via_mcp(filepath: str) -> bool:
     import base64
+
     try:
         bun_exe = str(Path.home() / ".bun" / "bin" / "bun.exe")
         if not os.path.exists(bun_exe):
@@ -128,15 +138,21 @@ def _screenshot_via_mcp(filepath: str) -> bool:
         si = subprocess.STARTUPINFO()
         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         si.wShowWindow = subprocess.SW_HIDE
-        mcp_script = str(Path.home() / "node_modules" / "screenshot-mcp" / "src" / "index.ts")
+        mcp_script = str(
+            Path.home() / "node_modules" / "screenshot-mcp" / "src" / "index.ts"
+        )
         proc = subprocess.Popen(
             [bun_exe, "run", mcp_script],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             startupinfo=si,
         )
+
         def send(obj):
             proc.stdin.write((json.dumps(obj) + "\n").encode())
             proc.stdin.flush()
+
         def recv(expected_id):
             for _ in range(20):
                 line = proc.stdout.readline()
@@ -149,19 +165,37 @@ def _screenshot_via_mcp(filepath: str) -> bool:
                 if msg.get("id") == expected_id:
                     return msg
             return {}
-        send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
-              "params": {"protocolVersion": "2024-11-05", "capabilities": {},
-                         "clientInfo": {"name": "ai_logger", "version": "2.0"}}})
+
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "ai_logger", "version": "2.0"},
+                },
+            }
+        )
         recv(1)
         send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
-        send({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-              "params": {"name": "list_windows", "arguments": {}}})
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "list_windows", "arguments": {}},
+            }
+        )
         list_resp = recv(2)
         window_id = None
         for item in list_resp.get("result", {}).get("content", []):
             try:
                 windows = json.loads(item.get("text", "[]"))
-                match = next((w for w in windows if "sublime" in w.get("app", "").lower()), None)
+                match = next(
+                    (w for w in windows if "sublime" in w.get("app", "").lower()), None
+                )
                 if match:
                     window_id = match["id"]
                     break
@@ -171,8 +205,17 @@ def _screenshot_via_mcp(filepath: str) -> bool:
             _diagnostic_log("SCREENSHOT: no sublime_text window found")
             proc.terminate()
             return False
-        send({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-              "params": {"name": "screenshot_window", "arguments": {"window_id": window_id}}})
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "screenshot_window",
+                    "arguments": {"window_id": window_id},
+                },
+            }
+        )
         response = recv(3)
         proc.terminate()
         for item in response.get("result", {}).get("content", []):
@@ -188,19 +231,32 @@ def _screenshot_via_mcp(filepath: str) -> bool:
 
 def _screenshot_hash(filepath: str) -> str:
     import hashlib
+
     with open(filepath, "rb") as f:
         return hashlib.md5(f.read()).hexdigest()
 
 
 def _perceptual_hash(filepath: str, hash_size: int = 8) -> int:
     import ctypes
+
     class _StartupInput(ctypes.Structure):
-        _fields_ = [("version", ctypes.c_uint32), ("callback", ctypes.c_void_p),
-                    ("suppress_bg", ctypes.c_bool), ("suppress_ec", ctypes.c_bool)]
+        _fields_ = [
+            ("version", ctypes.c_uint32),
+            ("callback", ctypes.c_void_p),
+            ("suppress_bg", ctypes.c_bool),
+            ("suppress_ec", ctypes.c_bool),
+        ]
+
     class _BitmapData(ctypes.Structure):
-        _fields_ = [("Width", ctypes.c_uint), ("Height", ctypes.c_uint),
-                    ("Stride", ctypes.c_int), ("PixelFormat", ctypes.c_int),
-                    ("Scan0", ctypes.c_void_p), ("Reserved", ctypes.c_void_p)]
+        _fields_ = [
+            ("Width", ctypes.c_uint),
+            ("Height", ctypes.c_uint),
+            ("Stride", ctypes.c_int),
+            ("PixelFormat", ctypes.c_int),
+            ("Scan0", ctypes.c_void_p),
+            ("Reserved", ctypes.c_void_p),
+        ]
+
     try:
         gdi = ctypes.WinDLL("gdiplus", use_last_error=True)
         token = ctypes.c_ulong(0)
@@ -214,25 +270,39 @@ def _perceptual_hash(filepath: str, hash_size: int = 8) -> int:
                 return 0
             tw, th = hash_size + 1, hash_size
             thumb = ctypes.c_void_p(0)
-            if gdi.GdipGetImageThumbnailImage(img, tw, th, ctypes.byref(thumb), None, None) != 0:
+            if (
+                gdi.GdipGetImageThumbnailImage(
+                    img, tw, th, ctypes.byref(thumb), None, None
+                )
+                != 0
+            ):
                 return 0
             bd = _BitmapData()
             rect = (ctypes.c_int * 4)(0, 0, tw, th)
-            if gdi.GdipBitmapLockBits(thumb, rect, 1, 0x0026200A, ctypes.byref(bd)) != 0:
+            if (
+                gdi.GdipBitmapLockBits(thumb, rect, 1, 0x0026200A, ctypes.byref(bd))
+                != 0
+            ):
                 gdi.GdipDisposeImage(thumb)
                 return 0
             try:
                 buf = (ctypes.c_uint8 * (tw * th * 4)).from_address(bd.Scan0)
-                gray = [int(0.299*buf[i*4+2] + 0.587*buf[i*4+1] + 0.114*buf[i*4])
-                        for i in range(tw * th)]
+                gray = [
+                    int(
+                        0.299 * buf[i * 4 + 2]
+                        + 0.587 * buf[i * 4 + 1]
+                        + 0.114 * buf[i * 4]
+                    )
+                    for i in range(tw * th)
+                ]
             finally:
                 gdi.GdipBitmapUnlockBits(thumb, ctypes.byref(bd))
                 gdi.GdipDisposeImage(thumb)
             h = 0
             for row in range(th):
                 for col in range(hash_size):
-                    if gray[row*tw+col] > gray[row*tw+col+1]:
-                        h |= 1 << (row*hash_size+col)
+                    if gray[row * tw + col] > gray[row * tw + col + 1]:
+                        h |= 1 << (row * hash_size + col)
             return h
         finally:
             if img:
@@ -256,10 +326,12 @@ def _take_screenshot(key: str) -> None:
         fp = os.path.join(_SCREENSHOT_DIR, f"ai_{ts}.png")
         if not _screenshot_via_mcp(fp):
             return
+
         def _dedup(fp):
             try:
                 existing = sorted(
-                    f for f in os.listdir(_SCREENSHOT_DIR)
+                    f
+                    for f in os.listdir(_SCREENSHOT_DIR)
                     if f.endswith(".png") and f != os.path.basename(fp)
                 )
                 if existing:
@@ -270,6 +342,7 @@ def _take_screenshot(key: str) -> None:
                 _diagnostic_log(f"SCREENSHOT: {fp}")
             except Exception as e:
                 _diagnostic_log(f"SCREENSHOT_DEDUP_ERROR: {e}")
+
         threading.Thread(target=_dedup, args=(fp,), daemon=True).start()
     except Exception as e:
         _diagnostic_log(f"SCREENSHOT_ERROR: {e}")
@@ -315,6 +388,7 @@ def _find_active_transcript():
 
 # -- JSONL parsing ------------------------------------------------------------
 
+
 def _fmt_ts(iso_ts):
     """ISO UTC timestamp -> local HH:MM:SS."""
     try:
@@ -358,7 +432,7 @@ def _fmt_tool(name, inp):
     if name == "WebFetch":
         return inp.get("url", "")
     if name == "Agent":
-        desc = (inp.get("description") or inp.get("prompt") or "")
+        desc = inp.get("description") or inp.get("prompt") or ""
         return desc[:80] + ("…" if len(desc) > 80 else "")
     if name == "Skill":
         return inp.get("skill", "")
@@ -377,8 +451,8 @@ def _record_to_lines(record, id2name):
     if record.get("isMeta") or record.get("isSidechain"):
         return []
     rtype = record.get("type")
-    ts    = _fmt_ts(record.get("timestamp", ""))
-    out   = []
+    ts = _fmt_ts(record.get("timestamp", ""))
+    out = []
 
     if rtype == "assistant":
         msg = record.get("message") or {}
@@ -397,11 +471,13 @@ def _record_to_lines(record, id2name):
                 id2name[b.get("id", "")] = name
                 inp = b.get("input") or {}
                 detail = _fmt_tool(name, inp)
-                out.append(f"  [{ts}] -> {name}: {detail}" if detail else f"  [{ts}] -> {name}")
+                out.append(
+                    f"  [{ts}] -> {name}: {detail}" if detail else f"  [{ts}] -> {name}"
+                )
 
     elif rtype == "user":
         msg = record.get("message") or {}
-        c   = msg.get("content")
+        c = msg.get("content")
         if isinstance(c, str):
             text = c.strip()
             if text:
@@ -412,8 +488,8 @@ def _record_to_lines(record, id2name):
                     continue
                 if b.get("type") == "tool_result":
                     tool_name = id2name.get(b.get("tool_use_id", ""), "?")
-                    content   = _flatten_text(b.get("content") or "")
-                    preview   = content[:300].replace("\n", " | ")
+                    content = _flatten_text(b.get("content") or "")
+                    preview = content[:300].replace("\n", " | ")
                     if len(content) > 300:
                         preview += f" ... (+{len(content)-300} chars)"
                     mark = "x" if b.get("is_error") else "ok"
@@ -443,6 +519,7 @@ def _record_to_lines(record, id2name):
 
 # -- log append ---------------------------------------------------------------
 
+
 def _append_log(text):
     try:
         os.makedirs(_LOG_DIR, exist_ok=True)
@@ -453,7 +530,84 @@ def _append_log(text):
         _diagnostic_log(f"WRITE_ERROR: {e}")
 
 
+# -- auto-panic ---------------------------------------------------------------
+
+
+def _panic_is_open():
+    for w in sublime.windows():
+        for v in w.views():
+            if v.name() == _PANIC_RESPONSE_VIEW:
+                return True
+    return False
+
+
+def _tool_summary(name, inp):
+    if not inp:
+        return name
+    if "command" in inp:
+        return "bash: " + (inp["command"] or "")[:80]
+    if "code" in inp:
+        return name + ": " + (inp["code"] or "")[:60].replace("\n", " ")
+    for key in ("file_path", "path", "pattern"):
+        if key in inp:
+            return name + ": " + str(inp[key])[:80]
+    keys = list(inp.keys())[:1]
+    if keys:
+        return name + ": " + str(inp[keys[0]])[:60]
+    return name
+
+
+def _format_panic_response(record):
+    msg = record.get("message") or {}
+    content = msg.get("content") or []
+    parts = []
+    for b in content:
+        if not isinstance(b, dict):
+            continue
+        if b.get("type") == "text":
+            text = (b.get("text") or "").strip()
+            if text:
+                parts.append(text)
+        elif b.get("type") == "tool_use":
+            parts.append(
+                "  ● " + _tool_summary(b.get("name", "?"), b.get("input") or {})
+            )
+    return "\n\n".join(parts) if parts else ""
+
+
+def _check_auto_panic(record):
+    if record.get("type") != "assistant":
+        return
+    msg = record.get("message") or {}
+    output_tokens = (msg.get("usage") or {}).get("output_tokens", 0)
+    if output_tokens < _PANIC_THRESHOLD:
+        return
+    text = _format_panic_response(record)
+
+    def _open(t=text):
+        w = sublime.active_window()
+        if not w:
+            return
+        if _panic_is_open():
+            # Update existing response view with new content
+            for win in sublime.windows():
+                for v in win.views():
+                    if v.name() == _PANIC_RESPONSE_VIEW:
+                        v.set_read_only(False)
+                        v.run_command("select_all")
+                        v.run_command("right_delete")
+                        v.run_command(
+                            "append", {"characters": t or "(no text response)"}
+                        )
+                        v.set_read_only(True)
+                        return
+        w.run_command("panic_open", {"response_text": t})
+
+    sublime.set_timeout(_open, 100)
+
+
 # -- core flush ---------------------------------------------------------------
+
 
 def _flush_jsonl(path):
     """Read any new records from path since last offset and log them."""
@@ -489,13 +643,16 @@ def _flush_jsonl(path):
                     # Trim oldest when over limit
                     if len(_seen_uuids) > _SEEN_UUIDS_MAX * 2:
                         cutoff = _seen_uuid_counter - _SEEN_UUIDS_MAX
-                        _seen_uuids = {u: c for u, c in _seen_uuids.items() if c >= cutoff}
+                        _seen_uuids = {
+                            u: c for u, c in _seen_uuids.items() if c >= cutoff
+                        }
                 ts = record.get("timestamp", "")
                 if ts:
                     _last_record_ts = ts
             except json.JSONDecodeError:
                 continue
             lines_out.extend(_record_to_lines(record, _id2name))
+            _check_auto_panic(record)
         if lines_out:
             _append_log("\n".join(lines_out))
         _save_state()
@@ -503,7 +660,33 @@ def _flush_jsonl(path):
         _diagnostic_log(f"JSONL_FLUSH_ERROR: {e}")
 
 
+# -- auto-panic ---------------------------------------------------------------
+
+
+def _panic_is_open():
+    for w in sublime.windows():
+        for v in w.views():
+            if v.name() == _PANIC_RESPONSE_VIEW:
+                return True
+    return False
+
+
+def _auto_panic(text):
+    if _panic_is_open():
+        return
+
+    def _open():
+        w = sublime.active_window()
+        if w:
+            w.run_command("panic_open", {"response_text": text})
+
+    sublime.set_timeout(_open, 100)
+
+
 # -- main tick ----------------------------------------------------------------
+
+_PANIC_REPLY_FILE = os.path.join(os.path.expanduser("~"), ".claude", "panic_reply.txt")
+
 
 def _tick():
     global _last_cleanup_time
@@ -511,6 +694,22 @@ def _tick():
     if current_time - _last_cleanup_time > 9000:
         _cleanup_old_screenshots()
         _last_cleanup_time = current_time
+    # If user sent a panic reply, send "read panic" to the Ai terminal view
+    if os.path.exists(_PANIC_REPLY_FILE):
+        try:
+            import sys as _sys
+
+            _Terminal = _sys.modules["Terminus.terminus.terminal"].Terminal
+            for _w in sublime.windows():
+                for _v in _w.views():
+                    if _v.settings().get(_AI_VIEW_SETTING):
+                        _t = _Terminal.from_id(_v.id())
+                        if _t:  # this is looping
+                            # _t.send_string("read panic\n")
+                            pass
+                        break
+        except Exception as _e:
+            _diagnostic_log(f"PANIC_SEND_ERROR: {_e}")
     path = _find_active_transcript()
     if path:
         _flush_jsonl(path)
@@ -524,6 +723,7 @@ def _tick():
 
 
 # -- commands -----------------------------------------------------------------
+
 
 class AiCaptureScrollPositionCommand(sublime_plugin.TextCommand):
     """Screenshot ST at the current scroll position (manual trigger)."""
@@ -547,13 +747,16 @@ class AiCaptureScrollPositionCommand(sublime_plugin.TextCommand):
 
 # -- lifecycle ----------------------------------------------------------------
 
+
 def plugin_loaded():
     _load_state()
     os.makedirs(_LOG_DIR, exist_ok=True)
     _cleanup_old_screenshots()
     sublime.set_timeout(_tick, _CHECK_MS)
-    msg = (f"ai_logger: initialized (JSONL mode, polling every {_CHECK_MS}ms, "
-           f"screenshots every {_SCREENSHOT_INTERVAL}s)")
+    msg = (
+        f"ai_logger: initialized (JSONL mode, polling every {_CHECK_MS}ms, "
+        f"screenshots every {_SCREENSHOT_INTERVAL}s)"
+    )
     print(msg)
     _diagnostic_log(msg)
 
