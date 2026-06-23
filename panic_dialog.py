@@ -24,8 +24,17 @@ _PANIC_VIEW_SETTING = "panic_reply_view"
 _RESPONSE_VIEW = "Panic: Response"
 _REPLY_VIEW = "Panic: Reply"
 _QUOTE_KEY = "panic_quotes"
+_BTN_KEY = "panic_send"
 
 _phantom_sets = {}
+_saved_layout = {}  # layout saved before panic opens, restored on close
+
+_PANIC_LAYOUT = {
+    "cols": [0.0, 0.55, 1.0],
+    "rows": [0.0, 0.56, 1.0],
+    "cells": [[0, 0, 1, 1], [1, 0, 2, 1], [0, 1, 1, 2], [1, 1, 2, 2]],
+}
+# Groups: 0=upper-left (Ai), 1=upper-right (files), 2=lower-left (Response), 3=lower-right (Reply)
 
 
 # ── JSONL reader ──────────────────────────────────────────────────────────────
@@ -89,17 +98,64 @@ def _close_panic():
         w, v = _find_view(name)
         if v:
             _phantom_sets.pop(v.id(), None)
+            _phantom_sets.pop(str(v.id()) + "_btn", None)
             v.close()
+    # Restore pre-panic layout
+    if _saved_layout:
+        for w in sublime.windows():
+            w.set_layout(_saved_layout.get("layout", _PANIC_LAYOUT))
+        _saved_layout.clear()
 
 
-# ── Quote phantoms ────────────────────────────────────────────────────────────
+# ── Phantom buttons ───────────────────────────────────────────────────────────
+# Amber (#e6b450) editorial palette — annotation-tool aesthetic.
+# Send/Cancel live at the END of the read-only Response view: stable, never moves.
 
 def _quote_btn(href):
     return (
-        '<a href="{}" style="background-color:#313244;color:#89b4fa;'
-        'padding:1px 9px;text-decoration:none;border-radius:3px;'
-        'font-size:11px;font-family:system-ui;">Quote ↓</a>'.format(href)
+        '<a href="{}" style="background-color:#2d2a20;color:#e6b450;'
+        'padding:2px 10px;text-decoration:none;border-radius:2px;'
+        'font-size:11px;font-family:system-ui;letter-spacing:.03em;">❝ quote</a>'
+        .format(href)
     )
+
+
+def _send_area_html():
+    rule = '<span style="color:#3a3630;font-family:monospace;font-size:10px;">' + ('─' * 48) + '</span>'
+    send = (
+        '<a href="send:" style="background-color:#e6b450;color:#111;'
+        'padding:5px 22px;text-decoration:none;border-radius:3px;'
+        'font-size:13px;font-weight:bold;font-family:system-ui;">Send reply</a>'
+    )
+    cancel = (
+        '&nbsp;&nbsp;&nbsp;'
+        '<a href="cancel:" style="color:#888;font-size:12px;font-family:system-ui;'
+        'text-decoration:underline;">cancel</a>'
+    )
+    hint = (
+        '&nbsp;&nbsp;&nbsp;'
+        '<span style="color:#4a4a4a;font-size:11px;font-family:system-ui;">'
+        'Ctrl+Enter in Reply</span>'
+    )
+    return rule + '<br>' + send + cancel + hint
+
+
+def _build_action_buttons(resp_view):
+    end = resp_view.size()
+    ps = sublime.PhantomSet(resp_view, _BTN_KEY)
+    ps.update([sublime.Phantom(
+        sublime.Region(end), _send_area_html(), sublime.LAYOUT_BLOCK, _on_action
+    )])
+    _phantom_sets[str(resp_view.id()) + "_btn"] = ps
+
+
+def _on_action(href):
+    if href == "send:":
+        for w in sublime.windows():
+            _do_send(w)
+            return
+    elif href == "cancel:":
+        _close_panic()
 
 
 def _build_quote_phantoms(resp_view):
@@ -171,15 +227,29 @@ class PanicOpenCommand(sublime_plugin.WindowCommand):
             sublime.error_message("No Claude response found in transcript.")
             return
 
+        # Save current layout to restore on close
+        _saved_layout["layout"] = self.window.get_layout()
+
+        # Apply 2x2 grid: Ai=upper-left, files=upper-right, Response=lower-left, Reply=lower-right
+        self.window.set_layout(_PANIC_LAYOUT)
+
+        # Move Ai terminal to group 0 (upper-left)
+        for v in self.window.views():
+            if v.settings().get(_AI_VIEW_SETTING):
+                self.window.set_view_index(v, 0, 0)
+                break
+
         resp = _get_or_create_view(self.window, _RESPONSE_VIEW)
         _set_view_text(resp, response_text)
         resp.set_read_only(True)
         _build_quote_phantoms(resp)
-        self.window.focus_view(resp)
+        _build_action_buttons(resp)   # Send/Cancel at bottom of read-only Response
+        self.window.set_view_index(resp, 2, 0)
 
         reply = _get_or_create_view(self.window, _REPLY_VIEW)
         _set_view_text(reply, "")
         reply.settings().set(_PANIC_VIEW_SETTING, True)
+        self.window.set_view_index(reply, 3, 0)
         self.window.focus_view(reply)
 
         sublime.status_message("Panic: Ctrl+Enter — Send  |  Escape — Cancel")
