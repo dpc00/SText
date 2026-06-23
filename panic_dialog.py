@@ -1,10 +1,11 @@
-"""panic_dialog.py — Quote-and-Reply dialog for Claude conversations.
+"""panic_dialog.py — Quote-and-Reply panel for Claude conversations.
 
-Opens an HTML sheet with Claude's last response. User selects text to quote
-it into a reply textarea, then clicks Send to inject back into Terminus.
+Opens two side-by-side views:
+  Left  — response (read-only), each paragraph has a [Quote] phantom button
+  Right — reply (editable), [Send] phantom at bottom injects into Terminus
 
 Commands:
-  panic_open   — open the dialog (reads last response from JSONL transcript)
+  panic_open   — open the panel (reads last response from JSONL transcript)
 """
 
 import glob
@@ -16,13 +17,19 @@ import sublime
 import sublime_plugin
 
 _AI_VIEW_SETTING = "ai_logger"
-_SHEET_NAME = "Panic — Quote & Reply"
+_PANIC_REPLY_FILE = os.path.join(os.path.expanduser("~"), ".claude", "panic_reply.txt")
+_RESPONSE_VIEW = "Panic: Response"
+_REPLY_VIEW = "Panic: Reply"
+_QUOTE_KEY = "panic_quotes"
+_SEND_KEY = "panic_send"
+
+# Keep PhantomSets alive (GC'd if not referenced)
+_phantom_sets = {}
 
 
 # ── JSONL reader ──────────────────────────────────────────────────────────────
 
 def _last_claude_response():
-    """Return last assistant text from the most recent JSONL transcript."""
     pattern = os.path.expanduser("~/.claude/projects/**/*.jsonl")
     files = glob.glob(pattern, recursive=True)
     if not files:
@@ -52,219 +59,158 @@ def _last_claude_response():
 # ── Terminus sender ───────────────────────────────────────────────────────────
 
 def _send_to_terminus(window, text):
+    # Write full reply to file; send short trigger command to terminal
+    # (multi-line text can't be sent raw — terminal treats \n as Enter)
+    os.makedirs(os.path.dirname(_PANIC_REPLY_FILE), exist_ok=True)
+    with open(_PANIC_REPLY_FILE, "w", encoding="utf-8") as f:
+        f.write(text)
     for view in window.views():
         if view.settings().get(_AI_VIEW_SETTING):
-            view.run_command("terminus_send_string", {"string": text + "\n"})
+            view.run_command("terminus_send_string", {"string": "read panic\n"})
             window.focus_view(view)
             return
     sublime.error_message("No Ai terminal found — open Claude Code first.")
 
 
-# ── HTML builder ──────────────────────────────────────────────────────────────
+# ── View lookup (no self dependency) ─────────────────────────────────────────
 
-_HTML_TEMPLATE = r"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  font-family: 'Consolas', 'Courier New', monospace;
-  font-size: 13px;
-  background: #1e1e2e;
-  color: #cdd6f4;
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  overflow: hidden;
-}
-
-/* ── response pane ── */
-#response {
-  flex: 1 1 55%;
-  overflow-y: auto;
-  padding: 16px;
-  border-bottom: 2px solid #313244;
-  line-height: 1.75;
-  user-select: text;
-  cursor: text;
-}
-.para {
-  margin-bottom: 14px;
-  padding: 4px 8px;
-  border-radius: 4px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.para:hover { background: #28283e; }
-
-/* ── reply pane ── */
-#reply-section {
-  flex: 0 0 auto;
-  padding: 10px 16px 0;
-}
-#reply-label {
-  font-size: 11px;
-  color: #6c7086;
-  text-transform: uppercase;
-  letter-spacing: .06em;
-  margin-bottom: 5px;
-}
-#reply {
-  width: 100%;
-  height: 160px;
-  background: #24273a;
-  color: #cdd6f4;
-  border: 1px solid #45475a;
-  border-radius: 6px;
-  padding: 10px;
-  font: inherit;
-  resize: vertical;
-}
-#reply:focus { border-color: #89b4fa; outline: none; }
-
-/* ── buttons ── */
-#buttons {
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-  padding: 8px 16px 12px;
-  flex-shrink: 0;
-}
-button {
-  padding: 7px 22px;
-  border: none;
-  border-radius: 5px;
-  font: inherit;
-  cursor: pointer;
-}
-#send-btn { background: #89b4fa; color: #1e1e2e; font-weight: bold; }
-#send-btn:hover { background: #b4befe; }
-#cancel-btn { background: #313244; color: #cdd6f4; }
-#cancel-btn:hover { background: #45475a; }
-
-/* ── quote popup ── */
-#quote-popup {
-  position: fixed;
-  display: none;
-  background: #89b4fa;
-  color: #1e1e2e;
-  padding: 5px 13px;
-  border-radius: 5px;
-  font-size: 12px;
-  font-weight: bold;
-  cursor: pointer;
-  box-shadow: 0 3px 10px rgba(0,0,0,.5);
-  z-index: 1000;
-  white-space: nowrap;
-  pointer-events: auto;
-}
-#quote-popup:hover { background: #b4befe; }
-</style>
-</head>
-<body>
-
-<div id="quote-popup" onclick="insertQuote()">Quote ↓</div>
-<div id="response"></div>
-
-<div id="reply-section">
-  <div id="reply-label">Your reply</div>
-  <textarea id="reply" placeholder="Select text above to quote it, then type your comment below the quote…"></textarea>
-</div>
-
-<div id="buttons">
-  <button id="cancel-btn" onclick="location.href='cancel:'">Cancel</button>
-  <button id="send-btn" onclick="doSend()">Send ↵</button>
-</div>
-
-<script>
-var RESPONSE_TEXT = RESPONSE_JSON_PLACEHOLDER;
-
-// Render paragraphs
-var container = document.getElementById('response');
-var paras = RESPONSE_TEXT.split(/\n{2,}/);
-paras.forEach(function(p) {
-  p = p.trim();
-  if (!p) return;
-  var div = document.createElement('div');
-  div.className = 'para';
-  div.textContent = p;
-  container.appendChild(div);
-});
-
-// ── Quote popup ──────────────────────────────────────────────────────────────
-var _sel = '';
-
-document.addEventListener('mouseup', function(e) {
-  if (e.target.id === 'quote-popup') return;
-  var sel = window.getSelection().toString().trim();
-  if (sel.length > 5) {
-    _sel = sel;
-    var popup = document.getElementById('quote-popup');
-    popup.style.display = 'block';
-    var x = Math.min(e.pageX - 10, window.innerWidth - 140);
-    var y = e.pageY - 44;
-    if (y < 4) y = e.pageY + 10;
-    popup.style.left = x + 'px';
-    popup.style.top = y + 'px';
-  } else {
-    hidePopup();
-  }
-});
-
-document.addEventListener('mousedown', function(e) {
-  if (e.target.id !== 'quote-popup') hidePopup();
-});
-
-function hidePopup() {
-  document.getElementById('quote-popup').style.display = 'none';
-}
-
-function insertQuote() {
-  var ta = document.getElementById('reply');
-  var quoted = _sel.split('\n').map(function(l){ return '> ' + l; }).join('\n') + '\n\n';
-  var pos = ta.selectionEnd;
-  var before = ta.value.substring(0, pos);
-  if (before.length && !before.endsWith('\n\n')) before += '\n\n';
-  var after = ta.value.substring(pos);
-  ta.value = before + quoted + after;
-  var newPos = (before + quoted).length;
-  ta.focus();
-  ta.setSelectionRange(newPos, newPos);
-  hidePopup();
-  // scroll reply into view
-  ta.scrollTop = ta.scrollHeight;
-}
-
-// ── Send ─────────────────────────────────────────────────────────────────────
-function doSend() {
-  var reply = document.getElementById('reply').value.trim();
-  if (!reply) return;
-  location.href = 'send:' + encodeURIComponent(reply);
-}
-
-// ctrl+enter sends
-document.addEventListener('keydown', function(e) {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') doSend();
-});
-</script>
-
-</body>
-</html>
-"""
+def _find_view(name):
+    """Find a view by name across all windows. Returns (window, view) or (None, None)."""
+    for w in sublime.windows():
+        for v in w.views():
+            if v.name() == name:
+                return w, v
+    return None, None
 
 
-def _build_html(response_text):
-    placeholder = json.dumps(response_text)
-    return _HTML_TEMPLATE.replace("RESPONSE_JSON_PLACEHOLDER", placeholder)
+def _get_or_create_view(window, name, group):
+    for v in window.views():
+        if v.name() == name:
+            window.set_view_index(v, group, 0)
+            return v
+    v = window.new_file()
+    v.set_name(name)
+    v.set_scratch(True)
+    window.set_view_index(v, group, 0)
+    return v
+
+
+def _set_view_text(view, text):
+    view.set_read_only(False)
+    view.run_command("select_all")
+    view.run_command("right_delete")
+    view.run_command("append", {"characters": text})
+
+
+# ── Phantom builders ──────────────────────────────────────────────────────────
+
+def _quote_btn_html(href):
+    return (
+        '<a href="{}" style="background-color:#313244;color:#89b4fa;'
+        'padding:1px 9px;text-decoration:none;border-radius:3px;'
+        'font-size:11px;font-family:system-ui;">Quote ↓</a>'.format(href)
+    )
+
+
+def _send_btn_html():
+    return (
+        '<a href="send:" style="background-color:#89b4fa;color:#1e1e2e;'
+        'padding:4px 18px;text-decoration:none;border-radius:4px;'
+        'font-size:13px;font-weight:bold;font-family:system-ui;">Send ↵</a>'
+        '&nbsp;&nbsp;'
+        '<a href="cancel:" style="background-color:#313244;color:#cdd6f4;'
+        'padding:4px 14px;text-decoration:none;border-radius:4px;'
+        'font-size:13px;font-family:system-ui;">Cancel</a>'
+    )
+
+
+def _build_quote_phantoms(resp_view):
+    content = resp_view.substr(sublime.Region(0, resp_view.size()))
+    phantoms = []
+    pos = 0
+    for para in content.split("\n\n"):
+        end = pos + len(para)
+        if para.strip():
+            href = "quote:" + urllib.parse.quote(para.strip(), safe="")
+            ph = sublime.Phantom(
+                sublime.Region(end),
+                _quote_btn_html(href),
+                sublime.LAYOUT_BLOCK,
+                _on_quote,
+            )
+            phantoms.append(ph)
+        pos = end + 2
+    ps = sublime.PhantomSet(resp_view, _QUOTE_KEY)
+    ps.update(phantoms)
+    _phantom_sets[resp_view.id()] = ps
+
+
+def _build_send_phantom(reply_view):
+    ph = sublime.Phantom(
+        sublime.Region(reply_view.size()),
+        _send_btn_html(),
+        sublime.LAYOUT_BLOCK,
+        _on_send,
+    )
+    ps = sublime.PhantomSet(reply_view, _SEND_KEY)
+    ps.update([ph])
+    _phantom_sets[reply_view.id()] = ps
+
+
+# ── Module-level callbacks (no self, no GC risk) ──────────────────────────────
+
+def _on_quote(href):
+    if not href.startswith("quote:"):
+        return
+    para = urllib.parse.unquote(href[6:])
+    quoted = "\n".join("> " + l for l in para.split("\n")) + "\n\n"
+    w, reply = _find_view(_REPLY_VIEW)
+    if not reply:
+        return
+    reply.run_command("move_to", {"to": "eof"})
+    reply.run_command("append", {"characters": quoted})
+    w.focus_view(reply)
+    reply.run_command("move_to", {"to": "eof"})
+    _build_send_phantom(reply)
+
+
+def _on_send(href):
+    if href == "cancel:":
+        _close_panic()
+        return
+    if href != "send:":
+        return
+    w, reply = _find_view(_REPLY_VIEW)
+    if not reply:
+        return
+    text = reply.substr(sublime.Region(0, reply.size())).strip()
+    if not text:
+        sublime.status_message("Panic: reply is empty.")
+        return
+    _send_to_terminus(w, text)
+    _close_panic()
+
+
+def _close_panic():
+    for name in (_RESPONSE_VIEW, _REPLY_VIEW):
+        w, v = _find_view(name)
+        if v:
+            _phantom_sets.pop(v.id(), None)
+            v.close()
+    for w in sublime.windows():
+        current = w.get_layout()
+        if len(current.get("cols", [])) > 2:
+            w.set_layout({
+                "cols": [0.0, 1.0],
+                "rows": [0.0, 1.0],
+                "cells": [[0, 0, 1, 1]],
+            })
 
 
 # ── Command ───────────────────────────────────────────────────────────────────
 
 class PanicOpenCommand(sublime_plugin.WindowCommand):
-    """Open the Quote-and-Reply dialog with Claude's last response."""
-
-    _sheet = None
+    """Open the Quote-and-Reply panel with Claude's last response."""
 
     def run(self, response_text=None):
         if response_text is None:
@@ -272,26 +218,19 @@ class PanicOpenCommand(sublime_plugin.WindowCommand):
         if not response_text:
             sublime.error_message("No Claude response found in transcript.")
             return
-        html = _build_html(response_text)
-        PanicOpenCommand._sheet = self.window.new_html_sheet(
-            _SHEET_NAME,
-            html,
-            on_navigate=self._on_navigate,
-        )
 
-    def _on_navigate(self, href):
-        if href == "cancel:":
-            self._close_sheet()
-        elif href.startswith("send:"):
-            reply = urllib.parse.unquote(href[5:])
-            _send_to_terminus(self.window, reply)
-            self._close_sheet()
+        self.window.set_layout({
+            "cols": [0.0, 0.52, 1.0],
+            "rows": [0.0, 1.0],
+            "cells": [[0, 0, 1, 1], [1, 0, 2, 1]],
+        })
 
-    def _close_sheet(self):
-        sheet = PanicOpenCommand._sheet
-        if sheet:
-            try:
-                sheet.close()
-            except Exception:
-                pass
-            PanicOpenCommand._sheet = None
+        resp = _get_or_create_view(self.window, _RESPONSE_VIEW, 0)
+        _set_view_text(resp, response_text)
+        resp.set_read_only(True)
+        _build_quote_phantoms(resp)
+
+        reply = _get_or_create_view(self.window, _REPLY_VIEW, 1)
+        _set_view_text(reply, "")
+        _build_send_phantom(reply)
+        self.window.focus_view(reply)
