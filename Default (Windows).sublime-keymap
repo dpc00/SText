@@ -6,5 +6,8 @@
 	{"keys": ["ctrl+alt+h"], "command": "ai_hub_open"},
 	{"keys": ["ctrl+alt+l"], "command": "ccstatusline_editor_open"},
 	{"keys": ["ctrl+alt+g"], "command": "claude_grab_response"},
-	{"keys": ["ctrl+alt+r"], "command": "claude_send_tab"}
+	{"keys": ["ctrl+alt+r"], "command": "claude_send_tab"},
+	{"keys": ["ctrl+alt+p"], "command": "panic_open"},
+	{"keys": ["ctrl+enter"], "command": "panic_send", "context": [{"key": "setting.panic_reply_view", "operator": "equal", "operand": true}]},
+	{"keys": ["escape"], "command": "panic_cancel", "context": [{"key": "setting.panic_reply_view", "operator": "equal", "operand": true}]}
 ]

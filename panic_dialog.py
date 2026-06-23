@@ -1,11 +1,13 @@
 """panic_dialog.py — Quote-and-Reply panel for Claude conversations.
 
-Opens two side-by-side views:
-  Left  — response (read-only), each paragraph has a [Quote] phantom button
-  Right — reply (editable), [Send] phantom at bottom injects into Terminus
+Opens two tabs in the current group:
+  Panic: Response — read-only, each paragraph has a [Quote ↓] phantom button
+  Panic: Reply    — editable; Ctrl+Enter sends, Escape cancels
 
 Commands:
-  panic_open   — open the panel (reads last response from JSONL transcript)
+  panic_open   — open panel (reads last JSONL response if no arg given)
+  panic_send   — send reply (bound to Ctrl+Enter in the reply view)
+  panic_cancel — cancel / close both views
 """
 
 import glob
@@ -18,12 +20,11 @@ import sublime_plugin
 
 _AI_VIEW_SETTING = "ai_logger"
 _PANIC_REPLY_FILE = os.path.join(os.path.expanduser("~"), ".claude", "panic_reply.txt")
+_PANIC_VIEW_SETTING = "panic_reply_view"
 _RESPONSE_VIEW = "Panic: Response"
 _REPLY_VIEW = "Panic: Reply"
 _QUOTE_KEY = "panic_quotes"
-_SEND_KEY = "panic_send"
 
-# Keep PhantomSets alive (GC'd if not referenced)
 _phantom_sets = {}
 
 
@@ -56,26 +57,9 @@ def _last_claude_response():
     return last_text
 
 
-# ── Terminus sender ───────────────────────────────────────────────────────────
-
-def _send_to_terminus(window, text):
-    # Write full reply to file; send short trigger command to terminal
-    # (multi-line text can't be sent raw — terminal treats \n as Enter)
-    os.makedirs(os.path.dirname(_PANIC_REPLY_FILE), exist_ok=True)
-    with open(_PANIC_REPLY_FILE, "w", encoding="utf-8") as f:
-        f.write(text)
-    for view in window.views():
-        if view.settings().get(_AI_VIEW_SETTING):
-            view.run_command("terminus_send_string", {"string": "read panic\n"})
-            window.focus_view(view)
-            return
-    sublime.error_message("No Ai terminal found — open Claude Code first.")
-
-
-# ── View lookup (no self dependency) ─────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _find_view(name):
-    """Find a view by name across all windows. Returns (window, view) or (None, None)."""
     for w in sublime.windows():
         for v in w.views():
             if v.name() == name:
@@ -83,15 +67,13 @@ def _find_view(name):
     return None, None
 
 
-def _get_or_create_view(window, name, group):
+def _get_or_create_view(window, name):
     for v in window.views():
         if v.name() == name:
-            window.set_view_index(v, group, 0)
             return v
     v = window.new_file()
     v.set_name(name)
     v.set_scratch(True)
-    window.set_view_index(v, group, 0)
     return v
 
 
@@ -102,25 +84,21 @@ def _set_view_text(view, text):
     view.run_command("append", {"characters": text})
 
 
-# ── Phantom builders ──────────────────────────────────────────────────────────
+def _close_panic():
+    for name in (_RESPONSE_VIEW, _REPLY_VIEW):
+        w, v = _find_view(name)
+        if v:
+            _phantom_sets.pop(v.id(), None)
+            v.close()
 
-def _quote_btn_html(href):
+
+# ── Quote phantoms ────────────────────────────────────────────────────────────
+
+def _quote_btn(href):
     return (
         '<a href="{}" style="background-color:#313244;color:#89b4fa;'
         'padding:1px 9px;text-decoration:none;border-radius:3px;'
         'font-size:11px;font-family:system-ui;">Quote ↓</a>'.format(href)
-    )
-
-
-def _send_btn_html():
-    return (
-        '<a href="send:" style="background-color:#89b4fa;color:#1e1e2e;'
-        'padding:4px 18px;text-decoration:none;border-radius:4px;'
-        'font-size:13px;font-weight:bold;font-family:system-ui;">Send ↵</a>'
-        '&nbsp;&nbsp;'
-        '<a href="cancel:" style="background-color:#313244;color:#cdd6f4;'
-        'padding:4px 14px;text-decoration:none;border-radius:4px;'
-        'font-size:13px;font-family:system-ui;">Cancel</a>'
     )
 
 
@@ -132,85 +110,59 @@ def _build_quote_phantoms(resp_view):
         end = pos + len(para)
         if para.strip():
             href = "quote:" + urllib.parse.quote(para.strip(), safe="")
-            ph = sublime.Phantom(
+            phantoms.append(sublime.Phantom(
                 sublime.Region(end),
-                _quote_btn_html(href),
+                _quote_btn(href),
                 sublime.LAYOUT_BLOCK,
                 _on_quote,
-            )
-            phantoms.append(ph)
+            ))
         pos = end + 2
     ps = sublime.PhantomSet(resp_view, _QUOTE_KEY)
     ps.update(phantoms)
     _phantom_sets[resp_view.id()] = ps
 
 
-def _build_send_phantom(reply_view):
-    ph = sublime.Phantom(
-        sublime.Region(reply_view.size()),
-        _send_btn_html(),
-        sublime.LAYOUT_BLOCK,
-        _on_send,
-    )
-    ps = sublime.PhantomSet(reply_view, _SEND_KEY)
-    ps.update([ph])
-    _phantom_sets[reply_view.id()] = ps
-
-
-# ── Module-level callbacks (no self, no GC risk) ──────────────────────────────
-
 def _on_quote(href):
     if not href.startswith("quote:"):
         return
     para = urllib.parse.unquote(href[6:])
     quoted = "\n".join("> " + l for l in para.split("\n")) + "\n\n"
-    w, reply = _find_view(_REPLY_VIEW)
+    _, reply = _find_view(_REPLY_VIEW)
     if not reply:
         return
     reply.run_command("move_to", {"to": "eof"})
     reply.run_command("append", {"characters": quoted})
-    w.focus_view(reply)
-    reply.run_command("move_to", {"to": "eof"})
-    _build_send_phantom(reply)
+    # stay in Response view so user can keep quoting without switching back
 
 
-def _on_send(href):
-    if href == "cancel:":
-        _close_panic()
-        return
-    if href != "send:":
-        return
+# ── Send / Cancel ─────────────────────────────────────────────────────────────
+
+def _do_send(window):
     w, reply = _find_view(_REPLY_VIEW)
     if not reply:
         return
     text = reply.substr(sublime.Region(0, reply.size())).strip()
     if not text:
-        sublime.status_message("Panic: reply is empty.")
+        sublime.status_message("Panic: reply is empty")
         return
-    _send_to_terminus(w, text)
+    os.makedirs(os.path.dirname(_PANIC_REPLY_FILE), exist_ok=True)
+    with open(_PANIC_REPLY_FILE, "w", encoding="utf-8") as f:
+        f.write(text)
+    for view in w.views():
+        if view.settings().get(_AI_VIEW_SETTING):
+            view.run_command("terminus_send_string", {"string": "read panic\n"})
+            w.focus_view(view)
+            break
+    else:
+        sublime.error_message("No Ai terminal found — open Claude Code first.")
+        return
     _close_panic()
 
 
-def _close_panic():
-    for name in (_RESPONSE_VIEW, _REPLY_VIEW):
-        w, v = _find_view(name)
-        if v:
-            _phantom_sets.pop(v.id(), None)
-            v.close()
-    for w in sublime.windows():
-        current = w.get_layout()
-        if len(current.get("cols", [])) > 2:
-            w.set_layout({
-                "cols": [0.0, 1.0],
-                "rows": [0.0, 1.0],
-                "cells": [[0, 0, 1, 1]],
-            })
-
-
-# ── Command ───────────────────────────────────────────────────────────────────
+# ── Commands ──────────────────────────────────────────────────────────────────
 
 class PanicOpenCommand(sublime_plugin.WindowCommand):
-    """Open the Quote-and-Reply panel with Claude's last response."""
+    """Open the Quote-and-Reply panel."""
 
     def run(self, response_text=None):
         if response_text is None:
@@ -219,18 +171,33 @@ class PanicOpenCommand(sublime_plugin.WindowCommand):
             sublime.error_message("No Claude response found in transcript.")
             return
 
-        self.window.set_layout({
-            "cols": [0.0, 0.52, 1.0],
-            "rows": [0.0, 1.0],
-            "cells": [[0, 0, 1, 1], [1, 0, 2, 1]],
-        })
-
-        resp = _get_or_create_view(self.window, _RESPONSE_VIEW, 0)
+        resp = _get_or_create_view(self.window, _RESPONSE_VIEW)
         _set_view_text(resp, response_text)
         resp.set_read_only(True)
         _build_quote_phantoms(resp)
+        self.window.focus_view(resp)
 
-        reply = _get_or_create_view(self.window, _REPLY_VIEW, 1)
+        reply = _get_or_create_view(self.window, _REPLY_VIEW)
         _set_view_text(reply, "")
-        _build_send_phantom(reply)
+        reply.settings().set(_PANIC_VIEW_SETTING, True)
         self.window.focus_view(reply)
+
+        sublime.status_message("Panic: Ctrl+Enter — Send  |  Escape — Cancel")
+
+
+class PanicSendCommand(sublime_plugin.WindowCommand):
+    """Send the panic reply (Ctrl+Enter in the reply view)."""
+
+    def run(self):
+        _do_send(self.window)
+
+    def is_enabled(self):
+        _, v = _find_view(_REPLY_VIEW)
+        return v is not None
+
+
+class PanicCancelCommand(sublime_plugin.WindowCommand):
+    """Cancel the panic dialog."""
+
+    def run(self):
+        _close_panic()
