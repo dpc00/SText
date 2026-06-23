@@ -10,5 +10,7 @@
 	{"caption": "Ai: List Recent Sessions", "command": "ai_list_sessions"},
 	{"caption": "Ai: Search Conversations", "command": "ai_search_conversations"},
 	{"caption": "Ai: Quit Flask Apps", "command": "ai_quit_flask_apps"},
-	{"caption": "CC Statusline Editor", "command": "ccstatusline_editor_open"}
+	{"caption": "CC Statusline Editor", "command": "ccstatusline_editor_open"},
+	{"caption": "Claude: Grab Last Response", "command": "claude_grab_response"},
+	{"caption": "Claude: Send Tab as Reply", "command": "claude_send_tab"}
 ]

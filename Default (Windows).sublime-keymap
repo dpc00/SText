@@ -4,5 +4,7 @@
 	{"keys": ["ctrl+alt+i"], "command": "capture_idea"},
 	{"keys": ["ctrl+alt+o"], "command": "open_idea_inbox"},
 	{"keys": ["ctrl+alt+h"], "command": "ai_hub_open"},
-	{"keys": ["ctrl+alt+l"], "command": "ccstatusline_editor_open"}
+	{"keys": ["ctrl+alt+l"], "command": "ccstatusline_editor_open"},
+	{"keys": ["ctrl+alt+g"], "command": "claude_grab_response"},
+	{"keys": ["ctrl+alt+r"], "command": "claude_send_tab"}
 ]

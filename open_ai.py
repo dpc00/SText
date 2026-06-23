@@ -7,6 +7,8 @@ Command names as Sublime Text sees them:
   open_ai_terminus_here
 """
 
+import glob
+import json
 import os
 import subprocess
 import sys
@@ -118,3 +120,75 @@ class OpenAiTerminusHereCommand(sublime_plugin.WindowCommand):
 
     def is_visible(self, paths=None):
         return True
+
+
+def _get_response_tab(window):
+    """Find or create the Claude Response scratch tab."""
+    for v in window.views():
+        if v.name() == "Claude Response":
+            return v
+    v = window.new_file()
+    v.set_name("Claude Response")
+    v.set_scratch(True)
+    return v
+
+
+def _last_claude_response():
+    """Return the last assistant text from the most recent JSONL transcript."""
+    pattern = os.path.expanduser("~/.claude/projects/C--Users-donal-projects-SText/*.jsonl")
+    files = glob.glob(pattern)
+    if not files:
+        return None
+    latest = max(files, key=os.path.getmtime)
+    last_text = None
+    try:
+        with open(latest, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                # Records with role=assistant and text content
+                msg = rec.get("message", {})
+                if msg.get("role") == "assistant":
+                    for block in msg.get("content", []):
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            last_text = block["text"]
+    except OSError:
+        return None
+    return last_text
+
+
+class ClaudeGrabResponseCommand(sublime_plugin.WindowCommand):
+    """Grab Claude's last response from the transcript and open it in the Claude Response tab."""
+
+    def run(self):
+        text = _last_claude_response()
+        if not text:
+            sublime.status_message("No Claude response found in transcript")
+            return
+        v = _get_response_tab(self.window)
+        v.set_read_only(False)
+        separator = "\n\n--- CLAUDE ---\n"
+        v.run_command("append", {"characters": separator + text + "\n\n--- YOUR TURN (use >> for your lines) ---\n"})
+        self.window.focus_view(v)
+        v.run_command("move_to", {"to": "eof"})
+
+
+class ClaudeSendTabCommand(sublime_plugin.WindowCommand):
+    """Send the Claude Response tab contents back to the Ai terminal."""
+
+    def run(self):
+        ai_view = None
+        for v in self.window.views():
+            if v.settings().get(_AI_VIEW_SETTING):
+                ai_view = v
+                break
+        if ai_view is None:
+            sublime.status_message("No Ai terminal found")
+            return
+        self.window.focus_view(ai_view)
+        ai_view.run_command("terminus_send_string", {"string": "read tab\n"})
