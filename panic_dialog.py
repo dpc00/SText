@@ -19,7 +19,6 @@ import sublime
 import sublime_plugin
 
 _AI_VIEW_SETTING = "ai_logger"
-_PANIC_REPLY_FILE = os.path.join(os.path.expanduser("~"), ".claude", "panic_reply.txt")
 _PANIC_VIEW_SETTING = "panic_reply_view"
 _RESPONSE_VIEW = "Panic: Response"
 _REPLY_VIEW = "Panic: Reply — Ctrl+Enter to Send"
@@ -38,6 +37,7 @@ _PANIC_LAYOUT = {
 
 
 # ── JSONL reader ──────────────────────────────────────────────────────────────
+
 
 def _last_claude_response():
     pattern = os.path.expanduser("~/.claude/projects/**/*.jsonl")
@@ -67,6 +67,7 @@ def _last_claude_response():
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _find_view(name):
     for w in sublime.windows():
@@ -112,36 +113,46 @@ def _close_panic():
 # Amber (#e6b450) editorial palette — annotation-tool aesthetic.
 # Send/Cancel live at the END of the read-only Response view: stable, never moves.
 
+
 def _quote_btn(href):
     return (
         '<a href="{}" style="background-color:#2d2a20;color:#e6b450;'
-        'padding:2px 10px;text-decoration:none;border-radius:2px;'
-        'font-size:11px;font-family:system-ui;letter-spacing:.03em;">❝ quote</a>'
-        .format(href)
+        "padding:2px 10px;text-decoration:none;border-radius:2px;"
+        'font-size:11px;font-family:system-ui;letter-spacing:.03em;">❝ quote</a>'.format(
+            href
+        )
     )
 
 
 def _send_area_html():
-    rule = '<span style="color:#3a3630;font-family:monospace;font-size:10px;">' + ('─' * 48) + '</span>'
+    rule = (
+        '<span style="color:#3a3630;font-family:monospace;font-size:10px;">'
+        + ("─" * 48)
+        + "</span>"
+    )
     send = (
         '<a href="send:" style="background-color:#e6b450;color:#111;'
-        'padding:5px 22px;text-decoration:none;border-radius:3px;'
+        "padding:5px 22px;text-decoration:none;border-radius:3px;"
         'font-size:13px;font-weight:bold;font-family:system-ui;">Send reply</a>'
     )
     hint = (
-        '&nbsp;&nbsp;&nbsp;'
+        "&nbsp;&nbsp;&nbsp;"
         '<span style="color:#666;font-size:11px;font-family:system-ui;">'
-        'empty = close</span>'
+        "empty = close</span>"
     )
-    return rule + '<br>' + send + hint
+    return rule + "<br>" + send + hint
 
 
 def _build_action_buttons(resp_view):
     end = resp_view.size()
     ps = sublime.PhantomSet(resp_view, _BTN_KEY)
-    ps.update([sublime.Phantom(
-        sublime.Region(end), _send_area_html(), sublime.LAYOUT_BLOCK, _on_action
-    )])
+    ps.update(
+        [
+            sublime.Phantom(
+                sublime.Region(end), _send_area_html(), sublime.LAYOUT_BLOCK, _on_action
+            )
+        ]
+    )
     _phantom_sets[str(resp_view.id()) + "_btn"] = ps
 
 
@@ -162,12 +173,14 @@ def _build_quote_phantoms(resp_view):
         end = pos + len(para)
         if para.strip():
             href = "quote:" + urllib.parse.quote(para.strip(), safe="")
-            phantoms.append(sublime.Phantom(
-                sublime.Region(end),
-                _quote_btn(href),
-                sublime.LAYOUT_BLOCK,
-                _on_quote,
-            ))
+            phantoms.append(
+                sublime.Phantom(
+                    sublime.Region(end),
+                    _quote_btn(href),
+                    sublime.LAYOUT_BLOCK,
+                    _on_quote,
+                )
+            )
         pos = end + 2
     ps = sublime.PhantomSet(resp_view, _QUOTE_KEY)
     ps.update(phantoms)
@@ -189,6 +202,7 @@ def _on_quote(href):
 
 # ── Send / Cancel ─────────────────────────────────────────────────────────────
 
+
 def _do_send(window):
     w, reply = _find_view(_REPLY_VIEW)
     if not reply:
@@ -197,14 +211,33 @@ def _do_send(window):
     if not text:
         _close_panic()
         return
-    os.makedirs(os.path.dirname(_PANIC_REPLY_FILE), exist_ok=True)
-    with open(_PANIC_REPLY_FILE, "w", encoding="utf-8") as f:
-        f.write(text)
-    _close_panic()
-    # ai_logger._tick() detects the file and sends "read panic\n" to the Ai terminal
+    # Close Response view only; leave Reply tab open for Claude to read via sublime-mcp
+    _, resp = _find_view(_RESPONSE_VIEW)
+    if resp:
+        _phantom_sets.pop(resp.id(), None)
+        _phantom_sets.pop(str(resp.id()) + "_btn", None)
+        resp.close()
+    if _saved_layout and window:
+        window.set_layout(_saved_layout.get("layout", _PANIC_LAYOUT))
+        _saved_layout.clear()
+    # Send "read panic" directly to the Ai terminal
+    try:
+        import sys as _sys
+
+        _Terminal = _sys.modules["Terminus.terminus.terminal"].Terminal
+        for _w in sublime.windows():
+            for _v in _w.views():
+                if _v.settings().get(_AI_VIEW_SETTING):
+                    _t = _Terminal.from_id(_v.id())
+                    if _t:
+                        _t.send_string("read panic\n")
+                    break
+    except Exception as _e:
+        sublime.status_message(f"Panic send error: {_e}")
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
+
 
 class PanicOpenCommand(sublime_plugin.WindowCommand):
     """Open the Quote-and-Reply panel."""
@@ -243,6 +276,7 @@ class PanicOpenCommand(sublime_plugin.WindowCommand):
         def _build(_r=resp):
             _build_quote_phantoms(_r)
             _build_action_buttons(_r)
+
         sublime.set_timeout(_build, 100)
 
         sublime.status_message("Panic: Ctrl+Enter — Send  |  Escape — Cancel")
@@ -272,4 +306,5 @@ def plugin_loaded():
         if resp:
             _build_quote_phantoms(resp)
             _build_action_buttons(resp)
+
     sublime.set_timeout(_restore, 200)

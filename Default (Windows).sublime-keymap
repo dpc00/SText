@@ -2,6 +2,7 @@
 	{"keys": ["ctrl+s"], "command": "save_all", "args": {"async": true}},
 	{"keys": ["ctrl+shift+k"], "command": "clear_buffer"},
 	{"keys": ["ctrl+alt+i"], "command": "capture_idea"},
+	{"keys": ["ctrl+alt+a"], "command": "ai_sdk_query"},
 	{"keys": ["ctrl+alt+o"], "command": "open_idea_inbox"},
 	{"keys": ["ctrl+alt+h"], "command": "ai_hub_open"},
 	{"keys": ["ctrl+alt+l"], "command": "ccstatusline_editor_open"},

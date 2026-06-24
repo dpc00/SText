@@ -685,8 +685,6 @@ def _auto_panic(text):
 
 # -- main tick ----------------------------------------------------------------
 
-_PANIC_REPLY_FILE = os.path.join(os.path.expanduser("~"), ".claude", "panic_reply.txt")
-
 
 def _tick():
     global _last_cleanup_time
@@ -694,22 +692,6 @@ def _tick():
     if current_time - _last_cleanup_time > 9000:
         _cleanup_old_screenshots()
         _last_cleanup_time = current_time
-    # If user sent a panic reply, send "read panic" to the Ai terminal view
-    if os.path.exists(_PANIC_REPLY_FILE):
-        try:
-            import sys as _sys
-
-            _Terminal = _sys.modules["Terminus.terminus.terminal"].Terminal
-            for _w in sublime.windows():
-                for _v in _w.views():
-                    if _v.settings().get(_AI_VIEW_SETTING):
-                        _t = _Terminal.from_id(_v.id())
-                        if _t:  # this is looping
-                            # _t.send_string("read panic\n")
-                            pass
-                        break
-        except Exception as _e:
-            _diagnostic_log(f"PANIC_SEND_ERROR: {_e}")
     path = _find_active_transcript()
     if path:
         _flush_jsonl(path)
