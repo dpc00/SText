@@ -35,7 +35,7 @@ _PROJECTS_DIR = str(Path.home() / ".claude" / "projects")
 _CHECK_MS = 500
 _SCREENSHOT_INTERVAL = 60
 _SCREENSHOT_RETENTION_DAYS = 7
-_PANIC_THRESHOLD = 100  # output_tokens — trigger on almost any real response
+_PANIC_THRESHOLD = 1  # output_tokens — trigger on every assistant response
 _PANIC_RESPONSE_VIEW = "Panic: Response"
 _AI_VIEW_SETTING = "ai_logger"
 
@@ -50,6 +50,9 @@ _current_jsonl = None  # path currently being flushed
 _seen_uuids = {}  # uuid -> order (insertion counter, for trimming)
 _seen_uuid_counter = 0  # monotonic insertion counter
 _SEEN_UUIDS_MAX = 2000  # max UUIDs kept across reloads
+_new_turn = (
+    True  # True after a user message — first assistant record replaces, rest append
+)
 
 
 # -- state persistence --------------------------------------------------------
@@ -576,20 +579,38 @@ def _format_panic_response(record):
 
 
 def _check_auto_panic(record):
-    if record.get("type") != "assistant":
+    global _new_turn
+    rtype = record.get("type")
+    # Track turn boundaries
+    if rtype == "user":
+        msg = record.get("message") or {}
+        c = msg.get("content")
+        # Only a real user text message (not tool results) starts a new turn
+        if isinstance(c, str) and c.strip():
+            _new_turn = True
+        elif isinstance(c, list) and any(
+            b.get("type") == "text" for b in c if isinstance(b, dict)
+        ):
+            _new_turn = True
+    if rtype != "assistant":
         return
     msg = record.get("message") or {}
     output_tokens = (msg.get("usage") or {}).get("output_tokens", 0)
     if output_tokens < _PANIC_THRESHOLD:
         return
     text = _format_panic_response(record)
+    replace = _new_turn
+    _new_turn = False
 
-    def _open(t=text):
+    def _open(t=text, r=replace):
         w = sublime.active_window()
         if not w:
             return
         if _panic_is_open():
-            w.run_command("panic_refresh", {"response_text": t})
+            if r:
+                w.run_command("panic_refresh", {"response_text": t})
+            else:
+                w.run_command("panic_append", {"text": t})
         else:
             w.run_command("panic_open", {"response_text": t})
 

@@ -291,6 +291,27 @@ class PanicCancelCommand(sublime_plugin.WindowCommand):
         _close_panic()
 
 
+class PanicAppendCommand(sublime_plugin.WindowCommand):
+    """Append text to the Response tab (subsequent assistant messages in same turn)."""
+
+    def run(self, text=""):
+        if not text:
+            return
+        _, resp = _find_view(_RESPONSE_VIEW)
+        if not resp:
+            return
+        resp.set_read_only(False)
+        resp.run_command("move_to", {"to": "eof"})
+        resp.run_command("append", {"characters": "\n\n" + text})
+        resp.set_read_only(True)
+
+        def _build(_r=resp):
+            _build_quote_phantoms(_r)
+            _build_action_buttons(_r)
+
+        sublime.set_timeout(_build, 100)
+
+
 class PanicRefreshCommand(sublime_plugin.WindowCommand):
     """Refresh the Response tab. Pass response_text directly, or fall back to JSONL."""
 
