@@ -545,7 +545,7 @@ def _tool_summary(name, inp):
     if not inp:
         return name
     if "command" in inp:
-        return "bash: " + (inp["command"] or "")[:80]
+        return "bash: " + (inp["command"] or "").strip().replace("\n", "; ")
     if "code" in inp:
         return name + ": " + (inp["code"] or "")[:60].replace("\n", " ")
     for key in ("file_path", "path", "pattern"):
@@ -589,19 +589,9 @@ def _check_auto_panic(record):
         if not w:
             return
         if _panic_is_open():
-            # Update existing response view with new content
-            for win in sublime.windows():
-                for v in win.views():
-                    if v.name() == _PANIC_RESPONSE_VIEW:
-                        v.set_read_only(False)
-                        v.run_command("select_all")
-                        v.run_command("right_delete")
-                        v.run_command(
-                            "append", {"characters": t or "(no text response)"}
-                        )
-                        v.set_read_only(True)
-                        return
-        w.run_command("panic_open", {"response_text": t})
+            w.run_command("panic_refresh", {"response_text": t})
+        else:
+            w.run_command("panic_open", {"response_text": t})
 
     sublime.set_timeout(_open, 100)
 
@@ -658,29 +648,6 @@ def _flush_jsonl(path):
         _save_state()
     except Exception as e:
         _diagnostic_log(f"JSONL_FLUSH_ERROR: {e}")
-
-
-# -- auto-panic ---------------------------------------------------------------
-
-
-def _panic_is_open():
-    for w in sublime.windows():
-        for v in w.views():
-            if v.name() == _PANIC_RESPONSE_VIEW:
-                return True
-    return False
-
-
-def _auto_panic(text):
-    if _panic_is_open():
-        return
-
-    def _open():
-        w = sublime.active_window()
-        if w:
-            w.run_command("panic_open", {"response_text": text})
-
-    sublime.set_timeout(_open, 100)
 
 
 # -- main tick ----------------------------------------------------------------
