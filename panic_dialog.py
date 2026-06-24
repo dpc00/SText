@@ -211,16 +211,7 @@ def _do_send(window):
     if not text:
         _close_panic()
         return
-    # Close Response view only; leave Reply tab open for Claude to read via sublime-mcp
-    _, resp = _find_view(_RESPONSE_VIEW)
-    if resp:
-        _phantom_sets.pop(resp.id(), None)
-        _phantom_sets.pop(str(resp.id()) + "_btn", None)
-        resp.close()
-    if _saved_layout and window:
-        window.set_layout(_saved_layout.get("layout", _PANIC_LAYOUT))
-        _saved_layout.clear()
-    # Send "read panic" directly to the Ai terminal
+    # Send "read panic" to the Ai terminal — Claude reads the Reply tab and handles cleanup
     try:
         import sys as _sys
 
@@ -289,8 +280,8 @@ class PanicSendCommand(sublime_plugin.WindowCommand):
         _do_send(self.window)
 
     def is_enabled(self):
-        _, v = _find_view(_REPLY_VIEW)
-        return v is not None
+        active = self.window.active_view()
+        return active is not None and active.name() == _REPLY_VIEW
 
 
 class PanicCancelCommand(sublime_plugin.WindowCommand):
@@ -298,6 +289,30 @@ class PanicCancelCommand(sublime_plugin.WindowCommand):
 
     def run(self):
         _close_panic()
+
+
+class PanicRefreshCommand(sublime_plugin.WindowCommand):
+    """Refresh the Response tab. Pass response_text directly, or fall back to JSONL."""
+
+    def run(self, response_text=None):
+        text = response_text or _last_claude_response()
+        if not text:
+            sublime.status_message("Panic: no response found")
+            return
+        if not text.endswith("\n"):
+            text += "\n"
+        _, resp = _find_view(_RESPONSE_VIEW)
+        if not resp:
+            sublime.status_message("Panic: Response tab not open")
+            return
+        _set_view_text(resp, text)
+        resp.set_read_only(True)
+
+        def _build(_r=resp):
+            _build_quote_phantoms(_r)
+            _build_action_buttons(_r)
+
+        sublime.set_timeout(_build, 100)
 
 
 def plugin_loaded():

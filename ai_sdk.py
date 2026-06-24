@@ -97,21 +97,31 @@ class _SdkSocketServer:
                     break
             req = json.loads(data.strip())
             code = req.get("code", "")
+            preview = code.strip()[:60].replace("\n", "↵")
+            print(f"[ai_sdk] eval: {preview!r}")
             result = {"result": None, "error": None}
             done = threading.Event()
 
             def do_eval():
                 try:
                     result["result"] = _eval_in_st(code)
+                    val = result["result"]
+                    preview_out = repr(val)[:60] if val is not None else "None"
+                    print(f"[ai_sdk] result: {preview_out}")
                 except Exception as exc:
                     result["error"] = str(exc)
+                    print(f"[ai_sdk] error: {exc}")
                 finally:
                     done.set()
 
             sublime.set_timeout(do_eval, 0)
-            done.wait(timeout=10.0)
+            timed_out = not done.wait(timeout=10.0)
+            if timed_out:
+                result["error"] = "eval timed out after 10s"
+                print(f"[ai_sdk] TIMEOUT for: {preview!r}")
             conn.sendall((json.dumps(result) + "\n").encode())
         except Exception as e:
+            print(f"[ai_sdk] handle error: {e}")
             try:
                 conn.sendall((json.dumps({"error": str(e)}) + "\n").encode())
             except Exception:
@@ -160,7 +170,7 @@ def _append(view, text):
     sublime.set_timeout(_do, 0)
 
 
-def _run(prompt, view):
+def _run(prompt, view, cwd=None):
     try:
         proc = subprocess.Popen(
             [_PYTHON, _SCRIPT, prompt],
@@ -171,6 +181,7 @@ def _run(prompt, view):
             errors="replace",
             creationflags=subprocess.CREATE_NO_WINDOW,
             env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            cwd=cwd,
         )
         for chunk in iter(lambda: proc.stdout.read(256), ""):
             _append(view, chunk)
@@ -195,10 +206,18 @@ class AiSdkQueryCommand(sublime_plugin.WindowCommand):
             "Ask Claude:", "", self._submit, None, None
         )
 
+    def _resolve_cwd(self):
+        view = self.window.active_view()
+        if view and view.file_name():
+            return os.path.dirname(view.file_name())
+        folders = self.window.folders()
+        return folders[0] if folders else os.path.expanduser("~")
+
     def _submit(self, prompt):
         prompt = prompt.strip()
         if not prompt:
             return
+        cwd = self._resolve_cwd()
         view = _sdk_view(self.window)
         _append(view, f"\n{_DIVIDER}\nYou: {prompt}\n{_DIVIDER}\n↺ thinking…\n")
-        threading.Thread(target=_run, args=(prompt, view), daemon=True).start()
+        threading.Thread(target=_run, args=(prompt, view, cwd), daemon=True).start()
