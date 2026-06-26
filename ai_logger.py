@@ -36,6 +36,7 @@ _CHECK_MS = 500
 _SCREENSHOT_INTERVAL = 60
 _SCREENSHOT_RETENTION_DAYS = 7
 _PANIC_THRESHOLD = 1  # output_tokens — trigger on every assistant response
+_AUTO_PANIC = False  # disabled: intercepts agent SDK responses it shouldn't
 _PANIC_RESPONSE_VIEW = "Panic: Response"
 _AI_VIEW_SETTING = "ai_logger"
 
@@ -579,6 +580,8 @@ def _format_panic_response(record):
 
 
 def _check_auto_panic(record):
+    if not _AUTO_PANIC:
+        return
     global _new_turn
     rtype = record.get("type")
     # Track turn boundaries
