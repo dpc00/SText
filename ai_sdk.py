@@ -341,71 +341,9 @@ def _stop_spinner(window):
         v.set_name(f"◇ {_VIEW_NAME}")
 
 
-# ─── ccstatusline phantom ─────────────────────────────────────────────────────
+# ─── ccstatusline status bar ──────────────────────────────────────────────────
 
 _STATUS_PHANTOM_KEY = "ai_sdk_ccstatus"
-_ANSI_CUBE = [0, 95, 135, 175, 215, 255]
-_ANSI_STD = [
-    "#000000",
-    "#800000",
-    "#008000",
-    "#808000",
-    "#000080",
-    "#800080",
-    "#008080",
-    "#c0c0c0",
-    "#808080",
-    "#ff0000",
-    "#00ff00",
-    "#ffff00",
-    "#0000ff",
-    "#ff00ff",
-    "#00ffff",
-    "#ffffff",
-]
-
-
-def _ansi256_hex(n):
-    n = int(n)
-    if n < 16:
-        return _ANSI_STD[n]
-    if n < 232:
-        n -= 16
-        return "#{:02x}{:02x}{:02x}".format(
-            _ANSI_CUBE[n // 36], _ANSI_CUBE[(n % 36) // 6], _ANSI_CUBE[n % 6]
-        )
-    v = 8 + (n - 232) * 10
-    return "#{:02x}{:02x}{:02x}".format(v, v, v)
-
-
-def _ansi_line_to_html(line):
-    parts = re.split(r"(\x1b\[[0-9;]*m)", line)
-    out = []
-    color = None
-    for p in parts:
-        m = re.fullmatch(r"\x1b\[([0-9;]*)m", p)
-        if m:
-            codes = m.group(1).split(";")
-            if codes[0] in ("0", ""):
-                if color:
-                    out.append("</span>")
-                    color = None
-            elif len(codes) == 3 and codes[0] == "38" and codes[1] == "5":
-                if color:
-                    out.append("</span>")
-                color = _ansi256_hex(codes[2])
-                out.append(f'<span style="color:{color}">')
-            elif codes[0] == "39":
-                if color:
-                    out.append("</span>")
-                    color = None
-        else:
-            out.append(
-                p.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            )
-    if color:
-        out.append("</span>")
-    return "".join(out)
 
 
 def _get_ccstatus_cmd():
@@ -463,17 +401,11 @@ def _update_ccstatus(view, event):
             return
         if not lines:
             return
-        html_lines = "<br>".join(_ansi_line_to_html(l) for l in lines)
-        html = f'<body><div style="padding:2px 6px">{html_lines}</div></body>'
+        strip_ansi = re.compile(r"\x1b\[[0-9;]*m")
+        status = " │ ".join(strip_ansi.sub("", l).strip() for l in lines if l.strip())
 
         def _do():
-            view.erase_phantoms(_STATUS_PHANTOM_KEY)
-            view.add_phantom(
-                _STATUS_PHANTOM_KEY,
-                sublime.Region(0, 0),
-                html,
-                sublime.LAYOUT_BELOW,
-            )
+            view.set_status(_STATUS_PHANTOM_KEY, status)
 
         sublime.set_timeout(_do, 0)
 
@@ -615,6 +547,7 @@ def _on_event(view, window, event):
         sublime.set_timeout(lambda: _enter_input_mode(view, window), 50)
     elif t == "stopped":
         _vwrite(view, "\n[Stopped]\n")
+        _update_ccstatus(view, event)
         sublime.set_timeout(lambda: _stop_spinner(window), 0)
         sublime.set_timeout(lambda: _enter_input_mode(view, window), 50)
     elif t == "error":
