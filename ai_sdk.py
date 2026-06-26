@@ -254,11 +254,7 @@ class _Bridge:
 
 
 def plugin_loaded():
-    global _server, _bridge
-    _server = _SdkSocketServer()
-    _server.start()
-    _bridge = _Bridge()
-    _bridge.start()
+    pass
 
 
 def plugin_unloaded():
@@ -269,6 +265,17 @@ def plugin_unloaded():
     if _bridge:
         _bridge.stop()
         _bridge = None
+
+
+def _ensure_bridge():
+    """Start server + bridge if not already running."""
+    global _server, _bridge
+    if _server is None:
+        _server = _SdkSocketServer()
+        _server.start()
+    if _bridge is None or not _bridge.is_alive():
+        _bridge = _Bridge(_bridge_cwd)
+        _bridge.start()
 
 
 # ─── View helpers ─────────────────────────────────────────────────────────────
@@ -638,6 +645,15 @@ class AiSdkViewListener(sublime_plugin.ViewEventListener):
             return ("ai_sdk_submit", {})
         return None
 
+    def on_close(self):
+        global _server, _bridge
+        if _bridge:
+            _bridge.stop()
+            _bridge = None
+        if _server:
+            _server.stop()
+            _server = None
+
 
 # ─── Helper TextCommand ───────────────────────────────────────────────────────
 
@@ -658,6 +674,7 @@ class AiSdkFocusCommand(sublime_plugin.WindowCommand):
     """Ctrl+Alt+A — open / focus the Ai (SDK) conversation view."""
 
     def run(self):
+        _ensure_bridge()
         view = _sdk_view(self.window)
         self.window.focus_view(view)
         if not view.settings().get("ai_sdk_input_mode", False):
@@ -929,6 +946,7 @@ class AiSdkOpenHereCommand(sublime_plugin.WindowCommand):
         if not path:
             return
         _bridge_cwd = path
+        _ensure_bridge()
         view = _sdk_view(self.window)
         self.window.focus_view(view)
         if view.settings().get("ai_sdk_input_mode", False):
@@ -959,6 +977,7 @@ class AiSdkOpenInEditorCommand(sublime_plugin.TextCommand):
         if not path:
             return
         _bridge_cwd = path
+        _ensure_bridge()
         window = self.view.window()
         view = _sdk_view(window)
         window.focus_view(view)
