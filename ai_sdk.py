@@ -457,6 +457,7 @@ def _update_ccstatus(view, event):
         html = f'<body style="background-color:#262626;margin:0;padding:3px 6px"><span style="font-size:0.85em;color:#d8dee9">{content}</span></body>'
 
         def _do():
+            view.erase_phantoms(_STATUS_PHANTOM_KEY)
             view.erase_status(_STATUS_PHANTOM_KEY)
             input_start = view.settings().get("ai_sdk_input_start")
             pt = max(0, (input_start - 2) if input_start else view.size())
