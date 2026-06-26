@@ -341,9 +341,60 @@ def _stop_spinner(window):
         v.set_name(f"◇ {_VIEW_NAME}")
 
 
-# ─── ccstatusline status bar ──────────────────────────────────────────────────
+# ─── ccstatusline phantom (below input line) ──────────────────────────────────
 
 _STATUS_PHANTOM_KEY = "ai_sdk_ccstatus"
+_ccstatus_phantom_sets = {}
+
+
+def _ansi256_hex(n):
+    """Convert a 256-colour palette index to a CSS #rrggbb string."""
+    STD16 = [
+        "#1e1e2e", "#f38ba8", "#a6e3a1", "#f9e2af",
+        "#89b4fa", "#cba6f7", "#94e2d5", "#cdd6f4",
+        "#585b70", "#f38ba8", "#a6e3a1", "#f9e2af",
+        "#89b4fa", "#cba6f7", "#94e2d5", "#cdd6f4",
+    ]
+    if n < 16:
+        return STD16[n]
+    if n >= 232:
+        v = 8 + (n - 232) * 10
+        return f"#{v:02x}{v:02x}{v:02x}"
+    n -= 16
+    b, g, r = n % 6, (n // 6) % 6, n // 36
+    def _c(x): return 0 if x == 0 else 55 + x * 40
+    return f"#{_c(r):02x}{_c(g):02x}{_c(b):02x}"
+
+
+def _ansi_to_html(text):
+    """Convert ANSI colour sequences in text to miniHTML <span> tags."""
+    parts = re.split(r"(\x1b\[[0-9;]*m)", text)
+    out, color = [], None
+    for p in parts:
+        if p.startswith("\x1b[") and p.endswith("m"):
+            codes = p[2:-1].split(";")
+            i = 0
+            while i < len(codes):
+                c = codes[i]
+                if c in ("", "0", "39"):
+                    color = None
+                elif c == "38" and i + 1 < len(codes):
+                    if codes[i + 1] == "5" and i + 2 < len(codes):
+                        color = _ansi256_hex(int(codes[i + 2]))
+                        i += 2
+                    elif codes[i + 1] == "2" and i + 4 < len(codes):
+                        r2, g2, b2 = int(codes[i+2]), int(codes[i+3]), int(codes[i+4])
+                        color = f"#{r2:02x}{g2:02x}{b2:02x}"
+                        i += 4
+                i += 1
+        elif p:
+            esc = (p.replace("&", "&amp;").replace("<", "&lt;")
+                    .replace(">", "&gt;").replace("\xa0", " "))
+            if color:
+                out.append(f'<span style="color:{color}">{esc}</span>')
+            else:
+                out.append(esc)
+    return "".join(out)
 
 
 def _get_ccstatus_cmd():
@@ -401,11 +452,19 @@ def _update_ccstatus(view, event):
             return
         if not lines:
             return
-        strip_ansi = re.compile(r"\x1b\[[0-9;]*m")
-        status = " │ ".join(strip_ansi.sub("", l).strip() for l in lines if l.strip())
+        html_lines = [_ansi_to_html(l.rstrip()) for l in lines if l.strip()]
+        content = "<br>".join(html_lines)
+        html = f'<body style="background-color:#262626;margin:0;padding:3px 6px"><span style="font-size:0.85em;color:#d8dee9">{content}</span></body>'
 
         def _do():
-            view.set_status(_STATUS_PHANTOM_KEY, status)
+            view.erase_status(_STATUS_PHANTOM_KEY)
+            input_start = view.settings().get("ai_sdk_input_start")
+            pt = max(0, (input_start - 2) if input_start else view.size())
+            ps = _ccstatus_phantom_sets.get(view.id())
+            if ps is None:
+                ps = sublime.PhantomSet(view, _STATUS_PHANTOM_KEY)
+                _ccstatus_phantom_sets[view.id()] = ps
+            ps.update([sublime.Phantom(sublime.Region(pt), html, sublime.LAYOUT_BELOW)])
 
         sublime.set_timeout(_do, 0)
 
