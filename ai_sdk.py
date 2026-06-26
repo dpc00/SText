@@ -32,6 +32,7 @@ _SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇"
 
 _server = None
 _bridge = None
+_bridge_cwd = None
 _working = False
 _spinner_frame = 0
 
@@ -137,11 +138,10 @@ class _SdkSocketServer:
 
 
 class _Bridge:
-    def __init__(self):
+    def __init__(self, cwd=None):
+        self._cwd = cwd
         self._proc = None
         self._ready = threading.Event()
-        self._current_sock = None
-        self._stop_requested = False
         self._current_sock = None
         self._stop_requested = False
 
@@ -164,6 +164,7 @@ class _Bridge:
             errors="replace",
             creationflags=subprocess.CREATE_NO_WINDOW,
             env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            cwd=self._cwd,
         )
         threading.Thread(target=self._monitor, daemon=True).start()
         print(f"[ai_sdk] bridge starting (port {_BRIDGE_PORT})")
@@ -907,3 +908,33 @@ class AiSdkClearCommand(sublime_plugin.WindowCommand):
         _vwrite(view, "\n─── bridge restarted — history cleared ───\n")
         threading.Thread(target=_bridge.restart, daemon=True).start()
         sublime.set_timeout(lambda: _enter_input_mode(view, self.window), 500)
+
+
+class AiSdkOpenHereCommand(sublime_plugin.WindowCommand):
+    """Sidebar: open AI(SDK) panel with cwd set to the chosen directory."""
+
+    def run(self, paths=None):
+        import os as _os
+        global _bridge, _bridge_cwd
+        paths = paths or []
+        path = paths[0] if paths else None
+        if path and not _os.path.isdir(path):
+            path = _os.path.dirname(path)
+        if not path:
+            folders = self.window.folders()
+            path = folders[0] if folders else None
+        if not path:
+            return
+        _bridge_cwd = path
+        view = _sdk_view(self.window)
+        self.window.focus_view(view)
+        if view.settings().get("ai_sdk_input_mode", False):
+            _exit_input_mode(view)
+        _vwrite(view, f"\n─── cwd: {path} ───\n")
+        if _bridge:
+            _bridge._cwd = path
+            threading.Thread(target=_bridge.restart, daemon=True).start()
+        sublime.set_timeout(lambda: _enter_input_mode(view, self.window), 500)
+
+    def is_visible(self, paths=None):
+        return True
