@@ -1,4 +1,5 @@
 [
 	{"caption": "Open Terminus here...", "command": "terminus_open", "args": {"cwd": "${file_path:${folder}}"}},
-	{"caption": "Open Ai in Terminus here...", "command": "open_ai_terminus_in_editor"}
+	{"caption": "Open Ai in Terminus here...", "command": "open_ai_terminus_in_editor"},
+	{"caption": "Open AI(SDK) here...", "command": "ai_sdk_open_in_editor"}
 ]

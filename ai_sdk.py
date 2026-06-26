@@ -938,3 +938,31 @@ class AiSdkOpenHereCommand(sublime_plugin.WindowCommand):
 
     def is_visible(self, paths=None):
         return True
+
+
+class AiSdkOpenInEditorCommand(sublime_plugin.TextCommand):
+    """Context/tab menu: open AI(SDK) panel with cwd set to current file's directory."""
+
+    def run(self, edit):
+        import os as _os
+        global _bridge, _bridge_cwd
+        path = self.view.file_name()
+        if path:
+            path = _os.path.dirname(path)
+        else:
+            window = self.view.window()
+            folders = window.folders() if window else []
+            path = folders[0] if folders else None
+        if not path:
+            return
+        _bridge_cwd = path
+        window = self.view.window()
+        view = _sdk_view(window)
+        window.focus_view(view)
+        if view.settings().get("ai_sdk_input_mode", False):
+            _exit_input_mode(view)
+        _vwrite(view, f"\n─── cwd: {path} ───\n")
+        if _bridge:
+            _bridge._cwd = path
+            threading.Thread(target=_bridge.restart, daemon=True).start()
+        sublime.set_timeout(lambda: _enter_input_mode(view, window), 500)
