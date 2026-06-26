@@ -683,9 +683,16 @@ def _tick():
     if current_time - _last_cleanup_time > 9000:
         _cleanup_old_screenshots()
         _last_cleanup_time = current_time
-    path = _find_active_transcript()
-    if path:
-        _flush_jsonl(path)
+    projects = Path(_PROJECTS_DIR)
+    if projects.exists():
+        try:
+            for slug_dir in projects.iterdir():
+                if not slug_dir.is_dir():
+                    continue
+                for jf in slug_dir.glob("*.jsonl"):
+                    _flush_jsonl(str(jf))
+        except OSError:
+            pass
     _SS_KEY = "__screenshot__"
     if _SS_KEY not in _last_screenshot_time:
         _last_screenshot_time[_SS_KEY] = current_time
