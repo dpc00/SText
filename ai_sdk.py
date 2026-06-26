@@ -834,11 +834,11 @@ def _render_status(view, window, event):
 # ─── Slash command handler ────────────────────────────────────────────────────
 
 _SLASH_COMMANDS = {
-    "clear": "Restart bridge and clear conversation history",
+    "clear": "Reset conversation to empty context (forwarded to SDK)",
     "help": "Show available slash commands",
     "status": "Show bridge status",
     "tools": "List allowed tools",
-    "compact": "Ask Claude to summarize conversation context (forwarded)",
+    "compact": "Summarize conversation context (forwarded to SDK)",
 }
 
 
@@ -855,13 +855,6 @@ def _handle_slash(view, window, prompt):
         lines.append("")
         _vwrite(view, "\n".join(lines))
         _enter_input_mode(view, window)
-        return True
-
-    if cmd == "clear":
-        global _bridge
-        _vwrite(view, "\n─── bridge restarted — history cleared ───\n")
-        threading.Thread(target=_bridge.restart, daemon=True).start()
-        sublime.set_timeout(lambda: _enter_input_mode(view, window), 500)
         return True
 
     if cmd == "status":
