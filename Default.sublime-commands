@@ -14,6 +14,5 @@
 	{"caption": "Claude: Grab Last Response", "command": "claude_grab_response"},
 	{"caption": "Claude: Send Tab as Reply", "command": "claude_send_tab"},
 	{"caption": "Panic: Quote & Reply", "command": "panic_open"},
-	{"caption": "AI (SDK): Open", "command": "ai_sdk_focus"},
-	{"caption": "AI (SDK): Restart Bridge", "command": "ai_sdk_clear"}
+	{"caption": "AI (SDK): Open", "command": "ai_sdk_focus"}
 ]
