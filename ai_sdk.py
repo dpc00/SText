@@ -225,6 +225,9 @@ class _Bridge:
                     line, buf = buf.split(b"\n", 1)
                     if not line.strip():
                         continue
+                    if self._stop_requested:
+                        on_event({"type": "stopped"})
+                        return
                     event = json.loads(line)
                     on_event(event)
                     if event.get("type") in ("done", "error", "status_data"):
