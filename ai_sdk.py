@@ -150,7 +150,7 @@ class _Bridge:
         sock = self._current_sock
         if sock:
             try:
-                sock.close()
+                sock.sendall((json.dumps({"type": "interrupt"}) + "\n").encode())
             except Exception:
                 pass
 
@@ -602,7 +602,10 @@ def _on_event(view, window, event):
             view, event.get("tool_id", ""), event.get("is_error", False)
         )
     elif t == "done":
-        _render_meta(view, event)
+        if event.get("stop_reason") == "interrupted":
+            _vwrite(view, "\nInterrupted\n")
+        else:
+            _render_meta(view, event)
         _update_ccstatus(view, event)
         sublime.set_timeout(lambda: _stop_spinner(window), 0)
         sublime.set_timeout(lambda: _enter_input_mode(view, window), 50)
