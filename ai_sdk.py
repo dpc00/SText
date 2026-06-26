@@ -696,22 +696,13 @@ class AiSdkStopCommand(sublime_plugin.WindowCommand):
 
 
 class AiSdkKeyInterceptor(sublime_plugin.EventListener):
-    """Intercept Ctrl+C and Esc inside the AI(SDK) view without keymap entries."""
+    """Intercept Ctrl+C inside the AI(SDK) view. Esc is handled via keymap context."""
 
     def on_text_command(self, view, command_name, args):
         if command_name == "copy":
             if view.settings().get("ai_sdk_view") and not view.settings().get("ai_sdk_input_mode"):
                 view.window().run_command("ai_sdk_stop")
                 return ("ai_sdk_noop", {})
-        return None
-
-    def on_window_command(self, window, command_name, args):
-        view = window.active_view()
-        if view is None or not view.settings().get("ai_sdk_view"):
-            return None
-        if not view.settings().get("ai_sdk_input_mode"):  # Claude is running
-            if command_name in ("hide_overlay", "hide_panel", "hide_auto_complete", "single_selection"):
-                window.run_command("ai_sdk_stop")
         return None
 
 

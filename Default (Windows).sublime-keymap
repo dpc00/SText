@@ -12,5 +12,6 @@
 	{"keys": ["ctrl+alt+r"], "command": "claude_send_tab"},
 {"keys": ["ctrl+alt+p"], "command": "panic_open"},
 	{"keys": ["ctrl+enter"], "command": "panic_send", "context": [{"key": "setting.panic_reply_view", "operator": "equal", "operand": true}]},
-	{"keys": ["escape"], "command": "panic_cancel", "context": [{"key": "setting.panic_reply_view", "operator": "equal", "operand": true}]}
+	{"keys": ["escape"], "command": "panic_cancel", "context": [{"key": "setting.panic_reply_view", "operator": "equal", "operand": true}]},
+	{"keys": ["escape"], "command": "ai_sdk_stop", "context": [{"key": "setting.ai_sdk_view", "operator": "equal", "operand": true}, {"key": "setting.ai_sdk_input_mode", "operator": "equal", "operand": false}]}
 ]
