@@ -1,31 +1,45 @@
-"""ai_sdk.py — Claude via Agent SDK, no terminal required.
+"""ai_sdk.py — Claude via Agent SDK, inline conversation view.
 
-AiSdkQueryCommand  Ctrl+Alt+A → input panel → Claude answers in "Ai (SDK)" view
-Socket server      127.0.0.1:9503 — MCP bridge sends tool calls here for ST eval
+Ctrl+Alt+A  — open / focus the Ai (SDK) view and enter input mode
+Ctrl+Alt+X  — restart bridge (clears conversation history)
+Enter       — submit prompt when in input mode
+Socket      127.0.0.1:9503 — MCP eval server (ST tools for the agent)
+Bridge      127.0.0.1:9504 — persistent ClaudeSDKClient (multi-turn)
 """
 
 import json
 import os
+import re
 import socket
 import subprocess
 import threading
 
-import sublime  # type: ignore
-import sublime_plugin  # type: ignore
+import sublime
+import sublime_plugin
 
 _VIEW_NAME = "Ai (SDK)"
-_DIVIDER = "─" * 60
 _PYTHON = r"C:\Users\donal\AppData\Local\Programs\Python\Python312\python.exe"
 _SCRIPT = r"C:\Users\donal\projects\tools\agent_query.py"
 
 _SOCKET_HOST = "127.0.0.1"
 _SOCKET_PORT = 9503
+_BRIDGE_PORT = 9504
+
+_INPUT_REGION = "ai_sdk_input"
+_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+# ─── Module state ─────────────────────────────────────────────────────────────
+
+_server = None
+_bridge = None
+_working = False
+_spinner_frame = 0
 
 
-# ─── Socket server ────────────────────────────────────────────────────────────
+# ─── Socket server (ST eval for the agent) ────────────────────────────────────
+
 
 def _eval_in_st(code):
-    """Execute Python code in ST's context and return the result."""
     if "return " in code:
         lines = code.split("\n")
         new_lines = []
@@ -48,12 +62,10 @@ class _SdkSocketServer:
     def __init__(self):
         self._sock = None
         self._running = False
-        self._thread = None
 
     def start(self):
         self._running = True
-        self._thread = threading.Thread(target=self._serve, daemon=True)
-        self._thread.start()
+        threading.Thread(target=self._serve, daemon=True).start()
 
     def stop(self):
         self._running = False
@@ -70,7 +82,7 @@ class _SdkSocketServer:
             self._sock.bind((_SOCKET_HOST, _SOCKET_PORT))
             self._sock.listen(5)
             self._sock.settimeout(1.0)
-            print(f"[ai_sdk] socket server on {_SOCKET_HOST}:{_SOCKET_PORT}")
+            print(f"[ai_sdk] eval server on {_SOCKET_HOST}:{_SOCKET_PORT}")
             while self._running:
                 try:
                     conn, _ = self._sock.accept()
@@ -83,7 +95,7 @@ class _SdkSocketServer:
                     if self._running:
                         raise
         except Exception as e:
-            print(f"[ai_sdk] socket server error: {e}")
+            print(f"[ai_sdk] eval server error: {e}")
 
     def _handle(self, conn):
         try:
@@ -97,31 +109,22 @@ class _SdkSocketServer:
                     break
             req = json.loads(data.strip())
             code = req.get("code", "")
-            preview = code.strip()[:60].replace("\n", "↵")
-            print(f"[ai_sdk] eval: {preview!r}")
             result = {"result": None, "error": None}
             done = threading.Event()
 
             def do_eval():
                 try:
                     result["result"] = _eval_in_st(code)
-                    val = result["result"]
-                    preview_out = repr(val)[:60] if val is not None else "None"
-                    print(f"[ai_sdk] result: {preview_out}")
                 except Exception as exc:
                     result["error"] = str(exc)
-                    print(f"[ai_sdk] error: {exc}")
                 finally:
                     done.set()
 
             sublime.set_timeout(do_eval, 0)
-            timed_out = not done.wait(timeout=10.0)
-            if timed_out:
+            if not done.wait(timeout=10.0):
                 result["error"] = "eval timed out after 10s"
-                print(f"[ai_sdk] TIMEOUT for: {preview!r}")
             conn.sendall((json.dumps(result) + "\n").encode())
         except Exception as e:
-            print(f"[ai_sdk] handle error: {e}")
             try:
                 conn.sendall((json.dumps({"error": str(e)}) + "\n").encode())
             except Exception:
@@ -130,94 +133,790 @@ class _SdkSocketServer:
             conn.close()
 
 
-_server = None
+# ─── Persistent bridge ────────────────────────────────────────────────────────
 
 
-def plugin_loaded():
-    global _server
-    _server = _SdkSocketServer()
-    _server.start()
+class _Bridge:
+    def __init__(self):
+        self._proc = None
+        self._ready = threading.Event()
+        self._current_sock = None
+        self._stop_requested = False
+        self._current_sock = None
+        self._stop_requested = False
 
+    def stop_query(self):
+        self._stop_requested = True
+        sock = self._current_sock
+        if sock:
+            try:
+                sock.close()
+            except Exception:
+                pass
 
-def plugin_unloaded():
-    global _server
-    if _server:
-        _server.stop()
-        _server = None
-
-
-# ─── Query view helpers ───────────────────────────────────────────────────────
-
-def _sdk_view(window):
-    for v in window.views():
-        if v.name() == _VIEW_NAME:
-            return v
-    v = window.new_file()
-    v.set_name(_VIEW_NAME)
-    v.set_scratch(True)
-    v.settings().set("word_wrap", True)
-    v.settings().set("gutter", False)
-    v.settings().set("line_numbers", False)
-    v.settings().set("ai_sdk_view", True)
-    return v
-
-
-def _append(view, text):
-    def _do():
-        view.set_read_only(False)
-        view.run_command("append", {"characters": text, "scroll_to_end": True})
-        view.set_read_only(True)
-    sublime.set_timeout(_do, 0)
-
-
-def _run(prompt, view, cwd=None):
-    try:
-        proc = subprocess.Popen(
-            [_PYTHON, _SCRIPT, prompt],
+    def start(self):
+        self._proc = subprocess.Popen(
+            [_PYTHON, _SCRIPT, "--bridge", str(_BRIDGE_PORT)],
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
             errors="replace",
             creationflags=subprocess.CREATE_NO_WINDOW,
             env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-            cwd=cwd,
         )
-        for chunk in iter(lambda: proc.stdout.read(256), ""):
-            _append(view, chunk)
-        proc.wait()
-        if proc.returncode != 0:
-            err = proc.stderr.read()
-            if err:
-                _append(view, f"\n[Error: {err.strip()}]\n")
-    except Exception as e:
-        _append(view, f"\n[Error: {e}]\n")
-    finally:
-        _append(view, "\n")
+        threading.Thread(target=self._monitor, daemon=True).start()
+        print(f"[ai_sdk] bridge starting (port {_BRIDGE_PORT})")
+
+    def _monitor(self):
+        for line in self._proc.stdout:
+            line = line.rstrip()
+            print(f"[ai_sdk bridge] {line}")
+            if "bridge connected" in line or "listening on" in line:
+                self._ready.set()
+
+    def stop(self):
+        self._ready.clear()
+        if self._proc:
+            try:
+                self._proc.terminate()
+            except Exception:
+                pass
+            self._proc = None
+
+    def restart(self):
+        self.stop()
+        self.start()
+
+    def is_alive(self):
+        return self._proc is not None and self._proc.poll() is None
+
+    def send(self, prompt, on_event):
+        threading.Thread(
+            target=self._send_thread, args=(prompt, on_event), daemon=True
+        ).start()
+
+    def send_request(self, req, on_event):
+        threading.Thread(
+            target=self._send_thread, args=(None, on_event, req), daemon=True
+        ).start()
+
+    def _send_thread(self, prompt, on_event, req=None):
+        if not self._ready.wait(timeout=60.0):
+            on_event({"type": "error", "error": "Bridge did not connect within 60s"})
+            return
+        if req is None:
+            req = {"id": 1, "prompt": prompt}
+        req_line = json.dumps(req) + "\n"
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect((_SOCKET_HOST, _BRIDGE_PORT))
+            self._current_sock = sock
+            self._stop_requested = False
+            sock.sendall(req_line.encode())
+            buf = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    if not line.strip():
+                        continue
+                    event = json.loads(line)
+                    on_event(event)
+                    if event.get("type") in ("done", "error", "status_data"):
+                        return
+            # EOF path (recv returned b""): check if we were stopped
+            if self._stop_requested:
+                on_event({"type": "stopped"})
+        except Exception as e:
+            if self._stop_requested:
+                on_event({"type": "stopped"})
+            else:
+                on_event({"type": "error", "error": str(e)})
+        finally:
+            self._current_sock = None
+            if sock:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
 
 
-# ─── Command ──────────────────────────────────────────────────────────────────
+# ─── Plugin lifecycle ─────────────────────────────────────────────────────────
 
-class AiSdkQueryCommand(sublime_plugin.WindowCommand):
-    """Ctrl+Alt+A — ask Claude; response streams into the Ai (SDK) view."""
+
+def plugin_loaded():
+    global _server, _bridge
+    _server = _SdkSocketServer()
+    _server.start()
+    _bridge = _Bridge()
+    _bridge.start()
+
+
+def plugin_unloaded():
+    global _server, _bridge
+    if _server:
+        _server.stop()
+        _server = None
+    if _bridge:
+        _bridge.stop()
+        _bridge = None
+
+
+# ─── View helpers ─────────────────────────────────────────────────────────────
+
+
+def _find_sdk_view(window):
+    for v in window.views():
+        if v.name() == _VIEW_NAME or v.settings().get("ai_sdk_view"):
+            return v
+    return None
+
+
+def _sdk_view(window):
+    v = _find_sdk_view(window)
+    if v:
+        return v
+    v = window.new_file()
+    v.set_name(_VIEW_NAME)
+    v.set_scratch(True)
+    v.settings().set("word_wrap", True)
+    v.settings().set("gutter", True)
+    v.settings().set("line_numbers", False)
+    v.settings().set("fold_buttons", True)
+    v.settings().set("fade_fold_buttons", False)
+    v.settings().set("ai_sdk_view", True)
+    v.settings().set("ai_sdk_input_mode", False)
+    v.set_read_only(False)
+    v.run_command("append", {"characters": "\n"})
+    v.set_read_only(True)
+    return v
+
+
+def _vwrite(view, text):
+    """Append text to the (read-only) history area. Safe to call from any thread."""
+
+    def _do(t=text):
+        view.set_read_only(False)
+        view.run_command("append", {"characters": t, "scroll_to_end": True})
+        view.set_read_only(True)
+
+    sublime.set_timeout(_do, 0)
+
+
+# ─── Spinner ──────────────────────────────────────────────────────────────────
+
+
+def _start_spinner(window):
+    global _working, _spinner_frame
+    _working = True
+    _spinner_frame = 0
+    _animate(window)
+
+
+def _animate(window):
+    global _spinner_frame
+    if not _working:
+        return
+    v = _find_sdk_view(window)
+    if v:
+        frame = _SPINNER_FRAMES[_spinner_frame % len(_SPINNER_FRAMES)]
+        v.set_name(f"{frame} {_VIEW_NAME}")
+        _spinner_frame += 1
+    sublime.set_timeout(lambda: _animate(window), 200)
+
+
+def _stop_spinner(window):
+    global _working
+    _working = False
+    v = _find_sdk_view(window)
+    if v:
+        v.set_name(f"◇ {_VIEW_NAME}")
+
+
+# ─── ccstatusline phantom ─────────────────────────────────────────────────────
+
+_STATUS_PHANTOM_KEY = "ai_sdk_ccstatus"
+_ANSI_CUBE = [0, 95, 135, 175, 215, 255]
+_ANSI_STD = [
+    "#000000",
+    "#800000",
+    "#008000",
+    "#808000",
+    "#000080",
+    "#800080",
+    "#008080",
+    "#c0c0c0",
+    "#808080",
+    "#ff0000",
+    "#00ff00",
+    "#ffff00",
+    "#0000ff",
+    "#ff00ff",
+    "#00ffff",
+    "#ffffff",
+]
+
+
+def _ansi256_hex(n):
+    n = int(n)
+    if n < 16:
+        return _ANSI_STD[n]
+    if n < 232:
+        n -= 16
+        return "#{:02x}{:02x}{:02x}".format(
+            _ANSI_CUBE[n // 36], _ANSI_CUBE[(n % 36) // 6], _ANSI_CUBE[n % 6]
+        )
+    v = 8 + (n - 232) * 10
+    return "#{:02x}{:02x}{:02x}".format(v, v, v)
+
+
+def _ansi_line_to_html(line):
+    parts = re.split(r"(\x1b\[[0-9;]*m)", line)
+    out = []
+    color = None
+    for p in parts:
+        m = re.fullmatch(r"\x1b\[([0-9;]*)m", p)
+        if m:
+            codes = m.group(1).split(";")
+            if codes[0] in ("0", ""):
+                if color:
+                    out.append("</span>")
+                    color = None
+            elif len(codes) == 3 and codes[0] == "38" and codes[1] == "5":
+                if color:
+                    out.append("</span>")
+                color = _ansi256_hex(codes[2])
+                out.append(f'<span style="color:{color}">')
+            elif codes[0] == "39":
+                if color:
+                    out.append("</span>")
+                    color = None
+        else:
+            out.append(
+                p.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            )
+    if color:
+        out.append("</span>")
+    return "".join(out)
+
+
+def _get_ccstatus_cmd():
+    try:
+        path = os.path.expanduser("~/.claude/settings.json")
+        with open(path, encoding="utf-8") as f:
+            s = json.load(f)
+        cmd = s.get("statusLine", {}).get("command", "")
+        return cmd.split() if cmd else []
+    except Exception:
+        return []
+
+
+def _update_ccstatus(view, event):
+    def _bg():
+        cmd = _get_ccstatus_cmd()
+        if not cmd:
+            return
+        cost = event.get("cost") or 0.0
+        window = view.window()
+        cwd = ""
+        if window:
+            folders = window.folders()
+            if folders:
+                cwd = folders[0].replace("\\", "/")
+        model = event.get("model") or sublime.load_settings(
+            "ClaudeCode.sublime-settings"
+        ).get("default_model", "claude-sonnet-4-6")
+        if model == "sonnet":
+            model = "claude-sonnet-4-6"
+        elif model == "opus":
+            model = "claude-opus-4-8"
+        data = {
+            "hook_event_name": "PostToolUse",
+            "session_id": "sdk",
+            "model": model,
+            "cost": {"total_cost_usd": cost},
+            "cwd": cwd,
+        }
+        cw = event.get("context_window")
+        if cw:
+            data["context_window"] = cw
+        try:
+            result = subprocess.run(
+                cmd,
+                input=json.dumps(data).encode("utf-8"),
+                capture_output=True,
+                timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            lines = result.stdout.decode("utf-8", errors="replace").splitlines()
+            lines = [l for l in lines if l.strip()]
+        except Exception as e:
+            print(f"[ai_sdk] ccstatusline: {e}")
+            return
+        if not lines:
+            return
+        html_lines = "<br>".join(_ansi_line_to_html(l) for l in lines)
+        html = f'<body><div style="padding:2px 6px">{html_lines}</div></body>'
+
+        def _do():
+            view.erase_phantoms(_STATUS_PHANTOM_KEY)
+            view.add_phantom(
+                _STATUS_PHANTOM_KEY,
+                sublime.Region(0, 0),
+                html,
+                sublime.LAYOUT_BELOW,
+            )
+
+        sublime.set_timeout(_do, 0)
+
+    threading.Thread(target=_bg, daemon=True).start()
+
+
+# ─── Conversation rendering ───────────────────────────────────────────────────
+
+
+def _render_prompt(view, prompt):
+    """Complete the user's typed input line with ▶ marker."""
+
+    def _do():
+        view.set_read_only(False)
+        view.run_command("append", {"characters": " ▶\n\n", "scroll_to_end": True})
+        view.set_read_only(True)
+
+    sublime.set_timeout(_do, 0)
+
+
+def _render_tool_start(view, name, tool_id):
+    """Append a pending tool line and record the ⚙ position."""
+
+    def _do(n=name, tid=tool_id):
+        view.set_read_only(False)
+        pos = view.size()
+        view.run_command("append", {"characters": f"  ⚙ {n}\n", "scroll_to_end": True})
+        # Track position of ⚙ (offset 2 past pos, 1 character wide)
+        view.add_regions(
+            f"ai_sdk_tool_{tid}",
+            [sublime.Region(pos + 2, pos + 3)],
+            flags=sublime.HIDDEN,
+        )
+        view.set_read_only(True)
+
+    sublime.set_timeout(_do, 0)
+
+
+def _render_tool_result(view, tool_id, is_error):
+    """Flip ⚙ → ✔ or ✘ for the completed tool."""
+
+    def _do(tid=tool_id, err=is_error):
+        key = f"ai_sdk_tool_{tid}"
+        regions = view.get_regions(key)
+        if regions:
+            symbol = "✘" if err else "✔"
+            view.run_command(
+                "ai_sdk_replace",
+                {
+                    "start": regions[0].begin(),
+                    "end": regions[0].end(),
+                    "text": symbol,
+                },
+            )
+            view.erase_regions(key)
+
+    sublime.set_timeout(_do, 0)
+
+
+def _render_meta(view, event):
+    """Append @done footer after a response."""
+
+    def _do():
+        dur_s = (event.get("duration_ms") or 0) / 1000.0
+        cost = event.get("cost") or 0.0
+        turns = event.get("num_turns") or 0
+        stop = event.get("stop_reason") or ""
+        parts = [f"{dur_s:.1f}s"]
+        if cost > 0:
+            parts.append(f"${cost:.4f}")
+        if turns:
+            parts.append(f"{turns} turns")
+        if stop and stop != "end_turn":
+            parts.append(stop)
+        meta = f"\n@done({', '.join(parts)})\n"
+        view.set_read_only(False)
+        view.run_command("append", {"characters": meta, "scroll_to_end": True})
+        view.set_read_only(True)
+
+    sublime.set_timeout(_do, 0)
+
+
+# ─── Input mode ───────────────────────────────────────────────────────────────
+
+
+def _enter_input_mode(view, window):
+    def _do():
+        view.set_read_only(False)
+        view.run_command("append", {"characters": "\n◎ ", "scroll_to_end": True})
+        pos = view.size()
+        # Store start as integer setting — regions shift when text is inserted at them
+        view.settings().set("ai_sdk_input_start", pos)
+        view.sel().clear()
+        view.sel().add(sublime.Region(pos, pos))
+        view.show(pos)
+        view.settings().set("ai_sdk_input_mode", True)
+        if window:
+            window.focus_view(view)
+        v = _find_sdk_view(window)
+        if v:
+            v.set_name(f"◇ {_VIEW_NAME}")
+
+    sublime.set_timeout(_do, 0)
+
+
+def _exit_input_mode(view):
+    """Lock the view and clear input mode. Call from main thread."""
+    view.settings().erase("ai_sdk_input_start")
+    view.settings().set("ai_sdk_input_mode", False)
+    view.set_read_only(True)
+
+
+def _get_input_text(view):
+    """Return whatever the user typed in the input area."""
+    start = view.settings().get("ai_sdk_input_start", -1)
+    if start < 0:
+        return ""
+    return view.substr(sublime.Region(start, view.size())).strip()
+
+
+# ─── Event dispatch ───────────────────────────────────────────────────────────
+
+
+def _on_event(view, window, event):
+    """Route one bridge event to the appropriate renderer. Called from bg thread."""
+    t = event.get("type")
+    if t == "text":
+        _vwrite(view, event.get("text", ""))
+    elif t == "tool_use":
+        _render_tool_start(view, event.get("name", "?"), event.get("tool_id", ""))
+    elif t == "tool_result":
+        _render_tool_result(
+            view, event.get("tool_id", ""), event.get("is_error", False)
+        )
+    elif t == "done":
+        _render_meta(view, event)
+        _update_ccstatus(view, event)
+        sublime.set_timeout(lambda: _stop_spinner(window), 0)
+        sublime.set_timeout(lambda: _enter_input_mode(view, window), 50)
+    elif t == "stopped":
+        _vwrite(view, "\n[Stopped]\n")
+        sublime.set_timeout(lambda: _stop_spinner(window), 0)
+        sublime.set_timeout(lambda: _enter_input_mode(view, window), 50)
+    elif t == "error":
+        err = event.get("error", "unknown error")
+        _vwrite(view, f"\n[Error: {err}]\n")
+        sublime.set_timeout(lambda: _stop_spinner(window), 0)
+        sublime.set_timeout(lambda: _enter_input_mode(view, window), 50)
+
+
+# ─── View event listener (intercepts Enter in input mode) ────────────────────
+
+
+class AiSdkViewListener(sublime_plugin.ViewEventListener):
+    @classmethod
+    def is_applicable(cls, settings):
+        return settings.get("ai_sdk_view", False)
+
+    def on_text_command(self, command, args):
+        if (
+            command == "insert"
+            and args.get("characters") == "\n"
+            and self.view.settings().get("ai_sdk_input_mode", False)
+        ):
+            return ("ai_sdk_submit", {})
+        return None
+
+
+# ─── Helper TextCommand ───────────────────────────────────────────────────────
+
+
+class AiSdkReplaceCommand(sublime_plugin.TextCommand):
+    """Replace a region in the view (handles read-only toggle)."""
+
+    def run(self, edit, start, end, text):
+        self.view.set_read_only(False)
+        self.view.replace(edit, sublime.Region(start, end), text)
+        self.view.set_read_only(True)
+
+
+# ─── Commands ─────────────────────────────────────────────────────────────────
+
+
+class AiSdkFocusCommand(sublime_plugin.WindowCommand):
+    """Ctrl+Alt+A — open / focus the Ai (SDK) conversation view."""
 
     def run(self):
-        self.window.show_input_panel(
-            "Ask Claude:", "", self._submit, None, None
-        )
+        view = _sdk_view(self.window)
+        self.window.focus_view(view)
+        if not view.settings().get("ai_sdk_input_mode", False):
+            _enter_input_mode(view, self.window)
+        _update_ccstatus(view, {})
 
-    def _resolve_cwd(self):
-        view = self.window.active_view()
-        if view and view.file_name():
-            return os.path.dirname(view.file_name())
-        folders = self.window.folders()
-        return folders[0] if folders else os.path.expanduser("~")
 
-    def _submit(self, prompt):
-        prompt = prompt.strip()
+class AiSdkSubmitCommand(sublime_plugin.TextCommand):
+    """Enter — submit the typed prompt to Claude."""
+
+    def run(self, edit):
+        view = self.view
+        window = view.window()
+        prompt = _get_input_text(view)
         if not prompt:
             return
-        cwd = self._resolve_cwd()
+        # Defer all state changes until after this edit context closes
+        sublime.set_timeout(lambda: _do_submit(view, window, prompt), 10)
+
+    def is_enabled(self):
+        return bool(self.view.settings().get("ai_sdk_input_mode", False))
+
+
+class AiSdkNoopCommand(sublime_plugin.TextCommand):
+    def run(self, edit):
+        pass
+
+
+class AiSdkStopCommand(sublime_plugin.WindowCommand):
+    """Stop the running Claude query."""
+
+    def run(self):
+        global _bridge
+        if _bridge:
+            _bridge.stop_query()
+
+
+class AiSdkKeyInterceptor(sublime_plugin.EventListener):
+    """Intercept Ctrl+C and Esc inside the AI(SDK) view without keymap entries."""
+
+    def on_text_command(self, view, command_name, args):
+        if command_name == "copy":
+            if view.settings().get("ai_sdk_view") and not view.settings().get("ai_sdk_input_mode"):
+                view.window().run_command("ai_sdk_stop")
+                return ("ai_sdk_noop", {})
+        return None
+
+    def on_window_command(self, window, command_name, args):
+        view = window.active_view()
+        if view is None or not view.settings().get("ai_sdk_view"):
+            return None
+        if not view.settings().get("ai_sdk_input_mode"):  # Claude is running
+            if command_name in ("hide_overlay", "hide_panel", "hide_auto_complete", "single_selection"):
+                window.run_command("ai_sdk_stop")
+        return None
+
+
+# ─── Status renderer ─────────────────────────────────────────────────────────
+
+
+def _render_status(view, window, event):
+    ctx = event.get("context", {})
+    servers = event.get("servers", [])
+    L = ["", "▶ Session"]
+    L.append(f"    Model:      {ctx.get('model', 'unknown')}")
+    session_id = ctx.get("session_id", "")
+    if session_id:
+        L.append(f"    Session ID: {session_id}")
+    L.append(f"    Bridge:     running, port {_BRIDGE_PORT}")
+    api = ctx.get("api_usage") or {}
+    if api:
+        cost = api.get("total_cost_usd") or api.get("cost")
+        if cost is not None:
+            L.append(f"    Session cost: ${cost:.4f}")
+    L.append("")
+
+    total = ctx.get("total_tokens", 0)
+    mx = ctx.get("max_tokens", 0)
+    raw_mx = ctx.get("raw_max_tokens", 0)
+    pct = ctx.get("percent", 0)
+    ac_on = ctx.get("autocompact_enabled", False)
+    ac_thresh = ctx.get("autocompact_threshold")
+    L.append(f"▶ Context  ({pct}% used)")
+    L.append(f"    Used:        {total:>7,} / {mx:,} (effective max)")
+    if raw_mx and raw_mx != mx:
+        L.append(f"    Model max:   {raw_mx:>7,}")
+    if ac_thresh:
+        L.append(
+            f"    Autocompact: {'enabled' if ac_on else 'disabled'}  threshold {ac_thresh:,}"
+        )
+    else:
+        L.append(f"    Autocompact: {'enabled' if ac_on else 'disabled'}")
+    L.append("")
+    L.append("    ▶ Token breakdown")
+    for cat in ctx.get("categories", []):
+        deferred = " (deferred)" if cat.get("deferred") else ""
+        L.append(f"        {cat['name']:<32} {cat['tokens']:>7,}{deferred}")
+    sps = ctx.get("system_prompt_sections", [])
+    if sps:
+        L.append("")
+        L.append("    ▶ System prompt sections")
+        for s in sps:
+            L.append(f"        {s.get('name', '?'):<32} {s.get('tokens', 0):>7,}")
+    st_tools = ctx.get("system_tools", [])
+    if st_tools:
+        L.append("")
+        L.append("    ▶ Built-in tools")
+        for t in st_tools:
+            L.append(f"        {t.get('name', '?'):<32} {t.get('tokens', 0):>7,}")
+    mcp_tools = ctx.get("mcp_tools", [])
+    if mcp_tools:
+        L.append("")
+        L.append("    ▶ MCP tool tokens")
+        for t in mcp_tools:
+            loaded = "" if t.get("isLoaded", True) else " (deferred)"
+            L.append(
+                f"        {t.get('name', '?'):<32} {t.get('tokens', 0):>7,}{loaded}"
+            )
+    mem = ctx.get("memory_files", [])
+    if mem:
+        L.append("")
+        L.append("    ▶ Memory files")
+        for f in mem:
+            L.append(f"        {f.get('path', '?'):<40} {f.get('tokens', 0):>7,}")
+    L.append("")
+
+    connected = sum(1 for s in servers if s["status"] == "connected")
+    needs_auth = sum(1 for s in servers if s["status"] == "needs-auth")
+    failed = sum(1 for s in servers if s["status"] == "failed")
+    parts = [f"{connected} connected"]
+    if needs_auth:
+        parts.append(f"{needs_auth} needs-auth")
+    if failed:
+        parts.append(f"{failed} failed")
+    L.append(f"▶ MCP Servers  ({', '.join(parts)})")
+    for s in servers:
+        icon = "✔" if s["status"] == "connected" else "✘"
+        tools = s.get("tools", [])
+        err = f"  — {s['error']}" if s.get("error") else ""
+        L.append(
+            f"    {icon} {s['name']:<26} {s['status']:<12} {len(tools)} tools{err}"
+        )
+        if s.get("version"):
+            L.append(f"        version:  {s['version']}")
+        if s.get("config_type"):
+            L.append(f"        type:     {s['config_type']}  {s.get('config_url', '')}")
+        if s.get("scope"):
+            L.append(f"        scope:    {s['scope']}")
+        if tools:
+            L.append("        ▶ Tools")
+            for t in tools:
+                flags = []
+                if t.get("readonly"):
+                    flags.append("ro")
+                if t.get("destructive"):
+                    flags.append("destructive")
+                flag_str = f"  [{', '.join(flags)}]" if flags else ""
+                desc = t.get("description", "")
+                desc_str = f"  {desc[:60]}" if desc else ""
+                L.append(f"            {t['name']}{flag_str}{desc_str}")
+    L.append("")
+    _vwrite(view, "\n".join(L))
+    sublime.set_timeout(lambda: _enter_input_mode(view, window), 0)
+
+
+# ─── Slash command handler ────────────────────────────────────────────────────
+
+_SLASH_COMMANDS = {
+    "clear": "Restart bridge and clear conversation history",
+    "help": "Show available slash commands",
+    "status": "Show bridge status",
+    "tools": "List allowed tools",
+    "compact": "Ask Claude to summarize conversation context (forwarded)",
+}
+
+
+def _handle_slash(view, window, prompt):
+    """Return True if handled locally, False to forward to bridge."""
+    parts = prompt[1:].split(None, 1)
+    cmd = parts[0].lower() if parts else ""
+    args = parts[1] if len(parts) > 1 else ""
+
+    if cmd == "help":
+        lines = ["", "Slash commands:", ""]
+        for name, desc in _SLASH_COMMANDS.items():
+            lines.append(f"  /{name:<10} {desc}")
+        lines.append("")
+        _vwrite(view, "\n".join(lines))
+        _enter_input_mode(view, window)
+        return True
+
+    if cmd == "clear":
+        global _bridge
+        _vwrite(view, "\n─── bridge restarted — history cleared ───\n")
+        threading.Thread(target=_bridge.restart, daemon=True).start()
+        sublime.set_timeout(lambda: _enter_input_mode(view, window), 500)
+        return True
+
+    if cmd == "status":
+        if not (_bridge and _bridge.is_alive()):
+            _vwrite(view, "\nBridge: stopped\n")
+            _enter_input_mode(view, window)
+            return True
+
+        def on_status(event):
+            if event.get("type") == "status_data":
+                _render_status(view, window, event)
+            elif event.get("type") == "error":
+                _vwrite(view, f"\n[Status error: {event.get('error')}]\n")
+                sublime.set_timeout(lambda: _enter_input_mode(view, window), 0)
+
+        _bridge.send_request({"id": 1, "type": "status_request"}, on_status)
+        return True
+
+    if cmd == "tools":
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("agent_query", _SCRIPT)
+        aq = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(aq)
+        lines = ["", "Allowed tools:", ""]
+        for t in aq._ALLOWED_TOOLS:
+            lines.append(f"  {t}")
+        lines.append("")
+        _vwrite(view, "\n".join(lines))
+        _enter_input_mode(view, window)
+        return True
+
+    # Unknown command — forward to bridge (handles /compact, /loop, etc.)
+    return False
+
+
+def _do_submit(view, window, prompt):
+    _exit_input_mode(view)
+    _render_prompt(view, prompt)
+
+    if prompt.startswith("/"):
+        if _handle_slash(view, window, prompt):
+            _stop_spinner(window)
+            return
+
+    _start_spinner(window)
+    if _bridge and _bridge.is_alive():
+        _bridge.send(prompt, lambda ev: _on_event(view, window, ev))
+    else:
+        _vwrite(view, "[Bridge not ready — try Ctrl+Alt+X to restart]\n")
+        _enter_input_mode(view, window)
+
+
+class AiSdkClearCommand(sublime_plugin.WindowCommand):
+    """Ctrl+Alt+X — restart bridge (clears conversation history)."""
+
+    def run(self):
+        global _bridge
+        if not _bridge:
+            return
         view = _sdk_view(self.window)
-        _append(view, f"\n{_DIVIDER}\nYou: {prompt}\n{_DIVIDER}\n↺ thinking…\n")
-        threading.Thread(target=_run, args=(prompt, view, cwd), daemon=True).start()
+        if view.settings().get("ai_sdk_input_mode", False):
+            _exit_input_mode(view)
+        _vwrite(view, "\n─── bridge restarted — history cleared ───\n")
+        threading.Thread(target=_bridge.restart, daemon=True).start()
+        sublime.set_timeout(lambda: _enter_input_mode(view, self.window), 500)
