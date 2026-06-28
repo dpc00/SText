@@ -35,7 +35,7 @@ def _external_console(path):
     """Spawn an external terminal window running ai in path."""
     if sys.platform == "win32":
         subprocess.Popen(
-            ["cmd", "/k", "ollama.exe", "launch", "claude"],
+            ["cmd", "/k", "ollama", "launch", "claude"],
             cwd=path,
             creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
@@ -93,7 +93,7 @@ class OpenAiTerminusInEditorCommand(sublime_plugin.TextCommand):
         self.view.window().run_command(
             "terminus_open",
             {
-                "cmd": ["ollama.exe", "launch", "claude"],
+                "cmd": ["ollama", "launch", "claude"],
                 "cwd": path,
                 "title": "Ai",
             },
@@ -111,7 +111,7 @@ class OpenAiTerminusHereCommand(sublime_plugin.WindowCommand):
         self.window.run_command(
             "terminus_open",
             {
-                "cmd": ["ollama.exe", "launch", "claude"],
+                "cmd": ["ollama", "launch", "claude"],
                 "cwd": path,
                 "title": "Ai",
             },
