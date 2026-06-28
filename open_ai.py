@@ -93,7 +93,7 @@ class OpenAiTerminusInEditorCommand(sublime_plugin.TextCommand):
         self.view.window().run_command(
             "terminus_open",
             {
-                "cmd": ["ollama", "launch", "claude"],
+                "cmd": ["ollama launch claude"],
                 "cwd": path,
                 "title": "Ai",
                 "config_name": "<ask>",
@@ -112,7 +112,7 @@ class OpenAiTerminusHereCommand(sublime_plugin.WindowCommand):
         self.window.run_command(
             "terminus_open",
             {
-                "cmd": ["ollama", "launch", "claude"],
+                "cmd": ["ollama launch claude"],
                 "cwd": path,
                 "title": "Ai",
                 "config_name": "<ask>",
