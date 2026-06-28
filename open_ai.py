@@ -35,12 +35,12 @@ def _external_console(path):
     """Spawn an external terminal window running ai in path."""
     if sys.platform == "win32":
         subprocess.Popen(
-            ["cmd", "/k", "claude", "--chrome"],
+            ["cmd", "/k", "openclaw"],
             cwd=path,
             creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
     else:
-        subprocess.Popen(["bash", "-i", "-c", "claude"], cwd=path)
+        subprocess.Popen(["bash", "-i", "-c", "openclaw"], cwd=path)
 
 
 def _resolve_editor_path(view):
@@ -93,7 +93,7 @@ class OpenAiTerminusInEditorCommand(sublime_plugin.TextCommand):
         self.view.window().run_command(
             "terminus_open",
             {
-                "cmd": ["claude", "--chrome"],
+                "cmd": ["openclaw"],
                 "cwd": path,
                 "title": "Ai",
             },
@@ -111,7 +111,7 @@ class OpenAiTerminusHereCommand(sublime_plugin.WindowCommand):
         self.window.run_command(
             "terminus_open",
             {
-                "cmd": ["claude", "--chrome"],
+                "cmd": ["openclaw"],
                 "cwd": path,
                 "title": "Ai",
             },
@@ -125,17 +125,19 @@ class OpenAiTerminusHereCommand(sublime_plugin.WindowCommand):
 def _get_response_tab(window):
     """Find or create the Claude Response scratch tab."""
     for v in window.views():
-        if v.name() == "Claude Response":
+        if v.name() == "AI Response":
             return v
     v = window.new_file()
-    v.set_name("Claude Response")
+    v.set_name("AI Response")
     v.set_scratch(True)
     return v
 
 
 def _last_claude_response():
     """Return the last assistant text from the most recent JSONL transcript."""
-    pattern = os.path.expanduser("~/.claude/projects/C--Users-donal-projects-SText/*.jsonl")
+    pattern = os.path.expanduser(
+        "~/.claude/projects/C--Users-donal-projects-SText/*.jsonl"
+    )
     files = glob.glob(pattern)
     if not files:
         return None
@@ -173,7 +175,14 @@ class ClaudeGrabResponseCommand(sublime_plugin.WindowCommand):
         v = _get_response_tab(self.window)
         v.set_read_only(False)
         separator = "\n\n--- CLAUDE ---\n"
-        v.run_command("append", {"characters": separator + text + "\n\n--- YOUR TURN (use >> for your lines) ---\n"})
+        v.run_command(
+            "append",
+            {
+                "characters": separator
+                + text
+                + "\n\n--- YOUR TURN (use >> for your lines) ---\n"
+            },
+        )
         self.window.focus_view(v)
         v.run_command("move_to", {"to": "eof"})
 
