@@ -1,5 +1,5 @@
 [
-	{"caption": "AI (SDK): Open", "command": "ai_sdk_focus"}
+	{"caption": "AI (SDK): Open", "command": "ai_sdk_focus"},
 	{"caption": "Ai: List Recent Sessions", "command": "ai_list_sessions"},
 	{"caption": "Ai: Quit Flask Apps", "command": "ai_quit_flask_apps"},
 	{"caption": "Ai: Search Conversations", "command": "ai_search_conversations"},
@@ -15,5 +15,5 @@
 	{"caption": "PyBackup: Flask App", "command": "pb_flask_launcher"},
 	{"caption": "PyBackup: Flask App (silent)", "command": "pb_flask_silent"},
 	{"caption": "Sublime Config", "command": "st_config_open"},
-	{"caption": "Sublime Settings", "command": "st_settings_open"},
+	{"caption": "Sublime Settings", "command": "st_settings_open"}
 ]
