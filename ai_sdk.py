@@ -18,6 +18,8 @@ import sublime
 import sublime_plugin
 
 _VIEW_NAME = "Ai (SDK)"
+_USE_OLLAMA = True
+_OLLAMA_SCRIPT = r"C:\Users\donal\projects\tools\agent_query_ollama.py"
 _PYTHON = r"C:\Users\donal\AppData\Local\Programs\Python\Python312\python.exe"
 _SCRIPT = r"C:\Users\donal\projects\tools\agent_query.py"
 
@@ -156,7 +158,12 @@ class _Bridge:
 
     def start(self):
         self._proc = subprocess.Popen(
-            [_PYTHON, _SCRIPT, "--bridge", str(_BRIDGE_PORT)],
+            [
+                _PYTHON,
+                _OLLAMA_SCRIPT if _USE_OLLAMA else _SCRIPT,
+                "--bridge",
+                str(_BRIDGE_PORT),
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -173,8 +180,6 @@ class _Bridge:
         for line in self._proc.stdout:
             line = line.rstrip()
             print(f"[ai_sdk bridge] {line}")
-            if "bridge connected" in line or "listening on" in line:
-                self._ready.set()
 
     def stop(self):
         self._ready.clear()
@@ -203,9 +208,6 @@ class _Bridge:
         ).start()
 
     def _send_thread(self, prompt, on_event, req=None):
-        if not self._ready.wait(timeout=60.0):
-            on_event({"type": "error", "error": "Bridge did not connect within 60s"})
-            return
         if req is None:
             req = {"id": 1, "prompt": prompt}
         req_line = json.dumps(req) + "\n"
@@ -358,10 +360,22 @@ _ccstatus_phantom_sets = {}
 def _ansi256_hex(n):
     """Convert a 256-colour palette index to a CSS #rrggbb string."""
     STD16 = [
-        "#1e1e2e", "#f38ba8", "#a6e3a1", "#f9e2af",
-        "#89b4fa", "#cba6f7", "#94e2d5", "#cdd6f4",
-        "#585b70", "#f38ba8", "#a6e3a1", "#f9e2af",
-        "#89b4fa", "#cba6f7", "#94e2d5", "#cdd6f4",
+        "#1e1e2e",
+        "#f38ba8",
+        "#a6e3a1",
+        "#f9e2af",
+        "#89b4fa",
+        "#cba6f7",
+        "#94e2d5",
+        "#cdd6f4",
+        "#585b70",
+        "#f38ba8",
+        "#a6e3a1",
+        "#f9e2af",
+        "#89b4fa",
+        "#cba6f7",
+        "#94e2d5",
+        "#cdd6f4",
     ]
     if n < 16:
         return STD16[n]
@@ -370,7 +384,10 @@ def _ansi256_hex(n):
         return f"#{v:02x}{v:02x}{v:02x}"
     n -= 16
     b, g, r = n % 6, (n // 6) % 6, n // 36
-    def _c(x): return 0 if x == 0 else 55 + x * 40
+
+    def _c(x):
+        return 0 if x == 0 else 55 + x * 40
+
     return f"#{_c(r):02x}{_c(g):02x}{_c(b):02x}"
 
 
@@ -391,13 +408,21 @@ def _ansi_to_html(text):
                         color = _ansi256_hex(int(codes[i + 2]))
                         i += 2
                     elif codes[i + 1] == "2" and i + 4 < len(codes):
-                        r2, g2, b2 = int(codes[i+2]), int(codes[i+3]), int(codes[i+4])
+                        r2, g2, b2 = (
+                            int(codes[i + 2]),
+                            int(codes[i + 3]),
+                            int(codes[i + 4]),
+                        )
                         color = f"#{r2:02x}{g2:02x}{b2:02x}"
                         i += 4
                 i += 1
         elif p:
-            esc = (p.replace("&", "&amp;").replace("<", "&lt;")
-                    .replace(">", "&gt;").replace("\xa0", " "))
+            esc = (
+                p.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\xa0", " ")
+            )
             if color:
                 out.append(f'<span style="color:{color}">{esc}</span>')
             else:
@@ -717,7 +742,9 @@ class AiSdkKeyInterceptor(sublime_plugin.EventListener):
 
     def on_text_command(self, view, command_name, args):
         if command_name == "copy":
-            if view.settings().get("ai_sdk_view") and not view.settings().get("ai_sdk_input_mode"):
+            if view.settings().get("ai_sdk_view") and not view.settings().get(
+                "ai_sdk_input_mode"
+            ):
                 view.window().run_command("ai_sdk_stop")
                 return ("ai_sdk_noop", {})
         return None
@@ -928,6 +955,7 @@ class AiSdkOpenHereCommand(sublime_plugin.WindowCommand):
 
     def run(self, paths=None):
         import os as _os
+
         global _bridge, _bridge_cwd
         paths = paths or []
         path = paths[0] if paths else None
@@ -959,6 +987,7 @@ class AiSdkOpenInEditorCommand(sublime_plugin.TextCommand):
 
     def run(self, edit):
         import os as _os
+
         global _bridge, _bridge_cwd
         path = self.view.file_name()
         if path:
