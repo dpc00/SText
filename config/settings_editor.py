@@ -42,7 +42,9 @@ from json5.loader import loads as _j5loads, ModelLoader as _ModelLoader  # noqa:
 import sublime
 import sublime_plugin  # noqa: E402
 
-_PORT = 57323
+_PORT = 57324  # was 57323; bumped to escape a zombie server left by an earlier
+               # reload (reload_plugin doesn't kill the old server thread, and the
+               # orphan held the port). Revert to 57323 after a clean ST restart.
 _SERVER = [None]
 _gen = [0]
 _MISSING = object()
@@ -688,6 +690,281 @@ def _detail(name):
     }
 
 
+# --- keybindings: runtime command registry -----------------------------------
+_CMD = None
+
+
+def _runtime_commands():
+    global _CMD
+    if _CMD is not None:
+        return _CMD
+    out = {}
+    for lst in (sublime_plugin.application_command_classes,
+                sublime_plugin.window_command_classes,
+                sublime_plugin.text_command_classes):
+        for c in lst or []:
+            try:
+                n = c.__new__(c).name()
+            except Exception:
+                continue
+            if isinstance(n, str) and n:
+                out[n] = (c.__module__ or "?") + "." + c.__name__
+    _CMD = out
+    return out
+
+
+# Known commands = Python runtime classes + everything Default package binds
+# (Default only references real commands, so this captures the C++ builtins
+# that Python introspection cannot see — exit, new_window, copy, save, ...).
+_DEFAULT_CMD = None
+
+
+def _default_resource_commands():
+    global _DEFAULT_CMD
+    if _DEFAULT_CMD is not None:
+        return _DEFAULT_CMD
+    out = set()
+    res = (sublime.find_resources("*.sublime-keymap")
+           + sublime.find_resources("*.sublime-menu")
+           + sublime.find_resources("*.sublime-commands"))
+    for r in res:
+        if not r.startswith("Packages/Default/"):
+            continue
+        try:
+            d = sublime.decode_value(sublime.load_resource(r))
+        except Exception:
+            continue
+        stack = [d]
+        while stack:
+            n = stack.pop()
+            if isinstance(n, list):
+                stack.extend(n)
+            elif isinstance(n, dict):
+                c = n.get("command")
+                if isinstance(c, str):
+                    out.add(c)
+                for v in n.values():
+                    if isinstance(v, (list, dict)):
+                        stack.append(v)
+    _DEFAULT_CMD = out
+    return out
+
+
+def _known_commands():
+    return set(_runtime_commands().keys()) | _default_resource_commands()
+
+
+# --- keybindings: catalog (merged Default + platform + User) ------------------
+_KM = None
+_KM_GEN = -1
+
+
+def _km_real_path(res):
+    """Packages/User/Foo.sublime-keymap -> fs path; package files -> None (RO)."""
+    parts = res.split("/")
+    if len(parts) >= 2 and parts[1] == "User":
+        return os.path.join(sublime.packages_path(), "User", *parts[2:])
+    return None
+
+
+def _km_chord(keys):
+    if isinstance(keys, list):
+        return " ".join(str(k) for k in keys)
+    return str(keys) if keys else ""
+
+
+def _keymap_catalog():
+    global _KM, _KM_GEN
+    if _KM is not None and _KM_GEN == _gen[0]:
+        return _KM
+    known = _known_commands()
+    recs = []
+    chord_idx = {}
+    for res in sublime.find_resources("*.sublime-keymap"):
+        try:
+            d = sublime.decode_value(sublime.load_resource(res))
+        except Exception:
+            continue
+        if not isinstance(d, list):
+            continue
+        is_user = res.startswith("Packages/User/")
+        pkg = res.split("/")[1] if len(res.split("/")) > 2 else "?"
+        for li, entry in enumerate(d):
+            if not isinstance(entry, dict):
+                continue
+            keys = entry.get("keys")
+            cmd = entry.get("command")
+            chord = _km_chord(keys)
+            rec = {
+                "idx": len(recs),
+                "local_index": li,
+                "source": res,
+                "pkg": pkg,
+                "is_user": is_user,
+                "writable": is_user,
+                "keys": keys,
+                "chord": chord,
+                "command": cmd,
+                "args": entry.get("args"),
+                "context": entry.get("context"),
+                "dead": isinstance(cmd, str) and cmd not in known,
+            }
+            recs.append(rec)
+            chord_idx.setdefault(chord, []).append(rec["idx"])
+    for r in recs:
+        group = chord_idx.get(r["chord"], [])
+        r["conflict_count"] = max(0, len(group) - 1)
+    _KM = {"bindings": recs, "write_targets": _km_write_targets(), "gen": _gen[0]}
+    _KM_GEN = _gen[0]
+    return _KM
+
+
+def _keymap_binding(idx):
+    cat = _keymap_catalog()
+    recs = cat["bindings"]
+    if idx < 0 or idx >= len(recs):
+        return {"error": "no such binding"}
+    r = recs[idx]
+    cmds = _runtime_commands()
+    conflicts = []
+    for other in recs:
+        if other["idx"] == idx or other["chord"] != r["chord"] or not r["chord"]:
+            continue
+        conflicts.append({
+            "idx": other["idx"],
+            "keys": other["keys"],
+            "command": other["command"],
+            "context": other["context"],
+            "source": other["source"],
+            "is_user": other["is_user"],
+        })
+    return {
+        "idx": idx,
+        "keys": r["keys"],
+        "chord": r["chord"],
+        "command": r["command"],
+        "args": r["args"],
+        "context": r["context"],
+        "source": r["source"],
+        "is_user": r["is_user"],
+        "writable": r["writable"],
+        "dead": r["dead"],
+        "command_source": cmds.get(r["command"]) if isinstance(r["command"], str) else None,
+        "conflicts": conflicts,
+        "write_targets": _km_write_targets(),
+        "gen": _gen[0],
+    }
+
+
+# --- keybindings: comment-preserving writes (array-of-objects) ---------------
+def _km_model(text):
+    return _j5loads(text, loader=_ModelLoader())
+
+
+def _km_entry_text(text, local_index):
+    m = _km_model(text)
+    el = m.value.values[local_index]
+    s = _pos(text, el.lineno, el.col_offset)
+    e = _pos(text, el.end_lineno, el.end_col_offset)
+    return el, m, s, e
+
+
+def _km_indent_for(text, m):
+    vals = m.value.values
+    if not vals:
+        return "\t"
+    e0 = vals[0]  # the element object; its col_offset is the '{' position
+    ls = _pos(text, e0.lineno, 0)
+    return text[ls:_pos(text, e0.lineno, e0.col_offset)]
+
+
+def _km_set_entry(res, local_index, entry, expect_cmd):
+    p = _km_real_path(res)
+    if not p:
+        raise Exception("source is inside a package zip — not writable; add an override in User")
+    text = _read_file(p)
+    el, m, s, e = _km_entry_text(text, local_index)
+    kvp = {kp.key.characters: kp for kp in el.key_value_pairs}
+    if expect_cmd is not None:
+        cur = kvp.get("command")
+        cur_chars = cur.value.characters if cur and hasattr(cur.value, "characters") else None
+        if cur_chars != expect_cmd:
+            raise Exception("file changed since load — refresh and retry")
+    text = text[:s] + json.dumps(entry) + text[e:]
+    _write_file(p, text)
+
+
+def _km_delete_entry(res, local_index, expect_cmd):
+    p = _km_real_path(res)
+    if not p:
+        raise Exception("source is inside a package zip — not writable")
+    text = _read_file(p)
+    el, m, s_line, _ = _km_entry_text(text, local_index)
+    kvp = {kp.key.characters: kp for kp in el.key_value_pairs}
+    if expect_cmd is not None:
+        cur = kvp.get("command")
+        cur_chars = cur.value.characters if cur and hasattr(cur.value, "characters") else None
+        if cur_chars != expect_cmd:
+            raise Exception("file changed since load — refresh and retry")
+    line_start = _pos(text, el.lineno, 0)
+    val_end = _pos(text, el.end_lineno, el.end_col_offset)
+    ci = text.find(",", val_end)
+    nl_after = text.find("\n", val_end)
+    if ci != -1 and (nl_after == -1 or ci < nl_after):
+        # this entry has a trailing comma: drop the entry line + that comma
+        end_nl = text.find("\n", ci)
+        end = (end_nl + 1) if end_nl != -1 else (ci + 1)
+        text = text[:line_start] + text[end:]
+    else:
+        # last entry (no trailing comma): drop its line, then strip the now-
+        # dangling comma left on the previous entry's line by the separator.
+        end = (nl_after + 1) if nl_after != -1 else len(text)
+        text = text[:line_start] + text[end:]
+        pc = text.rfind(",", 0, line_start)
+        if pc != -1:
+            text = text[:pc] + text[pc + 1:]
+    _write_file(p, text)
+
+
+def _km_add_entry(target_rel, entry):
+    p = _settings_path(target_rel)
+    text = _read_file(p)
+    nl = _line_ending(text)
+    try:
+        m = _km_model(text)
+        vals = m.value.values if m and m.value and hasattr(m.value, "values") else []
+    except Exception:
+        vals = []
+    body = json.dumps(entry)
+    if not vals:
+        _write_file(p, "[" + nl + "\t" + body + nl + "]")
+        return
+    last = vals[-1]
+    e = _pos(text, last.end_lineno, last.end_col_offset)
+    indent = _km_indent_for(text, m)
+    # don't double up a comma if the last entry already has a trailing one
+    sep = "" if text[e:e + 1] == "," else ","
+    text = text[:e] + sep + nl + indent + body + text[e:]
+    _write_file(p, text)
+
+
+def _km_write_targets():
+    plat = _platform_name()
+    rels = ["Default.sublime-keymap", "Default (%s).sublime-keymap" % plat]
+    out = []
+    for r in rels:
+        out.append({"rel": r, "label": r, "exists": os.path.exists(_settings_path(r))})
+    return out
+
+
+def _km_resolve(idx):
+    cat = _keymap_catalog()
+    recs = cat["bindings"]
+    if idx < 0 or idx >= len(recs):
+        return None
+    return recs[idx]
+
+
 # --- HTTP --------------------------------------------------------------------
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
@@ -742,6 +1019,23 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(200, "application/json", json.dumps({"warnings": _warnings(name, value, usage)}))
             except Exception as e:
                 self._send(200, "application/json", json.dumps({"warnings": [], "error": str(e)}))
+        elif path == "/api/keymap/catalog":
+            try:
+                self._send(200, "application/json", json.dumps(_keymap_catalog()))
+            except Exception as e:
+                self._send(200, "application/json", json.dumps({"error": str(e)}))
+        elif path == "/api/keymap/binding":
+            idx = self._q().get("idx", [None])[0]
+            try:
+                idx = int(idx) if idx is not None else -1
+                self._send(200, "application/json", json.dumps(_keymap_binding(idx)))
+            except Exception as e:
+                self._send(200, "application/json", json.dumps({"error": str(e)}))
+        elif path == "/api/commands":
+            try:
+                self._send(200, "application/json", json.dumps(sorted(_known_commands())))
+            except Exception as e:
+                self._send(200, "application/json", json.dumps({"error": str(e)}))
         elif path == "/ping":
             self._send(200, "text/plain", "ok")
         else:
@@ -785,6 +1079,39 @@ class _Handler(BaseHTTPRequestHandler):
                     threading.Thread(target=srv.shutdown, daemon=True).start()
             except Exception:
                 pass
+        elif path == "/api/keymap/save":
+            try:
+                idx = int(payload.get("idx", -1))
+                entry = payload.get("entry")
+                expect = payload.get("expect_cmd")
+                rec = _km_resolve(idx)
+                if rec is None:
+                    raise Exception("no such binding")
+                _km_set_entry(rec["source"], rec["local_index"], entry, expect)
+                self._send(200, "application/json", json.dumps({"ok": True, "catalog": _keymap_catalog(), "binding": _keymap_binding(idx)}))
+            except Exception as e:
+                self._send(200, "application/json", json.dumps({"ok": False, "error": str(e)}))
+        elif path == "/api/keymap/delete":
+            try:
+                idx = int(payload.get("idx", -1))
+                expect = payload.get("expect_cmd")
+                rec = _km_resolve(idx)
+                if rec is None:
+                    raise Exception("no such binding")
+                _km_delete_entry(rec["source"], rec["local_index"], expect)
+                self._send(200, "application/json", json.dumps({"ok": True, "catalog": _keymap_catalog()}))
+            except Exception as e:
+                self._send(200, "application/json", json.dumps({"ok": False, "error": str(e)}))
+        elif path == "/api/keymap/add":
+            try:
+                target = payload.get("target") or "Default.sublime-keymap"
+                entry = payload.get("entry")
+                if not isinstance(entry, dict):
+                    raise Exception("entry required")
+                _km_add_entry(target, entry)
+                self._send(200, "application/json", json.dumps({"ok": True, "catalog": _keymap_catalog()}))
+            except Exception as e:
+                self._send(200, "application/json", json.dumps({"ok": False, "error": str(e)}))
         else:
             self._send(404, "application/json", '{"ok":false,"error":"nf"}')
 
@@ -806,6 +1133,19 @@ class SettingsEditorOpenCommand(sublime_plugin.WindowCommand):
         webbrowser.open("http://127.0.0.1:%d/" % _PORT)
 
 
+def plugin_unloaded():
+    # ST calls this before reloading the plugin / on quit. Shut the HTTP server
+    # down so a reload doesn't leave an orphaned thread holding the port (the
+    # "zombie server" problem that stranded port 57323 with stale HTML).
+    srv = _SERVER[0]
+    _SERVER[0] = None
+    if srv is not None:
+        try:
+            threading.Thread(target=srv.shutdown, daemon=True).start()
+        except Exception:
+            pass
+
+
 # --- frontend ----------------------------------------------------------------
 _HTML = r"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Sublime Settings</title>
@@ -814,6 +1154,10 @@ _HTML = r"""<!doctype html>
 *{box-sizing:border-box}
 body{margin:0;font:13px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif;background:#f7f8fa;color:#111;height:100vh;display:flex;flex-direction:column}
 .topbar{display:flex;align-items:center;gap:10px;padding:9px 14px;background:#fff;border-bottom:1px solid var(--line)}
+.tabs{display:flex;gap:2px;padding:2px;background:#f1f3f5;border-radius:7px}
+.tabs .tab{padding:4px 12px;border:none;background:transparent;border-radius:5px;cursor:pointer;font:inherit;font-size:12.5px;color:#555}
+.tabs .tab:hover{background:#e3e8ee}
+.tabs .tab.sel{background:#fff;color:var(--accent);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.08)}
 .topbar h1{font-size:15px;margin:0;font-weight:600}
 .topbar input[type=search]{flex:1;max-width:300px;padding:5px 9px;border:1px solid var(--line);border-radius:6px;font:inherit}
 .topbar button{padding:5px 11px;border:1px solid var(--line);background:#fff;border-radius:6px;cursor:pointer;font:inherit}
@@ -875,7 +1219,11 @@ table.props .row-edit td{background:#fafbff}
 </style></head>
 <body>
 <div class="topbar">
- <h1>Sublime Settings</h1>
+ <div class="tabs">
+  <button class="tab sel" id="tab-settings" data-mode="settings">Settings</button>
+  <button class="tab" id="tab-keybindings" data-mode="keybindings">Keybindings</button>
+ </div>
+ <h1 id="title">Sublime Settings</h1>
  <input id="search" type="search" placeholder="Filter settings...">
  <span id="status"></span>
  <button class="stop" id="stopbtn" title="Stop the editor server">Stop</button>
@@ -895,14 +1243,20 @@ table.props .row-edit td{background:#fafbff}
  <div id="cfbody"></div>
  <div class="row"><button id="cfcancel">Cancel</button><button id="cfok" class="danger">Apply</button></div>
 </div></div>
+<datalist id="cmdlist"></datalist>
 <script>
 let CAT=[], S=[], selName=null, D=null, targets=[], curTarget=null;
+let MODE='settings';
+let KM=[], KMD=null, kmSelIdx=null, kmIsNew=false, kmTargets=[], kmCurTarget=null, CMDLIST=[], kmOnlyConf=false;
+let modCb=null;
 const $=id=>document.getElementById(id);
+const basename=p=>{const i=Math.max(p.lastIndexOf('/'),p.lastIndexOf('\\'));return i<0?p:p.slice(i+1);};
 const esc=s=>String(s===null||s===undefined?'—':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 const fmt=v=>{if(v===undefined||v===null) return '—'; try{return JSON.stringify(v);}catch(e){return String(v);}};
 function fmtMultiline(v){if(v===undefined||v===null) return '—'; try{return JSON.stringify(v,null,2);}catch(e){return String(v);}}
 
 function renderTree(){
+  if(MODE==='keybindings'){renderKmTree();return;}
   const q=$('search').value.toLowerCase().trim();
   const byCat={};
   S.forEach(s=>{if(!q||s.name.toLowerCase().indexOf(q)>=0){(byCat[s.category]=byCat[s.category]||[]).push(s);}});
@@ -1080,19 +1434,21 @@ function reloadCatalogThenSelect(){fetch('/api/catalog').then(r=>r.json()).then(
 
 let modName=null;
 function openModal(){
-  modName=D.name;
+  modCb=null; modName=D.name;
   $('modtitle').textContent='Edit '+D.name+' ('+D.type+')';
   $('modta').value=fmtMultiline(D._pending!==undefined?D._pending:D.effective);
   $('moderr').textContent=''; $('modalbg').classList.add('show');
 }
 $('modsave').addEventListener('click',()=>{
-  try{const v=JSON.parse($('modta').value); $('modalbg').classList.remove('show'); D._pending=v;
-    // re-render the value row with the new complex value, then commit
-    const code=$('sheet').querySelector('.complex code'); if(code) code.textContent=fmt(v);
-    commit();
+  try{const v=JSON.parse($('modta').value); $('modalbg').classList.remove('show');
+    if(modCb){modCb(v);modCb=null;}
+    else {D._pending=v;
+      // re-render the value row with the new complex value, then commit
+      const code=$('sheet').querySelector('.complex code'); if(code) code.textContent=fmt(v);
+      commit();}
   }catch(e){$('moderr').textContent='Invalid JSON: '+e.message;}
 });
-$('modcancel').addEventListener('click',()=>$('modalbg').classList.remove('show'));
+$('modcancel').addEventListener('click',()=>{modCb=null;$('modalbg').classList.remove('show');});
 $('cfcancel').addEventListener('click',()=>$('cfbg').classList.remove('show'));
 
 $('search').addEventListener('input',renderTree);
@@ -1100,6 +1456,162 @@ $('stopbtn').addEventListener('click',()=>{
   if(!confirm('Stop the settings editor server?')) return;
   fetch('/api/shutdown',{method:'POST'}).then(()=>$('sheet').innerHTML='<div class="ph">Server stopped. Close this tab.</div>');
 });
+
+// --- keybindings tab --------------------------------------------------------
+function loadCommands(){
+  fetch('/api/commands').then(r=>r.json()).then(l=>{CMDLIST=l||[];const dl=$('cmdlist');if(dl)dl.innerHTML=CMDLIST.map(n=>'<option value="'+esc(n)+'">').join('');});
+}
+function loadKm(){
+  loadCommands();
+  fetch('/api/keymap/catalog').then(r=>r.json()).then(c=>{
+    KM=c.bindings||[]; kmTargets=c.write_targets||[]; if(!kmCurTarget)kmCurTarget='Default.sublime-keymap';
+    renderKmTree();
+    if(KM.length) selectKm(KM[0].idx); else $('sheet').innerHTML='<div class="ph">No keybindings found.</div>';
+  });
+}
+function kmGrouped(){
+  const q=$('search').value.toLowerCase().trim();
+  const onlyConf=kmOnlyConf;
+  const byPkg={};
+  KM.forEach(b=>{
+    if(onlyConf&&!b.conflict_count) return;
+    if(q&&(b.chord||'').toLowerCase().indexOf(q)<0&&((b.command||'')).toLowerCase().indexOf(q)<0) return;
+    (byPkg[b.pkg]=byPkg[b.pkg]||[]).push(b);
+  });
+  return byPkg;
+}
+function renderKmTree(){
+  const byPkg=kmGrouped();
+  const pkgs=Object.keys(byPkg).sort((a,b)=>(a!=='User')-(b!=='User')||a.localeCompare(b));
+  const header='<div style="padding:6px 10px;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:center">'+
+    '<label style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:3px"><input type="checkbox" id="kmonlyconf"> conflicts</label>'+
+    '<button class="btn" id="kmadd" style="margin-left:auto;padding:3px 9px;font-size:11px">+ Add binding</button></div>';
+  let html='';
+  pkgs.forEach(p=>{
+    const list=byPkg[p];
+    html+='<details open><summary>'+esc(p)+' ('+list.length+')</summary>';
+    list.forEach(b=>{
+      const cls=['leaf']; if(b.idx===kmSelIdx) cls.push('sel');
+      html+='<div class="'+cls.join(' ').trim()+'" data-idx="'+b.idx+'" title="'+esc(b.chord)+' → '+esc(b.command||'?')+(b.conflict_count?' · '+b.conflict_count+' conflict(s)':'')+(b.dead?' · dead':'')+'">'+
+        esc(b.chord||'(no keys)')+' → '+esc(b.command||'?')+
+        (b.conflict_count?' <span style="color:var(--warn)">⚠</span>':'')+
+        (b.dead?' <span style="color:var(--danger)">✗</span>':'')+'</div>';
+    });
+    html+='</details>';
+  });
+  if(!pkgs.length) html+='<div class="ph" style="padding:14px">No bindings match.</div>';
+  $('tree').innerHTML=header+html;
+  const cb=$('kmonlyconf'); if(cb){cb.checked=kmOnlyConf;cb.addEventListener('change',()=>{kmOnlyConf=cb.checked;renderKmTree();});}
+  const ab=$('kmadd'); if(ab)ab.addEventListener('click',newKm);
+  $('tree').querySelectorAll('.leaf').forEach(el=>el.addEventListener('click',()=>selectKm(parseInt(el.dataset.idx,10))));
+}
+function selectKm(idx){
+  kmSelIdx=idx; kmIsNew=false;
+  $('tree').querySelectorAll('.leaf').forEach(el=>el.classList.toggle('sel',parseInt(el.dataset.idx,10)===idx));
+  $('status').textContent='loading...';
+  fetch('/api/keymap/binding?idx='+idx).then(r=>r.json()).then(d=>{
+    if(d.error){$('sheet').innerHTML='<div class="ph">Error: '+esc(d.error)+'</div>';return;}
+    KMD=d; kmTargets=d.write_targets||[];
+    kmCurTarget = d.is_user ? basename(d.source) : 'Default.sublime-keymap';
+    renderKmSheet(); $('status').textContent='';
+  });
+}
+function cmdCell(d,ro){
+  const v=d.command==null?'':d.command;
+  return '<input type="text" class="ed-cell" id="kmcmd" list="cmdlist" value="'+esc(v)+'" '+(ro?'disabled':'')+'>'+
+    (d.dead?' <span style="color:var(--danger)">✗ dead</span>':'');
+}
+function keysCell(d,ro){return '<input type="text" class="ed-cell" id="kmkeys" value="'+esc(d.chord||'')+'" '+(ro?'disabled':'')+'>';}
+function jsonCell(field,d,ro,label){
+  const v=(d['_p_'+field]!==undefined?d['_p_'+field]:d[field]);
+  return '<span class="complex"><button id="km'+field+'btn" '+(ro?'disabled':'')+'>'+label+'</button><code>'+esc(fmt(v))+'</code></span>';
+}
+function kmConflictsHTML(d){
+  const cs=d.conflicts||[];
+  if(!cs.length) return '<span class="none">no other bindings share this chord</span>';
+  return '<ul class="reads">'+cs.map(c=>'<li><b>'+esc(c.command||'?')+'</b> <span class="file">'+esc((c.keys||[]).join(' '))+' — '+esc(c.source)+(c.is_user?'':' (pkg)')+'</span></li>').join('')+'</ul>';
+}
+function renderKmSheet(){
+  const d=KMD, ro=!d.writable;
+  const wopts=kmTargets.map(t=>'<option value="'+esc(t.rel)+'"'+(t.rel===kmCurTarget?' selected':'')+'>'+esc(t.label)+(t.exists?'':' (new)')+'</option>').join('');
+  $('sheet').innerHTML='<h2>'+(kmIsNew?'(new binding) ':d.is_user?'':('<span style="color:var(--danger)">(read-only) </span>'))+esc(d.chord||'(no keys)')+'</h2>'+
+   '<table class="props">'+
+    row('Source',esc(d.source)+(d.writable?' <span class="file">(writable)</span>':' <span class="file">(read-only — package file)</span>'))+
+    row('Command',cmdCell(d,ro))+
+    row('Keys',keysCell(d,ro))+
+    row('Args',jsonCell('args',d,ro,'{…}'))+
+    row('Context',jsonCell('context',d,ro,'[…]'))+
+    sec('Write to')+
+    '<tr class="row-edit"><td class="k"></td><td class="v"><select class="ed-cell writeto" id="kmwtarget" '+(ro?'disabled':'')+'>'+wopts+'</select></td></tr>'+
+    '<tr class="row-edit"><td class="k"></td><td class="v">'+(ro?'<span class="file">Package bindings are read-only. Add an override in User to change behaviour.</span>':'<button class="btn" id="kmsave">Save</button>'+(kmIsNew?'':' <button class="btn" id="kmdelete" style="border-color:#e5b4b4;color:var(--danger)">Delete</button>'))+'</td></tr>'+
+    sec('Conflicts (same chord)')+
+    '<tr><td class="k"></td><td class="v">'+kmConflictsHTML(d)+'</td></tr>'+
+   '</table>'+
+   '<div class="desc-area"><p class="h">Command info</p><div class="body">'+(d.dead?'<span style="color:var(--danger)">Not registered at runtime (dead reference).</span>':(d.command_source?'defined in <code>'+esc(d.command_source)+'</code>':'registered at runtime'))+'</div></div>';
+  bindKmSheet();
+}
+function openKmField(field){
+  modCb=(v)=>{KMD['_p_'+field]=v;const code=document.querySelector('#km'+field+'btn').parentNode.querySelector('code');if(code)code.textContent=fmt(v);};
+  $('modtitle').textContent='Edit '+field+' (JSON)';
+  $('modta').value=fmtMultiline(KMD['_p_'+field]!==undefined?KMD['_p_'+field]:KMD[field]);
+  $('moderr').textContent=''; $('modalbg').classList.add('show');
+}
+function bindKmSheet(){
+  const wt=$('kmwtarget'); if(wt)wt.addEventListener('change',()=>kmCurTarget=wt.value);
+  const ab=$('kmargsbtn'); if(ab)ab.addEventListener('click',()=>openKmField('args'));
+  const cb=$('kmctxbtn'); if(cb)cb.addEventListener('click',()=>openKmField('context'));
+  const sv=$('kmsave'); if(sv)sv.addEventListener('click',kmSave);
+  const dl=$('kmdelete'); if(dl)dl.addEventListener('click',kmDelete);
+}
+function kmEntryFromSheet(){
+  const keysVal=$('kmkeys')?$('kmkeys').value.trim():'';
+  const keys=keysVal?keysVal.split(/\s+/):[];
+  const cmd=$('kmcmd')?$('kmcmd').value.trim():'';
+  const entry={"keys":keys};
+  if(cmd) entry.command=cmd;
+  const a=KMD['_p_args']!==undefined?KMD['_p_args']:KMD.args;
+  if(a!==undefined&&a!==null) entry.args=a;
+  const c=KMD['_p_context']!==undefined?KMD['_p_context']:KMD.context;
+  if(c!==undefined&&c!==null) entry.context=c;
+  return entry;
+}
+function kmSave(){
+  const entry=kmEntryFromSheet();
+  if(!entry.keys.length){alert('Keys are required.');return;}
+  if(!entry.command){alert('Command is required.');return;}
+  if(kmIsNew){
+    fetch('/api/keymap/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target:kmCurTarget,entry:entry})})
+     .then(r=>r.json()).then(r=>{if(r.ok){KM=r.catalog.bindings||[];renderKmTree();kmIsNew=false;$('status').textContent='added';setTimeout(()=>$('status').textContent='',1200);}else{alert(r.error||'error');}});
+    return;
+  }
+  if(!KMD.writable){alert('This binding is in a package file (read-only).');return;}
+  $('status').textContent='saving...';
+  fetch('/api/keymap/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({idx:KMD.idx,entry:entry,expect_cmd:KMD.command})})
+   .then(r=>r.json()).then(r=>{if(r.ok){KM=r.catalog.bindings||[];renderKmTree();if(r.binding){KMD=r.binding;renderKmSheet();}$('status').textContent='saved';setTimeout(()=>$('status').textContent='',1200);}else{$('status').textContent='error';alert(r.error||'error');}});
+}
+function kmDelete(){
+  if(!KMD.writable){alert('Read-only.');return;}
+  if(!confirm('Delete this binding from '+basename(KMD.source)+'?'))return;
+  fetch('/api/keymap/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({idx:KMD.idx,expect_cmd:KMD.command})})
+   .then(r=>r.json()).then(r=>{if(r.ok){KM=r.catalog.bindings||[];kmSelIdx=null;renderKmTree();$('sheet').innerHTML='<div class="ph">Binding deleted. Select another on the left.</div>';}else{alert(r.error||'error');}});
+}
+function newKm(){
+  kmIsNew=true; kmSelIdx=null;
+  $('tree').querySelectorAll('.leaf').forEach(el=>el.classList.remove('sel'));
+  KMD={keys:[],chord:'',command:'',args:undefined,context:undefined,source:'(new in User/'+kmCurTarget+')',is_user:true,writable:true,dead:true,command_source:null,conflicts:[]};
+  renderKmSheet();
+  $('sheet').querySelector('h2').textContent='(new binding)';
+}
+function switchMode(m){
+  MODE=m;
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('sel',t.dataset.mode===m));
+  $('title').textContent = m==='keybindings'?'Keybindings':'Sublime Settings';
+  $('search').placeholder = m==='keybindings'?'Filter by chord or command…':'Filter settings...';
+  $('search').value=''; selName=null; kmSelIdx=null; D=null; KMD=null;
+  $('sheet').innerHTML='<div class="ph">Select an item on the left.</div>';
+  if(m==='keybindings') loadKm(); else load();
+}
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>switchMode(t.dataset.mode)));
 
 function load(){
   fetch('/api/catalog').then(r=>r.json()).then(c=>{
