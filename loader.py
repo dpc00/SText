@@ -51,3 +51,4 @@ from User.launchers.pb_flask_launcher import PbFlaskLauncherCommand
 from User.launchers.pb_flask_launcher_silent import PbFlaskSilentCommand
 from User.launchers.ccstatusline_editor import CcstatuslineEditorOpenCommand
 from User.config.st_config import StConfigOpenCommand
+from User.config.settings_editor import SettingsEditorOpenCommand
