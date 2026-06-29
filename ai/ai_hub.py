@@ -237,7 +237,7 @@ def _navigate(href):
     elif href == "action://config":
         w.run_command("st_config_open")
     elif href == "action://open-hub-py":
-        import User.ai_hub as _self
+        import User.ai.ai_hub as _self
         w.open_file(_self.__file__)
     elif href.startswith("http"):
         import subprocess
