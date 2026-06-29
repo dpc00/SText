@@ -14,5 +14,19 @@
 	{"caption": "Panic: Quote & Reply", "command": "panic_open"},
 	{"caption": "PyBackup: Flask App", "command": "pb_flask_launcher"},
 	{"caption": "PyBackup: Flask App (silent)", "command": "pb_flask_silent"},
-	{"caption": "Sublime Config", "command": "st_config_open"}
+	{"caption": "Sublime Config", "command": "st_config_open"},
+	{"caption": "AI Hub: Open", "command": "ai_hub_open"},
+	{"caption": "AI Hub: Refresh", "command": "ai_hub_refresh"},
+	{"caption": "AI (SDK): Clear", "command": "ai_sdk_clear"},
+	{"caption": "AI (SDK): Stop", "command": "ai_sdk_stop"},
+	{"caption": "AI (SDK): Open Here", "command": "ai_sdk_open_here"},
+	{"caption": "AI (SDK): Open in Editor", "command": "ai_sdk_open_in_editor"},
+	{"caption": "Ai: Capture Idea", "command": "capture_idea"},
+	{"caption": "Ai: Open Idea Inbox", "command": "open_idea_inbox"},
+	{"caption": "Ai: Clear Buffer", "command": "clear_buffer"},
+	{"caption": "Ai: Open Here", "command": "open_ai_here"},
+	{"caption": "Ai: Open in Editor", "command": "open_ai_in_editor"},
+	{"caption": "Ai: Open Terminus Here", "command": "open_ai_terminus_here"},
+	{"caption": "Ai: Open Terminus in Editor", "command": "open_ai_terminus_in_editor"},
+	{"caption": "Claude Code: Open Here", "command": "claude_code_here"}
 ]
