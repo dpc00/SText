@@ -19,9 +19,10 @@ import sublime_plugin
 
 _VIEW_NAME = "Ai (SDK)"
 _USE_OLLAMA = True
-_OLLAMA_SCRIPT = r"C:\Users\donal\projects\tools\agent_query_ollama.py"
+_BACKEND = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "backend")
+_OLLAMA_SCRIPT = os.path.join(_BACKEND, "agent_query_ollama.py")
 _PYTHON = r"C:\Users\donal\AppData\Local\Programs\Python\Python312\python.exe"
-_SCRIPT = r"C:\Users\donal\projects\tools\agent_query.py"
+_SCRIPT = os.path.join(_BACKEND, "agent_query.py")
 
 _SOCKET_HOST = "127.0.0.1"
 _SOCKET_PORT = 9503
