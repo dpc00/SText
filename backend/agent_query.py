@@ -9,7 +9,8 @@ import json
 import os
 import sys
 
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 _PYTHON = r"C:\Users\donal\AppData\Local\Programs\Python\Python312\python.exe"
 
