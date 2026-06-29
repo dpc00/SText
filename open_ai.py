@@ -93,10 +93,9 @@ class OpenAiTerminusInEditorCommand(sublime_plugin.TextCommand):
         self.view.window().run_command(
             "terminus_open",
             {
-                "cmd": ["ollama launch claude"],
+                "shell_cmd": "ollama launch claude",
                 "cwd": path,
                 "title": "Ai",
-                "config_name": "<ask>",
             },
         )
         sublime.set_timeout(lambda: _mark_active_ai_view(self.view.window()), 1000)
@@ -112,10 +111,9 @@ class OpenAiTerminusHereCommand(sublime_plugin.WindowCommand):
         self.window.run_command(
             "terminus_open",
             {
-                "cmd": ["ollama launch claude"],
+                "shell_cmd": "ollama launch claude",
                 "cwd": path,
                 "title": "Ai",
-                "config_name": "<ask>",
             },
         )
         sublime.set_timeout(lambda: _mark_active_ai_view(self.window), 1000)
