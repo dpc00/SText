@@ -14,6 +14,5 @@
 	{"caption": "Panic: Quote & Reply", "command": "panic_open"},
 	{"caption": "PyBackup: Flask App", "command": "pb_flask_launcher"},
 	{"caption": "PyBackup: Flask App (silent)", "command": "pb_flask_silent"},
-	{"caption": "Sublime Config", "command": "st_config_open"},
-	{"caption": "Sublime Settings", "command": "st_settings_open"}
+	{"caption": "Sublime Config", "command": "st_config_open"}
 ]
