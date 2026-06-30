@@ -6,6 +6,10 @@ Speaks the same JSON-lines TCP bridge protocol as the original.
 Usage:
   python agent_query_ollama.py "your prompt here"     # one-shot
   python agent_query_ollama.py --bridge PORT           # persistent multi-turn bridge
+
+Tool layer: real MCP transport (stdio/sse/streamable_http) via the official `mcp`
+SDK, lifted from jonigl/mcp-client-for-ollama — see backend/mcpclient/. Servers are
+loaded from ~/.claude.json mcpServers (the same source Claude Code uses).
 """
 
 import asyncio
@@ -21,24 +25,13 @@ try:
 except AttributeError:
     pass  # ST's _LogWriter doesn't support reconfigure
 
-_OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
+_OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "glm-5.2:cloud")
 _OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 _PYTHON = r"C:\Users\donal\AppData\Local\Programs\Python\Python312\python.exe"
 
-# ─── MCP server definitions (same as original) ───────────────────────────────
-
-
-def _load_mcp_servers():
-    """Load mcpServers from ~/.ollama/config.json."""
-    servers = {}
-    try:
-        cfg = json.load(
-            open(os.path.expanduser("~/.ollama/config.json"), encoding="utf-8")
-        )
-        servers.update(cfg.get("mcpServers", {}))
-    except Exception:
-        pass
-    return servers
+# MCP tool layer (lifted from jonigl/mcp-client-for-ollama, see mcpclient/)
+from mcpclient.connector import ServerConnector
+from mcpclient.config import load_mcp_servers
 
 
 # ─── Context files ───────────────────────────────────────────────────────────
@@ -66,1110 +59,107 @@ Use tools when they help. Be concise and direct.
 {context}"""
 
 
-# ─── MCP tool loading ────────────────────────────────────────────────────────
+# ─── Built-in tools (implemented locally, not via MCP) ─────────────────────────
+# Mirrors the harness tools Claude Code injects (Bash/Read/etc.). These live in the
+# backend, NOT in ~/.claude.json, so Claude Code never sees them — no pollution.
+# Tool dict shape matches the MCP tools so the Ollama loop consumes them unchanged.
 
 
-class StdioMCPClient:
-    """Minimal stdio MCP client: launches a subprocess, speaks JSON-RPC over stdin/stdout."""
-
-    def __init__(self, name, command, args, env=None):
-        self.name = name
-        self.proc = None
-        self._id = 0
-        self._lock = threading.Lock()
-        self.command = command
-        self.args = args
-        self.env = env
-        self.tools = []
-        self._initialized = False
-
-    def start(self):
-        full_env = {**os.environ, **(self.env or {})}
-        self.proc = subprocess.Popen(
-            [self.command] + self.args,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+def _bi_run_shell(command, timeout=30, **_):
+    """Run a shell command (cmd.exe on Windows) and return stdout/stderr/exit_code."""
+    try:
+        proc = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
-            env=full_env,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=timeout,
+            cwd=os.path.expanduser("~"),
         )
-        # Initialize
-        resp = self._rpc(
-            "initialize",
-            {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "agent_query_ollama", "version": "0.1"},
+        return {
+            "stdout": proc.stdout[-4000:],
+            "stderr": proc.stderr[-2000:],
+            "exit_code": proc.returncode,
+        }
+    except subprocess.TimeoutExpired:
+        return {"stdout": "", "stderr": f"timed out after {timeout}s", "exit_code": -1}
+    except Exception as e:
+        return {"stdout": "", "stderr": str(e), "exit_code": -1}
+
+
+_BUILTIN_DEFS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "run_shell",
+            "description": (
+                "Run a shell command on the local machine (cmd.exe on Windows) and "
+                "return stdout, stderr, and exit_code. Use for listing files, git, "
+                "python, etc. cwd is the user's home directory."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The shell command to run.",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Max seconds to wait (default 30).",
+                        "default": 30,
+                    },
+                },
+                "required": ["command"],
             },
-        )
-        if resp:
-            self._initialized = True
-            # Send initialized notification
-            self._notify("notifications/initialized", {})
-            # List tools
-            tools_resp = self._rpc("tools/list", {})
-            if tools_resp and "tools" in tools_resp:
-                self.tools = tools_resp["tools"]
-        return self._initialized
-
-    def call_tool(self, name, arguments):
-        resp = self._rpc("tools/call", {"name": name, "arguments": arguments})
-        if resp and "content" in resp:
-            # MCP returns content as list of {type, text} blocks
-            texts = []
-            for block in resp["content"]:
-                if block.get("type") == "text":
-                    texts.append(block["text"])
-            return "\n".join(texts)
-        return json.dumps(resp) if resp else "Error: no response"
-
-    def stop(self):
-        if self.proc:
-            try:
-                self.proc.stdin.close()
-                self.proc.terminate()
-            except Exception:
-                pass
-            self.proc = None
-
-    def _rpc(self, method, params):
-        self._id += 1
-        req = {"jsonrpc": "2.0", "id": self._id, "method": method, "params": params}
-        with self._lock:
-            try:
-                self.proc.stdin.write(json.dumps(req) + "\n")
-                self.proc.stdin.flush()
-                line = self.proc.stdout.readline()
-                if line:
-                    resp = json.loads(line)
-                    return resp.get("result")
-            except Exception as e:
-                print(f"[mcp:{self.name}] rpc error: {e}", file=sys.stderr)
-        return None
-
-    def _notify(self, method, params):
-        req = {"jsonrpc": "2.0", "method": method, "params": params}
-        try:
-            self.proc.stdin.write(json.dumps(req) + "\n")
-            self.proc.stdin.flush()
-        except Exception:
-            pass
-
-
-class SSEMCPClient:
-    """HTTP MCP client for sublime-mcp. Uses the HTTP bridge on port 9500
-    with per-tool endpoints (GET or POST). Dynamically fetches the tool list."""
-
-    def __init__(self, name, url):
-        self.name = name
-        # SSE url is http://127.0.0.1:9502/sse — HTTP bridge is on port 9500
-        self.sse_url = url
-        self.base_url = "http://127.0.0.1:9500"
-        self.tools = []
-
-    def start(self):
-        import urllib.request
-
-        try:
-            # Fetch the tool list by calling the SSE server's tools/list via a
-            # simple approach: GET /tools_list on the HTTP bridge.
-            # The HTTP bridge doesn't have a tools/list endpoint, so we build
-            # the tool list from the known _MCP_TOOLS route table in sublime_mcp.py.
-            # Each route maps to a tool name. GET routes = read tools, POST routes = write tools.
-            self.tools = self._discover_tools()
-            print(
-                f"[mcp:{self.name}] {len(self.tools)} tools discovered", file=sys.stderr
-            )
-            return len(self.tools) > 0
-        except Exception as e:
-            print(f"[mcp:{self.name}] start error: {e}", file=sys.stderr)
-            return False
-
-    def _discover_tools(self):
-        """Discover tools by probing the HTTP bridge endpoints."""
-        import urllib.request
-
-        # Probe a known endpoint to confirm the server is up
-        try:
-            req = urllib.request.Request(f"{self.base_url}/active_file")
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                pass  # server is alive
-        except Exception:
-            raise RuntimeError(
-                f"Cannot connect to sublime-mcp HTTP bridge at {self.base_url}"
-            )
-
-        # Build tool list from the known route table.
-        # Each tuple: (tool_name, description, http_method, endpoint, input_schema)
-        routes = [
-            # GET (read-only) tools
-            (
-                "get_active_file",
-                "Get the active file's path, content, cursor position, dirty flag, and syntax name.",
-                "GET",
-                "/active_file",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "get_selection",
-                "Return the current selection(s).",
-                "GET",
-                "/selection",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "get_cursor_context",
-                "Get lines around the cursor.",
-                "GET",
-                "/cursor_context",
-                {"type": "object", "properties": {"lines": {"type": "integer"}}},
-            ),
-            (
-                "get_open_files",
-                "List all open files.",
-                "GET",
-                "/open_files",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "get_sheets",
-                "List all sheets (tabs).",
-                "GET",
-                "/sheets",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "get_sheet_content",
-                "Get content of a sheet by index.",
-                "GET",
-                "/sheet_content",
-                {
-                    "type": "object",
-                    "properties": {"index": {"type": "integer"}},
-                    "required": ["index"],
-                },
-            ),
-            (
-                "get_project_folders",
-                "Get project folder paths.",
-                "GET",
-                "/project_folders",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "get_file_content",
-                "Get content of an open file by path.",
-                "GET",
-                "/file_content",
-                {
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}},
-                    "required": ["path"],
-                },
-            ),
-            (
-                "get_view_content",
-                "Get content of a view by name.",
-                "GET",
-                "/view_content",
-                {"type": "object", "properties": {"name": {"type": "string"}}},
-            ),
-            (
-                "get_view_size",
-                "Get total character count of a view.",
-                "GET",
-                "/view_size",
-                {"type": "object", "properties": {"name": {"type": "string"}}},
-            ),
-            (
-                "get_view_chars",
-                "Get text at character offsets.",
-                "GET",
-                "/view_chars",
-                {
-                    "type": "object",
-                    "properties": {
-                        "begin": {"type": "integer"},
-                        "end": {"type": "integer"},
-                        "name": {"type": "string"},
-                    },
-                    "required": ["begin", "end"],
-                },
-            ),
-            (
-                "get_view_phantoms",
-                "Get phantom HTML/text from a view.",
-                "GET",
-                "/view_phantoms",
-                {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string"},
-                        "key": {"type": "string"},
-                    },
-                },
-            ),
-            (
-                "get_output_panel",
-                "Get text content of an output panel.",
-                "GET",
-                "/output_panel",
-                {"type": "object", "properties": {"name": {"type": "string"}}},
-            ),
-            (
-                "get_console_log",
-                "Get recent ST console output.",
-                "GET",
-                "/console_log",
-                {"type": "object", "properties": {"tail": {"type": "integer"}}},
-            ),
-            (
-                "get_console_full",
-                "Get the entire captured ST console buffer.",
-                "GET",
-                "/console_full",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "get_console_win",
-                "Windows-only: captures ST console via ctypes.",
-                "GET",
-                "/console_win",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "get_symbols",
-                "Get all symbols in the active file.",
-                "GET",
-                "/symbols",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "lookup_symbol",
-                "Find where a symbol is defined across all open files.",
-                "GET",
-                "/lookup_symbol",
-                {
-                    "type": "object",
-                    "properties": {"symbol": {"type": "string"}},
-                    "required": ["symbol"],
-                },
-            ),
-            (
-                "get_project_data",
-                "Get raw .sublime-project JSON data.",
-                "GET",
-                "/project_data",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "get_variables",
-                "Get Sublime Text build variables.",
-                "GET",
-                "/variables",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "get_bookmarks",
-                "Get all bookmarked positions in the active file.",
-                "GET",
-                "/bookmarks",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "get_line_count",
-                "Get total number of lines in the active file.",
-                "GET",
-                "/line_count",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "get_syntaxes",
-                "List all syntax definitions.",
-                "GET",
-                "/syntaxes",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "get_command_palette",
-                "List Command Palette entries.",
-                "GET",
-                "/command_palette",
-                {
-                    "type": "object",
-                    "properties": {
-                        "package": {"type": "string"},
-                        "command": {"type": "string"},
-                        "caption": {"type": "string"},
-                    },
-                },
-            ),
-            (
-                "get_commands",
-                "List runnable Sublime commands.",
-                "GET",
-                "/commands",
-                {
-                    "type": "object",
-                    "properties": {
-                        "package": {"type": "string"},
-                        "command": {"type": "string"},
-                        "include_palette": {"type": "boolean"},
-                    },
-                },
-            ),
-            (
-                "get_menu_items",
-                "List installed menu items.",
-                "GET",
-                "/menu_items",
-                {
-                    "type": "object",
-                    "properties": {
-                        "menu": {"type": "string"},
-                        "caption": {"type": "string"},
-                        "command": {"type": "string"},
-                    },
-                },
-            ),
-            (
-                "get_active_panel",
-                "Get the active panel id and content.",
-                "GET",
-                "/active_panel",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "get_scope_at_cursor",
-                "Get syntax scope at cursor.",
-                "GET",
-                "/scope_at_cursor",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "get_encoding",
-                "Get character encoding of the active file.",
-                "GET",
-                "/encoding",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "get_word_at_cursor",
-                "Get word under cursor.",
-                "GET",
-                "/word_at_cursor",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "get_layout",
-                "Get current window layout.",
-                "GET",
-                "/layout",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "get_setting",
-                "Get a Sublime Text setting.",
-                "GET",
-                "/get_setting",
-                {
-                    "type": "object",
-                    "properties": {
-                        "key": {"type": "string"},
-                        "scope": {"type": "string"},
-                    },
-                    "required": ["key"],
-                },
-            ),
-            (
-                "get_package_mcp_info",
-                "Get info needed to write an MCP extension for a package.",
-                "POST",
-                "/package_mcp_info",
-                {
-                    "type": "object",
-                    "properties": {"package": {"type": "string"}},
-                    "required": ["package"],
-                },
-            ),
-            (
-                "search_packages",
-                "Search Package Control for installable packages.",
-                "POST",
-                "/search_packages",
-                {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string"},
-                        "limit": {"type": "integer"},
-                    },
-                },
-            ),
-            (
-                "install_package",
-                "Install a Package Control package.",
-                "POST",
-                "/install_package",
-                {
-                    "type": "object",
-                    "properties": {"package": {"type": "string"}},
-                    "required": ["package"],
-                },
-            ),
-            # POST (write) tools
-            (
-                "str_replace_based_edit_tool",
-                "Edit a file: str_replace, insert, create, or view.",
-                "POST",
-                "/edit_file",
-                {
-                    "type": "object",
-                    "properties": {
-                        "command": {"type": "string"},
-                        "path": {"type": "string"},
-                        "old_str": {"type": "string"},
-                        "new_str": {"type": "string"},
-                        "insert_line": {"type": "integer"},
-                        "insert_text": {"type": "string"},
-                        "file_text": {"type": "string"},
-                        "view_range": {"type": "array", "items": {"type": "integer"}},
-                    },
-                    "required": ["command"],
-                },
-            ),
-            (
-                "open_file",
-                "Open a file, optionally at a line and column.",
-                "POST",
-                "/open_file",
-                {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "line": {"type": "integer"},
-                        "col": {"type": "integer"},
-                    },
-                    "required": ["path"],
-                },
-            ),
-            (
-                "goto_line",
-                "Move cursor to a line in the active file.",
-                "POST",
-                "/goto_line",
-                {
-                    "type": "object",
-                    "properties": {
-                        "line": {"type": "integer"},
-                        "col": {"type": "integer"},
-                    },
-                    "required": ["line"],
-                },
-            ),
-            (
-                "show_panel",
-                "Bring an output panel to the front.",
-                "POST",
-                "/show_panel",
-                {"type": "object", "properties": {"name": {"type": "string"}}},
-            ),
-            (
-                "replace_selection",
-                "Replace the current selection(s) with text.",
-                "POST",
-                "/replace_selection",
-                {
-                    "type": "object",
-                    "properties": {"text": {"type": "string"}},
-                    "required": ["text"],
-                },
-            ),
-            (
-                "replace_lines",
-                "Replace lines begin through end with text.",
-                "POST",
-                "/replace_lines",
-                {
-                    "type": "object",
-                    "properties": {
-                        "begin": {"type": "integer"},
-                        "end": {"type": "integer"},
-                        "text": {"type": "string"},
-                        "path": {"type": "string"},
-                        "index": {"type": "integer"},
-                    },
-                    "required": ["begin", "end", "text"],
-                },
-            ),
-            (
-                "run_command",
-                "Run any Sublime Text command.",
-                "POST",
-                "/run_command",
-                {
-                    "type": "object",
-                    "properties": {
-                        "command": {"type": "string"},
-                        "args": {},
-                        "scope": {"type": "string"},
-                    },
-                    "required": ["command"],
-                },
-            ),
-            (
-                "run_build",
-                "Trigger the current build system or run a specific command.",
-                "POST",
-                "/run_build",
-                {
-                    "type": "object",
-                    "properties": {
-                        "cmd": {"type": "array", "items": {"type": "string"}},
-                        "shell_cmd": {"type": "string"},
-                        "working_dir": {"type": "string"},
-                    },
-                },
-            ),
-            (
-                "set_status",
-                "Write a message to ST's status bar.",
-                "POST",
-                "/set_status",
-                {
-                    "type": "object",
-                    "properties": {
-                        "value": {"type": "string"},
-                        "key": {"type": "string"},
-                    },
-                    "required": ["value"],
-                },
-            ),
-            (
-                "save_file",
-                "Save a file by path, or the active file.",
-                "POST",
-                "/save_file",
-                {"type": "object", "properties": {"path": {"type": "string"}}},
-            ),
-            (
-                "save_all",
-                "Save all open files.",
-                "POST",
-                "/save_all",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "close_file",
-                "Close a file by path, or the active file.",
-                "POST",
-                "/close_file",
-                {"type": "object", "properties": {"path": {"type": "string"}}},
-            ),
-            (
-                "find_in_files",
-                "Search for pattern across project folders.",
-                "POST",
-                "/find_in_files",
-                {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {"type": "string"},
-                        "folders": {"type": "array", "items": {"type": "string"}},
-                        "case_sensitive": {"type": "boolean"},
-                        "regex": {"type": "boolean"},
-                        "max_results": {"type": "integer"},
-                    },
-                    "required": ["pattern"],
-                },
-            ),
-            (
-                "find_in_file",
-                "Find all occurrences of pattern in active file.",
-                "POST",
-                "/find_in_file",
-                {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {"type": "string"},
-                        "case_sensitive": {"type": "boolean"},
-                        "regex": {"type": "boolean"},
-                    },
-                    "required": ["pattern"],
-                },
-            ),
-            (
-                "set_syntax",
-                "Set the syntax of the active file.",
-                "POST",
-                "/set_syntax",
-                {
-                    "type": "object",
-                    "properties": {"name": {"type": "string"}},
-                    "required": ["name"],
-                },
-            ),
-            (
-                "set_encoding",
-                "Set character encoding of the active file.",
-                "POST",
-                "/set_encoding",
-                {
-                    "type": "object",
-                    "properties": {"encoding": {"type": "string"}},
-                    "required": ["encoding"],
-                },
-            ),
-            (
-                "toggle_comment",
-                "Toggle line or block comment on selection.",
-                "POST",
-                "/toggle_comment",
-                {"type": "object", "properties": {"block": {"type": "boolean"}}},
-            ),
-            (
-                "toggle_sidebar",
-                "Show or hide the sidebar.",
-                "POST",
-                "/toggle_sidebar",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "select_lines",
-                "Select lines begin through end.",
-                "POST",
-                "/select_lines",
-                {
-                    "type": "object",
-                    "properties": {
-                        "begin": {"type": "integer"},
-                        "end": {"type": "integer"},
-                    },
-                    "required": ["begin"],
-                },
-            ),
-            (
-                "sort_lines",
-                "Sort selected lines or all lines.",
-                "POST",
-                "/sort_lines",
-                {
-                    "type": "object",
-                    "properties": {"case_sensitive": {"type": "boolean"}},
-                },
-            ),
-            (
-                "eval_python",
-                "Execute Python in ST's main thread.",
-                "POST",
-                "/eval_python",
-                {
-                    "type": "object",
-                    "properties": {"code": {"type": "string"}},
-                    "required": ["code"],
-                },
-            ),
-            (
-                "eval_python_latest",
-                "Execute Python using system Python interpreter.",
-                "POST",
-                "/eval_python_latest",
-                {
-                    "type": "object",
-                    "properties": {"code": {"type": "string"}},
-                    "required": ["code"],
-                },
-            ),
-            (
-                "fold_lines",
-                "Fold lines begin through end.",
-                "POST",
-                "/fold_lines",
-                {
-                    "type": "object",
-                    "properties": {
-                        "begin": {"type": "integer"},
-                        "end": {"type": "integer"},
-                    },
-                    "required": ["begin", "end"],
-                },
-            ),
-            (
-                "insert_snippet",
-                "Insert a snippet at the cursor.",
-                "POST",
-                "/insert_snippet",
-                {
-                    "type": "object",
-                    "properties": {"contents": {"type": "string"}},
-                    "required": ["contents"],
-                },
-            ),
-            (
-                "revert_file",
-                "Revert active file to last saved state.",
-                "POST",
-                "/revert_file",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "undo",
-                "Undo the last edit in the active file.",
-                "POST",
-                "/undo",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "redo",
-                "Redo the last undone edit.",
-                "POST",
-                "/redo",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "duplicate_line",
-                "Duplicate the current line(s).",
-                "POST",
-                "/duplicate_line",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "set_setting",
-                "Set a Sublime Text setting.",
-                "POST",
-                "/set_setting",
-                {
-                    "type": "object",
-                    "properties": {
-                        "key": {"type": "string"},
-                        "value": {"type": "string"},
-                        "scope": {"type": "string"},
-                    },
-                    "required": ["key", "value"],
-                },
-            ),
-            (
-                "set_project_data",
-                "Set raw .sublime-project JSON data.",
-                "POST",
-                "/set_project_data",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "focus_group",
-                "Move focus to a pane group by index.",
-                "POST",
-                "/focus_group",
-                {
-                    "type": "object",
-                    "properties": {"group": {"type": "integer"}},
-                    "required": ["group"],
-                },
-            ),
-            (
-                "set_layout",
-                "Set window pane layout.",
-                "POST",
-                "/set_layout",
-                {
-                    "type": "object",
-                    "properties": {"layout": {}},
-                    "required": ["layout"],
-                },
-            ),
-            (
-                "send_to_view",
-                "Send text to an open tab by name.",
-                "POST",
-                "/send_to_view",
-                {
-                    "type": "object",
-                    "properties": {
-                        "text": {"type": "string"},
-                        "name": {"type": "string"},
-                        "index": {"type": "integer"},
-                    },
-                    "required": ["text"],
-                },
-            ),
-            (
-                "open_control_panel",
-                "Open the Claude MCP Control Panel.",
-                "POST",
-                "/open_control_panel",
-                {"type": "object", "properties": {}},
-            ),
-            (
-                "get_help",
-                "Return the Agent Guide with instructions on using sublime-mcp tools.",
-                "GET",
-                "/get_help",
-                {"type": "object", "properties": {}},
-            ),
-        ]
-        tools = []
-        for name, desc, method, endpoint, schema in routes:
-            tools.append(
-                {
-                    "name": name,
-                    "description": desc,
-                    "inputSchema": schema,
-                    "_method": method,
-                    "_endpoint": endpoint,
-                }
-            )
-        return tools
-
-    def call_tool(self, name, arguments):
-        import urllib.request
-
-        tool = None
-        for t in self.tools:
-            if t["name"] == name:
-                tool = t
-                break
-        if not tool:
-            return f"Error: tool {name} not found"
-
-        url = f"{self.base_url}{tool['_endpoint']}"
-        try:
-            if tool["_method"] == "GET":
-                # Add query params for GET
-                if arguments:
-                    import urllib.parse
-
-                    qs = urllib.parse.urlencode(
-                        {
-                            k: json.dumps(v) if isinstance(v, (dict, list)) else str(v)
-                            for k, v in arguments.items()
-                        }
-                    )
-                    url = f"{url}?{qs}"
-                req = urllib.request.Request(url)
-            else:
-                payload = json.dumps(arguments).encode()
-                req = urllib.request.Request(
-                    url, data=payload, headers={"Content-Type": "application/json"}
-                )
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                data = resp.read().decode()
-                try:
-                    result = json.loads(data)
-                    if isinstance(result, dict):
-                        # Return the content directly
-                        return json.dumps(result)
-                    return str(result)
-                except json.JSONDecodeError:
-                    return data
-        except Exception as e:
-            return f"Error calling {name}: {e}"
-
-    def stop(self):
-        pass
-
-
-# Known sublime-mcp tools (from the /status output we saw earlier)
-_SUBLIME_MCP_TOOLS = [
-    {
-        "name": "get_active_file",
-        "description": "Get the active file's path, content, cursor position, dirty flag, and syntax name.",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "get_selection",
-        "description": "Return the current selection(s).",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "get_open_files",
-        "description": "List all open files.",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "get_sheets",
-        "description": "List all sheets (tabs).",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "get_sheet_content",
-        "description": "Get content of a sheet by index.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"index": {"type": "integer"}},
-            "required": ["index"],
         },
-    },
-    {
-        "name": "get_project_folders",
-        "description": "Get project folder paths.",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "get_file_content",
-        "description": "Get content of an open file by path.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"path": {"type": "string"}},
-            "required": ["path"],
-        },
-    },
-    {
-        "name": "get_view_content",
-        "description": "Get content of a view by name.",
-        "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}},
-    },
-    {
-        "name": "find_in_files",
-        "description": "Search for pattern across project folders.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"pattern": {"type": "string"}, "regex": {"type": "boolean"}},
-            "required": ["pattern"],
-        },
-    },
-    {
-        "name": "find_in_file",
-        "description": "Find all occurrences of pattern in active file.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"pattern": {"type": "string"}, "regex": {"type": "boolean"}},
-            "required": ["pattern"],
-        },
-    },
-    {
-        "name": "get_symbols",
-        "description": "Get all symbols in the active file.",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "get_cursor_context",
-        "description": "Get lines around the cursor.",
-        "inputSchema": {"type": "object", "properties": {"lines": {"type": "integer"}}},
-    },
-    {
-        "name": "open_file",
-        "description": "Open a file, optionally at a line.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "line": {"type": "integer"},
-                "col": {"type": "integer"},
-            },
-            "required": ["path"],
-        },
-    },
-    {
-        "name": "get_console_log",
-        "description": "Get recent ST console output.",
-        "inputSchema": {"type": "object", "properties": {"tail": {"type": "integer"}}},
-    },
-    {
-        "name": "get_commands",
-        "description": "List runnable Sublime commands.",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "get_command_palette",
-        "description": "List Command Palette entries.",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "get_layout",
-        "description": "Get current window layout.",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "get_word_at_cursor",
-        "description": "Get word under cursor.",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "get_scope_at_cursor",
-        "description": "Get syntax scope at cursor.",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "get_setting",
-        "description": "Get a Sublime Text setting.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"key": {"type": "string"}, "scope": {"type": "string"}},
-            "required": ["key"],
-        },
-    },
+        "_client": "builtins",
+        "_orig_name": "run_shell",
+        "_impl": _bi_run_shell,
+    }
 ]
+_BUILTIN_BY_NAME = {t["function"]["name"]: t for t in _BUILTIN_DEFS}
 
 
 # ─── Tool manager ────────────────────────────────────────────────────────────
 
 
 class ToolManager:
-    """Manages all MCP clients and provides unified tool list + execution."""
+    """Async wrapper over ServerConnector.
+
+    Exposes ``self.tools`` in the same dict shape the Ollama loop and the
+    status handler already consume, so those call sites are unchanged:
+        {"type": "function",
+         "function": {"name", "description", "parameters"},
+         "_client": server_name, "_orig_name": orig_tool_name}
+    """
 
     def __init__(self, server_configs):
-        self.clients = {}
-        self.tools = []  # [{name, description, inputSchema, _client, _orig_name}]
+        self._configs = server_configs or {}
+        self.connector = ServerConnector()
+        self.tools = []
 
-        for name, cfg in server_configs.items():
-            stype = cfg.get("type", "stdio")
-            # st-plugin needs ai_sdk.py socket server (not running in ollama mode)
-            if name == "st-plugin":
-                continue
-            if stype == "stdio":
-                client = StdioMCPClient(
-                    name, cfg["command"], cfg.get("args", []), cfg.get("env")
-                )
-            elif stype == "sse":
-                client = SSEMCPClient(name, cfg["url"])
-            else:
-                print(
-                    f"[mcp] unknown type {stype} for {name}, skipping", file=sys.stderr
-                )
-                continue
+    async def start(self):
+        await self.connector.connect(self._configs)
+        self.tools = list(_BUILTIN_DEFS) + self.connector.tools
+        print(
+            f"[agent_query_ollama] {len(self.connector.tools)} MCP tools from "
+            f"{len(self.connector.sessions)} server(s) + {len(_BUILTIN_DEFS)} built-in "
+            f"= {len(self.tools)} total",
+            file=sys.stderr,
+            flush=True,
+        )
 
-            try:
-                if client.start():
-                    self.clients[name] = client
-                    for tool in client.tools:
-                        tname = f"mcp__{name}__{tool['name']}"
-                        self.tools.append(
-                            {
-                                "type": "function",
-                                "function": {
-                                    "name": tname,
-                                    "description": tool.get("description", ""),
-                                    "parameters": tool.get(
-                                        "inputSchema",
-                                        {"type": "object", "properties": {}},
-                                    ),
-                                },
-                                "_client": name,
-                                "_orig_name": tool["name"],
-                            }
-                        )
-                    print(
-                        f"[mcp] {name}: {len(client.tools)} tools loaded",
-                        file=sys.stderr,
-                    )
-                else:
-                    print(f"[mcp] {name}: failed to start, skipping", file=sys.stderr)
-            except Exception as e:
-                print(f"[mcp] {name}: error: {e}, skipping", file=sys.stderr)
+    async def call(self, full_name, arguments):
+        bi = _BUILTIN_BY_NAME.get(full_name)
+        if bi is not None:
+            return await asyncio.to_thread(bi["_impl"], **arguments)
+        return await self.connector.call_tool(full_name, arguments)
 
-    def call(self, full_name, arguments):
-        # Find the tool
-        for t in self.tools:
-            if t["function"]["name"] == full_name:
-                client = self.clients[t["_client"]]
-                return client.call_tool(t["_orig_name"], arguments)
-        return f"Error: tool {full_name} not found"
-
-    def stop(self):
-        for c in self.clients.values():
-            c.stop()
+    async def stop(self):
+        await self.connector.aclose()
 
 
 # ─── Ollama bridge ───────────────────────────────────────────────────────────
@@ -1179,8 +169,9 @@ async def main_bridge(port: int):
     """Persistent bridge: multi-turn Ollama chat, listens on TCP port."""
     import ollama
 
-    server_configs = _load_mcp_servers()
+    server_configs = load_mcp_servers()
     tm = ToolManager(server_configs)
+    await tm.start()
     print(
         f"[agent_query_ollama] bridge starting, {len(tm.tools)} tools, port {port}",
         flush=True,
@@ -1205,7 +196,7 @@ async def main_bridge(port: int):
             if req.get("type") == "status_request":
                 # Return tool list and basic info
                 servers = []
-                for name, client in tm.clients.items():
+                for name, sinfo in tm.connector.sessions.items():
                     servers.append(
                         {
                             "name": name,
@@ -1224,6 +215,30 @@ async def main_bridge(port: int):
                                 }
                                 for t in tm.tools
                                 if t["_client"] == name
+                            ],
+                        }
+                    )
+                # Built-in (non-MCP) tools — surface as a pseudo-server so they're
+                # visible in the status panel alongside the MCP servers.
+                bi_tools = [t for t in tm.tools if t.get("_client") == "builtins"]
+                if bi_tools:
+                    servers.append(
+                        {
+                            "name": "builtins",
+                            "status": "connected",
+                            "error": "",
+                            "scope": "system",
+                            "version": "1",
+                            "config_type": "builtin",
+                            "config_url": "",
+                            "tools": [
+                                {
+                                    "name": t["function"]["name"],
+                                    "description": t["function"]["description"],
+                                    "readonly": False,
+                                    "destructive": False,
+                                }
+                                for t in bi_tools
                             ],
                         }
                     )
@@ -1367,8 +382,8 @@ async def main_bridge(port: int):
                                 },
                             )
 
-                            # Execute the tool
-                            result = await asyncio.to_thread(tm.call, fn_name, fn_args)
+                            # Execute the tool (async via the mcp SDK)
+                            result = await tm.call(fn_name, fn_args)
 
                             await send(
                                 writer,
@@ -1464,9 +479,9 @@ async def main(prompt: str):
     """One-shot query."""
     import ollama
 
-    server_configs = _load_mcp_servers()
+    server_configs = load_mcp_servers()
     tm = ToolManager(server_configs)
-    print(f"[agent_query_ollama] {len(tm.tools)} tools loaded", file=sys.stderr)
+    await tm.start()
 
     messages = [
         {"role": "system", "content": _build_system_prompt()},
@@ -1553,10 +568,10 @@ async def main(prompt: str):
                     fn_args = json.loads(fn_args)
                 except Exception:
                     pass
-            result = await asyncio.to_thread(tm.call, fn_name, fn_args)
+            result = await tm.call(fn_name, fn_args)
             messages.append({"role": "tool", "content": str(result)[:8000]})
 
-    tm.stop()
+    await tm.stop()
 
 
 if __name__ == "__main__":

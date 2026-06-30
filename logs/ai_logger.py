@@ -403,6 +403,20 @@ def _fmt_ts(iso_ts):
         return datetime.datetime.now().strftime("%H:%M:%S")
 
 
+def _record_local_date(iso_ts):
+    """ISO UTC timestamp -> local YYYY-MM-DD (for choosing the daily log file).
+
+    Files by the record's own date, not wall-clock now, so a record processed
+    after midnight but timestamped before it lands in the correct day's file.
+    Falls back to today on a bad timestamp.
+    """
+    try:
+        dt = datetime.datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+        return dt.astimezone().date().isoformat()
+    except Exception:
+        return datetime.date.today().isoformat()
+
+
 def _flatten_text(content):
     if isinstance(content, str):
         return content
@@ -525,10 +539,10 @@ def _record_to_lines(record, id2name):
 # -- log append ---------------------------------------------------------------
 
 
-def _append_log(text):
+def _append_log(date_str, text):
     try:
         os.makedirs(_LOG_DIR, exist_ok=True)
-        log_file = os.path.join(_LOG_DIR, f"ai_{datetime.date.today().isoformat()}.log")
+        log_file = os.path.join(_LOG_DIR, f"ai_{date_str}.log")
         with open(log_file, "a", encoding="utf-8", newline="") as f:
             f.write(text + "\n")
     except OSError as e:
@@ -641,7 +655,7 @@ def _flush_jsonl(path):
         if not chunk:
             return
         buf = chunk.decode("utf-8", errors="replace")
-        lines_out = []
+        by_date = {}  # date_str -> list of log lines
         while "\n" in buf:
             line, buf = buf.split("\n", 1)
             line = line.strip()
@@ -666,10 +680,12 @@ def _flush_jsonl(path):
                     _last_record_ts = ts
             except json.JSONDecodeError:
                 continue
-            lines_out.extend(_record_to_lines(record, _id2name))
+            rec_lines = _record_to_lines(record, _id2name)
+            if rec_lines:
+                by_date.setdefault(_record_local_date(ts), []).extend(rec_lines)
             _check_auto_panic(record)
-        if lines_out:
-            _append_log("\n".join(lines_out))
+        for date_str, lines in by_date.items():
+            _append_log(date_str, "\n".join(lines))
         _save_state()
     except Exception as e:
         _diagnostic_log(f"JSONL_FLUSH_ERROR: {e}")

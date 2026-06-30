@@ -413,17 +413,22 @@ class AiQuitFlaskAppsCommand(sublime_plugin.WindowCommand):
 # -- event listener (gutter settings only) ------------------------------------
 
 class AiEventListener(sublime_plugin.EventListener):
-    """Enable line numbers/gutter on Terminus views."""
+    """Terminus view listener (neutralized).
+
+    Previously this forced gutter=True + line_numbers=True on Terminus
+    views in on_load/on_activated. That shrank the drawable text area
+    *after* Terminus had already told the spawned TUI the (wider, no-gutter)
+    column count, so the TUI rendered wider than the drawable area and the
+    last ~10 chars of long lines overflowed the right edge. Forcing line
+    numbers on a full-screen TUI is also meaningless. The forcing is removed
+    so the drawable width stays equal to the width the TUI captured.
+    """
 
     def on_load(self, view: sublime.View) -> None:
-        if view.settings().get('terminus_view'):
-            view.settings().set('gutter', True)
-            view.settings().set('line_numbers', True)
+        return
 
     def on_activated(self, view: sublime.View) -> None:
-        if view.settings().get('terminus_view') and not view.settings().get('gutter'):
-            view.settings().set('gutter', True)
-            view.settings().set('line_numbers', True)
+        return
 
 
 # -- lifecycle -----------------------------------------------------------------
