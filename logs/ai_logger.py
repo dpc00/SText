@@ -34,6 +34,7 @@ _DIAGNOSTICS_FILE = str(Path.home() / ".cache" / "ai_diagnostics.log")
 _PROJECTS_DIR = str(Path.home() / ".claude" / "projects")
 _CHECK_MS = 500
 _SCREENSHOT_INTERVAL = 60
+_tick_active = False  # guard: only one _tick loop may be scheduled at a time
 _SCREENSHOT_RETENTION_DAYS = 7
 _PANIC_THRESHOLD = 1  # output_tokens — trigger on every assistant response
 _AUTO_PANIC = False  # disabled: intercepts agent SDK responses it shouldn't
@@ -678,7 +679,8 @@ def _flush_jsonl(path):
 
 
 def _tick():
-    global _last_cleanup_time
+    global _last_cleanup_time, _tick_active
+    _tick_active = False  # we're running now; no pending schedule
     current_time = time.time()
     if current_time - _last_cleanup_time > 9000:
         _cleanup_old_screenshots()
@@ -699,7 +701,9 @@ def _tick():
     elif current_time - _last_screenshot_time[_SS_KEY] > _SCREENSHOT_INTERVAL:
         _last_screenshot_time[_SS_KEY] = current_time
         threading.Thread(target=_take_screenshot, args=(_SS_KEY,), daemon=True).start()
-    sublime.set_timeout(_tick, _CHECK_MS)
+    if not _tick_active:
+        _tick_active = True
+        sublime.set_timeout(_tick, _CHECK_MS)
 
 
 # -- commands -----------------------------------------------------------------
@@ -729,10 +733,13 @@ class AiCaptureScrollPositionCommand(sublime_plugin.TextCommand):
 
 
 def plugin_loaded():
+    global _tick_active
     _load_state()
     os.makedirs(_LOG_DIR, exist_ok=True)
     _cleanup_old_screenshots()
-    sublime.set_timeout(_tick, _CHECK_MS)
+    if not _tick_active:
+        _tick_active = True
+        sublime.set_timeout(_tick, _CHECK_MS)
     msg = (
         f"ai_logger: initialized (JSONL mode, polling every {_CHECK_MS}ms, "
         f"screenshots every {_SCREENSHOT_INTERVAL}s)"

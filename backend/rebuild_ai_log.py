@@ -8,7 +8,7 @@ Usage:
 Reads every *.jsonl under ~/.claude/projects/*/
 Keeps only records whose UTC timestamp falls on the target date (local time).
 Sorts chronologically, deduplicates by UUID, writes a clean log.
-Output goes to ~/.cache/conversation_logs/claude_DATE.log  (overwrites existing).
+Output goes to ~/.cache/claude-logs/ai_DATE.log  (overwrites existing; skips if no records).
 """
 
 import datetime
@@ -23,7 +23,7 @@ from pathlib import Path
 # --------------------------------------------------------------------------- #
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
-LOG_DIR = Path.home() / ".cache" / "conversation_logs"
+LOG_DIR = Path.home() / ".cache" / "claude-logs"
 
 
 # --------------------------------------------------------------------------- #
@@ -239,9 +239,13 @@ def rebuild(target_date: datetime.date):
     for _, record in all_records:
         lines_out.extend(_record_to_lines(record, id2name))
 
-    # Write log
+    # Write log (skip empty days so a date-range sweep leaves no zero-byte files)
+    if not all_records:
+        print(f"No records for {target_date} — skipping (no file written).")
+        return
+
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = LOG_DIR / f"claude_{target_date.isoformat()}.log"
+    log_path = LOG_DIR / f"ai_{target_date.isoformat()}.log"
 
     content = "\n".join(lines_out) + "\n"
     log_path.write_text(content, encoding="utf-8")

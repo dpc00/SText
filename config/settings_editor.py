@@ -153,40 +153,6 @@ def _active_syntax_name():
         return None
 
 
-def _current_source_rel():
-    """The settings file that applies to the active view, by precedence:
-    an open *.sublime-settings tab in User/ > syntax-specific > Preferences."""
-    v = _active_view()
-    if v:
-        fn = v.file_name()
-        if fn and fn.endswith(".sublime-settings"):
-            d = os.path.dirname(fn)
-            if os.path.normpath(d) == os.path.normpath(_user_dir()):
-                return os.path.basename(fn)
-    syn = _active_syntax_name()
-    if syn:
-        return syn + ".sublime-settings"
-    return "Preferences.sublime-settings"
-
-
-def _write_targets():
-    cur = _current_source_rel()
-    syn = _active_syntax_name()
-    syn_rel = (syn + ".sublime-settings") if syn else None
-    order = []
-    if cur:
-        order.append(cur)
-    if syn_rel and syn_rel != cur:
-        order.append(syn_rel)
-    for r in ("Preferences.sublime-settings", "Preferences (Distraction Free).sublime-settings"):
-        if r not in order:
-            order.append(r)
-    out = []
-    for r in order:
-        out.append({"rel": r, "label": r, "exists": os.path.exists(_settings_path(r))})
-    return {"targets": out, "current_source": cur}
-
-
 # --- resource decode cache ---------------------------------------------------
 _RES_CACHE = {}
 
@@ -317,21 +283,6 @@ def _infer_type(name, value):
     if isinstance(value, dict):
         return "object"
     return "string"
-
-
-def _effective(name, default_val):
-    v = _active_view()
-    if v:
-        try:
-            val = v.settings().get(name, _MISSING)
-            if val is not _MISSING:
-                return val
-        except Exception:
-            pass
-    uv = _user_values().get(name, _MISSING)
-    if uv is not _MISSING:
-        return uv
-    return default_val
 
 
 def _same_json(a, b):
@@ -627,16 +578,148 @@ def _apply_delete(name, target_rel):
         _write_file(p, text)
 
 
+# --- scopes (multi-file browsing; QuickSettings-style) ----------------------
+def _syntax_settings_rel():
+    syn = _active_syntax_name()
+    return (syn + ".sublime-settings") if syn else None
+
+
+def _scope_list():
+    """Browable settings files: global, Distraction Free, the active view's
+    syntax, and every per-package User/*.sublime-settings. Each carries its
+    User write target + the default-resource chain that supplies its baseline."""
+    out = []
+    plat = _platform_name()
+    out.append({
+        "id": "global", "label": "Preferences (global)",
+        "user_rel": "Preferences.sublime-settings",
+        "default_rels": [r for r in (
+            _default_res("Preferences.sublime-settings"),
+            _default_res("Preferences (%s).sublime-settings" % plat),
+        ) if r],
+    })
+    df = _default_res("Preferences (Distraction Free).sublime-settings")
+    out.append({
+        "id": "df", "label": "Distraction Free",
+        "user_rel": "Preferences (Distraction Free).sublime-settings",
+        "default_rels": [df] if df else [],
+    })
+    syn_rel = _syntax_settings_rel()
+    if syn_rel:
+        def_rels = [r for r in sublime.find_resources(syn_rel)
+                    if not r.startswith("Packages/User/")]
+        out.append({
+            "id": "syntax", "label": _active_syntax_name() + " (syntax)",
+            "user_rel": syn_rel, "default_rels": def_rels,
+        })
+    covered = {s["user_rel"] for s in out}
+    try:
+        for fn in sorted(os.listdir(_user_dir())):
+            if not fn.endswith(".sublime-settings") or fn in covered:
+                continue
+            pkg = fn[:-len(".sublime-settings")]
+            def_rels = [r for r in sublime.find_resources(fn)
+                        if not r.startswith("Packages/User/")]
+            out.append({
+                "id": "pkg:" + pkg, "label": pkg,
+                "user_rel": fn, "default_rels": def_rels,
+            })
+    except Exception:
+        pass
+    for s in out:
+        s["exists"] = os.path.exists(_settings_path(s["user_rel"]))
+    return out
+
+
+def _resolve_scope(scope_id):
+    scopes = _scope_list()
+    for s in scopes:
+        if s["id"] == scope_id:
+            return s
+    for s in scopes:
+        if s["id"] == "global":
+            return s
+    return scopes[0]
+
+
+def _scope_defaults(scope):
+    if scope["id"] == "global":
+        return _load_defaults()
+    merged = {}
+    for r in scope["default_rels"]:
+        d = _res_decode(r)
+        if isinstance(d, dict):
+            merged.update(d)
+    return merged
+
+
+def _scope_user_values(scope):
+    if scope["id"] == "global":
+        return _user_values()
+    try:
+        d = json5.loads(_read_file(_settings_path(scope["user_rel"])))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _effective_for(name, default_val, scope, user):
+    # Global + syntax settings are merged into the active view's settings, so
+    # the view is authoritative there. Per-package settings are not view-merged
+    # — fall back to the scope's user file, then the scope's default baseline.
+    if scope["id"] in ("global", "syntax"):
+        v = _active_view()
+        if v:
+            try:
+                val = v.settings().get(name, _MISSING)
+                if val is not _MISSING:
+                    return val
+            except Exception:
+                pass
+    uv = user.get(name, _MISSING)
+    if uv is not _MISSING:
+        return uv
+    return default_val
+
+
+def _override_chain_for(name, scope, user):
+    if scope["id"] == "global":
+        return _override_chain(name)
+    chain = []
+    for r in scope["default_rels"]:
+        d = _res_decode(r)
+        if isinstance(d, dict) and name in d:
+            chain.append({"layer": r.split("/")[-1], "value": d[name], "source": r})
+    uv = user.get(name, _MISSING)
+    if uv is not _MISSING:
+        chain.append({"layer": "User", "value": uv, "source": "User/" + scope["user_rel"]})
+    for i, e in enumerate(chain):
+        e["wins"] = (i == len(chain) - 1)
+    return chain
+
+
+def _scope_write_targets(scope):
+    rels = [scope["user_rel"]]
+    # For global/DF/syntax scopes, Preferences and DF remain useful alternate
+    # write destinations. Per-package scopes write only to that package's file.
+    if scope["id"] in ("global", "df", "syntax"):
+        for r in ("Preferences.sublime-settings", "Preferences (Distraction Free).sublime-settings"):
+            if r not in rels:
+                rels.append(r)
+    return [{"rel": r, "label": r, "exists": os.path.exists(_settings_path(r))} for r in rels]
+
+
 # --- catalog + detail --------------------------------------------------------
-def _build_catalog():
-    defaults = _load_defaults()
-    user = _user_values()
+def _build_catalog(scope_id=None):
+    scope = _resolve_scope(scope_id)
+    defaults = _scope_defaults(scope)
+    user = _scope_user_values(scope)
     kidx = _keymap_index()
     names = sorted(set(defaults) | set(user))
     out = []
     for name in names:
         dv = defaults.get(name, None)
-        eff = _effective(name, dv)
+        eff = _effective_for(name, dv, scope, user)
         overridden = not _same_json(eff, dv)
         out.append({
             "name": name,
@@ -650,20 +733,24 @@ def _build_catalog():
         })
     cats = [c for c in _CATEGORY_ORDER if any(s["category"] == c for s in out)]
     cats += sorted(set(s["category"] for s in out) - set(cats))
-    wt = _write_targets()
+    wt = _scope_write_targets(scope)
     return {
+        "scope": scope["id"],
+        "scope_label": scope["label"],
         "settings": out,
         "categories": cats,
-        "write_targets": wt["targets"],
-        "current_source": wt["current_source"],
+        "write_targets": wt,
+        "current_source": scope["user_rel"],
         "gen": _gen[0],
     }
 
 
-def _detail(name):
-    defaults = _load_defaults()
+def _detail(name, scope_id=None):
+    scope = _resolve_scope(scope_id)
+    defaults = _scope_defaults(scope)
+    user = _scope_user_values(scope)
     dv = defaults.get(name, None)
-    eff = _effective(name, dv)
+    eff = _effective_for(name, dv, scope, user)
     kidx = _keymap_index()
     kb = kidx.get(name, [])
     usage = {
@@ -671,7 +758,7 @@ def _detail(name):
         "menus": _menu_reads(name),
         "plugins": _py_reads(name),
     }
-    wt = _write_targets()
+    wt = _scope_write_targets(scope)
     return {
         "name": name,
         "category": _categorize(name),
@@ -679,13 +766,13 @@ def _detail(name):
         "default": dv,
         "effective": eff,
         "owner": _owner_for(name),
-        "override_chain": _override_chain(name),
+        "override_chain": _override_chain_for(name, scope, user),
         "enum": _ENUMS.get(name),
         "desc": _desc_for(name),
         "usage": usage,
         "overridden": not _same_json(eff, dv),
-        "write_targets": wt["targets"],
-        "current_source": wt["current_source"],
+        "write_targets": wt,
+        "current_source": scope["user_rel"],
         "gen": _gen[0],
     }
 
@@ -989,18 +1076,25 @@ class _Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/" or path.startswith("/?"):
             self._send(200, "text/html; charset=utf-8", _HTML)
-        elif path == "/api/catalog":
+        elif path == "/api/scopes":
             try:
-                self._send(200, "application/json", json.dumps(_build_catalog()))
+                self._send(200, "application/json", json.dumps(_scope_list()))
+            except Exception as e:
+                self._send(200, "application/json", json.dumps({"error": str(e)}))
+        elif path == "/api/catalog":
+            scope = self._q().get("scope", [None])[0]
+            try:
+                self._send(200, "application/json", json.dumps(_build_catalog(scope)))
             except Exception as e:
                 self._send(200, "application/json", json.dumps({"error": str(e)}))
         elif path == "/api/setting":
             name = self._q().get("name", [None])[0]
+            scope = self._q().get("scope", [None])[0]
             if not name:
                 self._send(400, "application/json", '{"error":"name required"}')
                 return
             try:
-                self._send(200, "application/json", json.dumps(_detail(name)))
+                self._send(200, "application/json", json.dumps(_detail(name, scope)))
             except Exception as e:
                 self._send(200, "application/json", json.dumps({"error": str(e)}))
         elif path == "/api/warnings":
@@ -1055,9 +1149,10 @@ class _Handler(BaseHTTPRequestHandler):
             try:
                 name = payload.get("name")
                 value = payload.get("value")
-                target = payload.get("target") or _current_source_rel()
+                scope = payload.get("scope")
+                target = payload.get("target") or _resolve_scope(scope)["user_rel"]
                 _apply_set(name, value, target)
-                det = _detail(name)
+                det = _detail(name, scope)
                 # recompute warnings for the just-written value
                 warnings = _warnings(name, value, det["usage"])
                 self._send(200, "application/json", json.dumps({"ok": True, "detail": det, "warnings": warnings}))
@@ -1066,9 +1161,10 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/api/delete":
             try:
                 name = payload.get("name")
-                target = payload.get("target") or _current_source_rel()
+                scope = payload.get("scope")
+                target = payload.get("target") or _resolve_scope(scope)["user_rel"]
                 _apply_delete(name, target)
-                self._send(200, "application/json", json.dumps({"ok": True, "detail": _detail(name)}))
+                self._send(200, "application/json", json.dumps({"ok": True, "detail": _detail(name, scope)}))
             except Exception as e:
                 self._send(200, "application/json", json.dumps({"ok": False, "error": str(e)}))
         elif path == "/api/shutdown":
@@ -1224,6 +1320,7 @@ table.props .row-edit td{background:#fafbff}
   <button class="tab" id="tab-keybindings" data-mode="keybindings">Keybindings</button>
  </div>
  <h1 id="title">Sublime Settings</h1>
+ <select id="scope" class="ed-cell" style="max-width:240px" title="Settings file to browse/edit"></select>
  <input id="search" type="search" placeholder="Filter settings...">
  <span id="status"></span>
  <button class="stop" id="stopbtn" title="Stop the editor server">Stop</button>
@@ -1246,6 +1343,7 @@ table.props .row-edit td{background:#fafbff}
 <datalist id="cmdlist"></datalist>
 <script>
 let CAT=[], S=[], selName=null, D=null, targets=[], curTarget=null;
+let SCOPES=[], curScope=null;
 let MODE='settings';
 let KM=[], KMD=null, kmSelIdx=null, kmIsNew=false, kmTargets=[], kmCurTarget=null, CMDLIST=[], kmOnlyConf=false;
 let modCb=null;
@@ -1280,7 +1378,7 @@ function select(name){
   selName=name;
   $('tree').querySelectorAll('.leaf').forEach(el=>el.classList.toggle('sel',el.dataset.name===name));
   $('status').textContent='loading...';
-  fetch('/api/setting?name='+encodeURIComponent(name)).then(r=>r.json()).then(d=>{
+  fetch('/api/setting?name='+encodeURIComponent(name)+(curScope?('&scope='+encodeURIComponent(curScope)):'')).then(r=>r.json()).then(d=>{
     if(d.error){$('sheet').innerHTML='<div class="ph">Error: '+esc(d.error)+'</div>';return;}
     D=d; targets=d.write_targets||[]; curTarget=d.current_source||'Preferences.sublime-settings';
     renderSheet();
@@ -1385,7 +1483,7 @@ function bindSheet(){
   const rb=$('restore');
   if(rb) rb.addEventListener('click',()=>{
     if(!confirm('Delete '+D.name+' from '+curTarget+' so the default takes effect?')) return;
-    fetch('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:D.name,target:curTarget})})
+    fetch('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:D.name,target:curTarget,scope:curScope})})
      .then(r=>r.json()).then(r=>{if(r.ok){reloadCatalogThenSelect();}else{alert(r.error||'error');}});
   });
 }
@@ -1412,7 +1510,7 @@ function commit(){
 
 function doWrite(value){
   $('status').textContent='saving...';
-  fetch('/api/setting',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:D.name,value:value,target:curTarget})})
+  fetch('/api/setting',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:D.name,value:value,target:curTarget,scope:curScope})})
    .then(r=>r.json()).then(r=>{
      if(r.ok){D=r.detail;D._pending=undefined;renderSheet();reloadCatalog();$('status').textContent='saved';setTimeout(()=>$('status').textContent='',1200);}
      else {$('status').textContent='error';alert(r.error||'error');}
@@ -1429,8 +1527,9 @@ function refreshWarns(value){
     });
 }
 
-function reloadCatalog(){fetch('/api/catalog').then(r=>r.json()).then(c=>{S=c.settings||[];CAT=c.categories||[];renderTree();});}
-function reloadCatalogThenSelect(){fetch('/api/catalog').then(r=>r.json()).then(c=>{S=c.settings||[];CAT=c.categories||[];renderTree();select(D.name);});}
+function catalogUrl(){return '/api/catalog'+(curScope?('?scope='+encodeURIComponent(curScope)):'');}
+function reloadCatalog(){fetch(catalogUrl()).then(r=>r.json()).then(c=>{S=c.settings||[];CAT=c.categories||[];renderTree();});}
+function reloadCatalogThenSelect(){fetch(catalogUrl()).then(r=>r.json()).then(c=>{S=c.settings||[];CAT=c.categories||[];renderTree();select(D.name);});}
 
 let modName=null;
 function openModal(){
@@ -1608,16 +1707,28 @@ function switchMode(m){
   $('title').textContent = m==='keybindings'?'Keybindings':'Sublime Settings';
   $('search').placeholder = m==='keybindings'?'Filter by chord or command…':'Filter settings...';
   $('search').value=''; selName=null; kmSelIdx=null; D=null; KMD=null;
+  $('scope').style.display = m==='settings'?'':'none';
   $('sheet').innerHTML='<div class="ph">Select an item on the left.</div>';
   if(m==='keybindings') loadKm(); else load();
 }
 document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>switchMode(t.dataset.mode)));
 
 function load(){
-  fetch('/api/catalog').then(r=>r.json()).then(c=>{
+  fetch('/api/scopes').then(r=>r.json()).then(list=>{
+    SCOPES=list||[];
+    const sel=$('scope');
+    sel.innerHTML=SCOPES.map(s=>'<option value="'+esc(s.id)+'">'+esc(s.label)+(s.exists?'':' (no user file)')+'</option>').join('');
+    if(!curScope || !SCOPES.some(s=>s.id===curScope)) curScope=SCOPES[0]?SCOPES[0].id:'global';
+    sel.value=curScope;
+    sel.onchange=()=>{curScope=sel.value;selName=null;loadCatalog();};
+    loadCatalog();
+  });
+}
+function loadCatalog(){
+  fetch(catalogUrl()).then(r=>r.json()).then(c=>{
     S=c.settings||[]; CAT=c.categories||[]; targets=c.write_targets||[]; curTarget=c.current_source||'Preferences.sublime-settings';
     renderTree();
-    if(S.length) select(S[0].name);
+    if(S.length) select(S[0].name); else $('sheet').innerHTML='<div class="ph">No settings in this scope.</div>';
   });
 }
 load();
