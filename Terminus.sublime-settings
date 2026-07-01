@@ -1,5 +1,4 @@
 {
-    "scrollback": 600,
-    "scrollback_history_size": 600,
     "debug": false,
+    "scrollback_history_size": 500,
 }

@@ -38,10 +38,10 @@
     "fold_buttons": true,
     "font_size": 11,
     "gutter": true,
-    "line_numbers": true,
+    "line_numbers": false,
     "margin": 4,
     "scroll_past_end": false,
-    "show_git_status": true,
+    "show_git_status": false,
     "show_line_endings": true,
     "sidebar_on_right": false,
     "tab_completion": false,
@@ -51,4 +51,6 @@
     "trim_trailing_white_space_on_save": "all",
     "use_tab_stops": false,
     /*"color_scheme": "Mariana.sublime-color-scheme",*/
+    "font_face": "Lucida Console",
+    "wrap_width_style": "variable",
 }
