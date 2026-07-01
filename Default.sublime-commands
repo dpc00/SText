@@ -28,6 +28,7 @@
 	{"caption": "Panic: Quote & Reply", "command": "panic_open"},
 	{"caption": "PyBackup: Flask App (silent)", "command": "pb_flask_silent"},
 	{"caption": "PyBackup: Flask App", "command": "pb_flask_launcher"},
+	{"caption": "SSH-Panel: Auto Connect Phone", "command": "ssh_panel_auto_connect"},
 	{"caption": "Sublime Config", "command": "st_config_open"},
 	{"caption": "Sublime Settings Editor", "command": "settings_editor_open"}
 ]
