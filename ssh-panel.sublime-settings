@@ -1,0 +1,32 @@
+{
+	"server_settings": {
+		"Phone-Xfinity": {
+			"hostname": "10.0.0.53",
+			"port": 8022,
+			"username": "u0_a552",
+			"private_key": [
+				"Ed25519Key",
+				"~/.ssh/id_ed25519"
+			],
+			"need_passphrase": false,
+			"remote_path": [
+				"/data/data/com.termux/files"
+			],
+			"local_path": "~/SFTP-Local/{auto_generate}",
+		},
+		"Phone-CenturyLink": {
+			"hostname": "192.168.0.11",
+			"port": 8022,
+			"username": "u0_a552",
+			"private_key": [
+				"Ed25519Key",
+				"C:\\Users\\donal/.ssh/id_ed25519"
+			],
+			"need_passphrase": false,
+			"remote_path": [
+				"/data/data/com.termux/files"
+			],
+			"local_path": "C:\\Users\\donal\\SFTP-Local\\42353247d2b202669aaad8c46597107d",
+		},
+	},
+}
