@@ -13,7 +13,20 @@ true wipe:
 
 import sublime
 import sublime_plugin
-from Terminus.terminus.terminal import Terminal
+
+
+def _terminal_for(view):
+    """Return the Terminus Terminal for view, or None if Terminus is absent.
+
+    Imported lazily so a missing/removed Terminus package only breaks this
+    one command, instead of failing the whole User package load (loader.py
+    imports this module at top level).
+    """
+    try:
+        from Terminus.terminus.terminal import Terminal
+    except ImportError:
+        return None
+    return Terminal.from_id(view.id())
 
 
 class ClearBufferCommand(sublime_plugin.TextCommand):
@@ -30,7 +43,7 @@ class ClearBufferCommand(sublime_plugin.TextCommand):
     """
 
     def run(self, edit):
-        terminal = Terminal.from_id(self.view.id())
+        terminal = _terminal_for(self.view)
         if not terminal:
             return
         self.view.run_command("terminus_send_string", {"string": "cls\n"})
@@ -46,7 +59,7 @@ class ClearBufferCommand(sublime_plugin.TextCommand):
         We copy that row to index 0 and delete everything else, giving Terminus
         a one-line buffer containing just the prompt.
         """
-        terminal = Terminal.from_id(view.id())
+        terminal = _terminal_for(view)
         if not terminal:
             return
         screen = terminal.screen

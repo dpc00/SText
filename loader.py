@@ -28,6 +28,18 @@ from User.ai.ai_tab_manager import (
     AiQuitFlaskAppsCommand,
     AiEventListener,
 )
+from User.ai.ai_terminal import (
+    AiTerminalOpenHereCommand,
+    AiTerminalOpenInEditorCommand,
+    AiTerminalSendStringCommand,
+    AiTerminalKeypressCommand,
+    AiTerminalRenderCommand,
+    AiTerminalNukeCommand,
+    AiTerminalNoopCommand,
+    AiTerminalDumpScreenCommand,
+    AiTerminalViewListener,
+    AiTerminalKeyInterceptor,
+)
 from User.ai.open_ai import (
     OpenAiHereCommand,
     OpenAiInEditorCommand,
@@ -89,6 +101,7 @@ def plugin_unloaded():
 _PLUGIN_LOADED_MODULES = [
     "User.logs.ai_logger",          # 60s screenshot capture + JSONL logging
     "User.ai.ai_sdk",              # no-op today; wired for parity + future work
+    "User.ai.ai_terminal",          # ConPTY Claude terminal; start resize poller
     "User.ai.ai_tab_manager",       # prints "loaded" + ensures log dir exists
     "User.ai.panic_dialog",         # restore panic-dialog phantoms after reload
 ]
@@ -99,6 +112,7 @@ _PLUGIN_LOADED_MODULES = [
 _PLUGIN_UNLOADED_MODULES = [
     "User.logs.ai_logger",          # flush JSONL + save state
     "User.ai.ai_sdk",              # stop AI(SDK) server + bridge
+    "User.ai.ai_terminal",          # kill all live ConPTY children
     "User.ai.ai_tab_manager",       # prints "unloaded"
     "User.config.settings_editor",  # stop HTTP server (port 57324)
     "User.config.st_config",        # stop HTTP server
