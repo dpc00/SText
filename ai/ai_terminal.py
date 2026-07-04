@@ -290,10 +290,105 @@ class _Pty:
             self._heap_buf = None
 
 
+# ─── colour: 16-colour palette + SGR attr model ──────────────────────────────
+# The parser quantizes every SGR colour (16/256/truecolour) down to a 16-colour
+# id and packs (fg, bg, bold, reverse) into one int per cell. The renderer maps
+# each non-default cell to a scope in ai_terminal.sublime-color-scheme and
+# colours it via coalesced add_regions. 0 in fg/bg means "default" (no region).
+# Scope names match gen_color_scheme.py:
+#   ai.fb.<fg>.<bg>   (fg, bg in 0..256; 0=default)  -- single combined family
+# Claude's TUI emits truecolor (38;2;r;g;b); the parser quantizes to the xterm
+# 256 palette (216-cube + 24-step gray ramp + 16 ANSI) and maps every cell to
+# one ai.fb.<fg>.<bg> scope, defined over the full 257x257 matrix in the view's
+# ai_terminal.sublime-color-scheme. 256-level fidelity matches Terminus, so
+# muted truecolours stay muted instead of snapping to a vivid primary.
+
+# xterm 256 palette. ANSI 0-15 use the Terminus "true_black" vivid values
+# (themes/true_black.json) -- MUST match gen_color_scheme.py's _ANSI16 so
+# truecolour quantization picks the same index the scheme will render.
+# 16-231 cube + 232-255 gray ramp are standard xterm.
+_ANSI16_RGB = [
+    (0x00, 0x00, 0x00), (0xFF, 0x00, 0x00), (0x00, 0xFF, 0x00), (0xFF, 0xFF, 0x00),
+    (0x00, 0x00, 0xFF), (0xFF, 0x00, 0xFF), (0x00, 0xFF, 0xFF), (0xFF, 0xFF, 0xFF),
+    (0x80, 0x80, 0x80), (0xFF, 0x00, 0x00), (0x00, 0xFF, 0x00), (0xFF, 0xFF, 0x00),
+    (0x00, 0x00, 0xFF), (0xFF, 0x00, 0xFF), (0x00, 0xFF, 0xFF), (0xFF, 0xFF, 0xFF),
+]
+
+
+def _xterm256_rgb(n):
+    """xterm 256-colour index -> (r, g, b). 0-15=ANSI16, 16-231=6x6x6 cube,
+    232-255 = gray ramp."""
+    if n < 16:
+        return _ANSI16_RGB[n]
+    if n >= 232:
+        v = 8 + (n - 232) * 10
+        return (v, v, v)
+    m = n - 16
+    r, g, b = m // 36, (m // 6) % 6, m % 6
+    return (0 if r == 0 else 55 + r * 40,
+            0 if g == 0 else 55 + g * 40,
+            0 if b == 0 else 55 + b * 40)
+
+
+_XTERM256_RGB = [_xterm256_rgb(i) for i in range(256)]
+
+
+def _quantize256(r, g, b):
+    """Nearest of the xterm 256 palette by squared distance -> 0..255."""
+    best, best_d = 0, 1 << 30
+    for i, (pr, pg, pb) in enumerate(_XTERM256_RGB):
+        d = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2
+        if d < best_d:
+            best, best_d = i, d
+    return best
+
+
+# Packed attr bit layout:
+#   fg       bits 0-8   (0=default, 1..256 = xterm 256 index 0..255)
+#   bg       bits 9-17  (0=default, 1..256 = xterm 256 index 0..255)
+#   bold     bit 18    (parsed, not rendered in v2 -- no bold scope family)
+#   reverse  bit 19
+_FG_SHIFT, _BG_SHIFT = 0, 9
+_ATTR_FG_MASK = 0x1FF
+_ATTR_BG_MASK = 0x1FF << _BG_SHIFT
+_BOLD = 1 << 18
+_REVERSE = 1 << 19
+
+
+def _attr(fg=0, bg=0, flags=0):
+    return (fg << _FG_SHIFT) | (bg << _BG_SHIFT) | flags
+
+
+def _scope_for(attr):
+    """Map a packed cell attr to a color-scheme scope, or None for default.
+
+    Uses the single combined ai.fb.<fg>.<bg> family (257x257 matrix in the
+    view's color scheme). reverse swaps fg/bg; if both end up default the cell
+    needs no region. bold is parsed but not rendered in v2."""
+    if attr == 0:
+        return None
+    fg = attr & _ATTR_FG_MASK
+    bg = (attr & _ATTR_BG_MASK) >> _BG_SHIFT
+    if attr & _REVERSE:
+        fg, bg = bg, fg
+    if fg == 0 and bg == 0:
+        return None
+    return f"ai.fb.{fg}.{bg}"
+
+
+def _rstrip_cells(cells):
+    """Drop trailing (space, default-attr) cells. Coloured blanks are kept so a
+    row-wide background highlight survives the rstrip."""
+    end = len(cells)
+    while end > 0 and cells[end - 1] == (" ", 0):
+        end -= 1
+    return cells[:end]
+
+
 # ─── _Screen: cursor-aware grid ──────────────────────────────────────────────
-# MVP renders plain text (layout-correct, monochrome). attrs are intentionally
-# omitted -- colour via coalesced add_regions is a follow-up. The layout being
-# cursor-aware is what removes the Terminus gutter/width bugs.
+# Cells carry a packed colour attr alongside the char; the renderer coalesces
+# equal-attr runs into add_regions. The cursor-aware layout is what removes the
+# Terminus gutter/width bugs.
 
 _BLANK = " "
 
@@ -305,9 +400,13 @@ class _Screen:
         self.x = 0
         self.y = 0
         self.grid = [[_BLANK] * self.cols for _ in range(self.rows)]
+        # Per-cell packed colour attr, parallel to grid. 0 = default (no region).
+        self.attrs = [[0] * self.cols for _ in range(self.rows)]
         # Scrollback: rows that scroll off the top are captured here, capped at
         # 600. Larger caps make the ST view sluggish to re-render and break
         # scroll-back; 600 is the chosen balance. Rendered above the active grid.
+        # Stored as rstripped [(ch, attr), ...] cell-lists so scrollback keeps
+        # its colour (a plain string would lose the attrs).
         self.history = collections.deque(maxlen=600)
         self.saved = (0, 0)
         self.alt_screen = False
@@ -316,11 +415,28 @@ class _Screen:
     def resize(self, cols, rows):
         cols, rows = max(1, cols), max(1, rows)
         new = [[_BLANK] * cols for _ in range(rows)]
+        new_attrs = [[0] * cols for _ in range(rows)]
         for r in range(min(rows, self.rows)):
-            row = self.grid[r]
+            srow = self.grid[r]
+            arow = self.attrs[r]
             for c in range(min(cols, self.cols)):
-                new[r][c] = row[c]
+                new[r][c] = srow[c]
+                new_attrs[r][c] = arow[c]
         self.grid = new
+        self.attrs = new_attrs
+        # Clip scrollback rows to the new width when the screen shrinks.
+        # history rows were captured at the OLD (wider) cols and are never
+        # re-wrapped, so without this they persist as lines wider than the
+        # current viewport -- making the ST layout wider than the view by
+        # the width difference and producing a spurious horizontal
+        # scrollbar (e.g. turning on the gutter shrank cols by 2 -> a
+        # 2-char horizontal scrollbar from stale scrollback). Rstrip after
+        # clipping to drop any trailing blanks revealed by the clip.
+        if cols < self.cols:
+            new_hist = collections.deque(maxlen=self.history.maxlen)
+            for row_cells in self.history:
+                new_hist.append(_rstrip_cells(row_cells[:cols]))
+            self.history = new_hist
         self.cols, self.rows = cols, rows
         self.x = min(self.x, cols - 1)
         self.y = min(self.y, rows - 1)
@@ -328,20 +444,25 @@ class _Screen:
 
     def reset(self):
         self.grid = [[_BLANK] * self.cols for _ in range(self.rows)]
+        self.attrs = [[0] * self.cols for _ in range(self.rows)]
         self.history.clear()
         self.x = self.y = 0
         self.dirty = True
 
     def _scroll_up(self):
-        popped = self.grid.pop(0)
-        self.history.append("".join(popped).rstrip())
+        popped = [(self.grid[0][c], self.attrs[0][c]) for c in range(self.cols)]
+        self.history.append(_rstrip_cells(popped))
+        self.grid.pop(0)
+        self.attrs.pop(0)
         self.grid.append([_BLANK] * self.cols)
+        self.attrs.append([0] * self.cols)
 
-    def put_char(self, ch):
+    def put_char(self, ch, attr=0):
         if self.x >= self.cols:
             self.x = 0
             self._line_feed()
         self.grid[self.y][self.x] = ch
+        self.attrs[self.y][self.x] = attr
         self.x += 1
         self.dirty = True
 
@@ -381,32 +502,41 @@ class _Screen:
     def erase_display(self, n):
         if n == 2 or n == 3:
             self.grid = [[_BLANK] * self.cols for _ in range(self.rows)]
+            self.attrs = [[0] * self.cols for _ in range(self.rows)]
             if n == 3:
                 # CSI 3J = erase scrollback (and screen); 2J leaves scrollback.
                 self.history.clear()
         elif n == 0:
             for c in range(self.x, self.cols):
                 self.grid[self.y][c] = _BLANK
+                self.attrs[self.y][c] = 0
             for r in range(self.y + 1, self.rows):
                 self.grid[r] = [_BLANK] * self.cols
+                self.attrs[r] = [0] * self.cols
         elif n == 1:
             for r in range(0, self.y):
                 self.grid[r] = [_BLANK] * self.cols
+                self.attrs[r] = [0] * self.cols
             for c in range(0, self.x + 1):
                 self.grid[self.y][c] = _BLANK
+                self.attrs[self.y][c] = 0
         self.dirty = True
 
     def erase_line(self, n):
         row = self.grid[self.y]
+        arow = self.attrs[self.y]
         if n == 0:
             for c in range(self.x, self.cols):
                 row[c] = _BLANK
+                arow[c] = 0
         elif n == 1:
             for c in range(0, self.x + 1):
                 row[c] = _BLANK
+                arow[c] = 0
         elif n == 2:
             for c in range(self.cols):
                 row[c] = _BLANK
+                arow[c] = 0
         self.dirty = True
 
     def save_cursor(self):
@@ -419,31 +549,47 @@ class _Screen:
         self.y = min(self.y, self.rows - 1)
         self.dirty = True
 
-    def snapshot(self):
-        """Return scrollback history + active screen as one string (rows joined by \\n).
+    def render_cells(self):
+        """Return (rows, cy, cx) for rendering.
 
-        Rows captured by _scroll_up are prepended above the active grid so the
-        ST view can be scrolled back through them."""
-        lines = list(self.history)
-        for i, row in enumerate(self.grid):
-            s = "".join(row)
+        rows is a list of [(ch, attr), ...] cell-lists: the active grid only
+        (scrollback history is NOT rendered -- see below). Each grid row is
+        rstripped of trailing default-blank cells, EXCEPT the cursor row,
+        which keeps cells 0..x-1 and rstrips only the tail beyond the cursor --
+        mirroring the old snapshot rstrip so the caret col stays valid. cy/cx
+        are the cursor position in grid row space.
+
+        NBSP normalization is left to the text builder.
+
+        History is captured (self.history, deque maxlen=600) but deliberately
+        NOT included in the rendered rows: Claude's TUI runs on the alt screen
+        and redraws full frames in place, so any pyte scroll pushes a row into
+        history. Rendering history + grid made the view grow past the viewport
+        whenever the TUI scrolled (e.g. on typing) -> a "solid" vertical
+        scrollbar that shifts a line and covers the bottom status row. With
+        history excluded, the view is always exactly `self.rows` lines, so it
+        can never exceed the viewport and never scrolls. (The captured history
+        is kept in case a future scrollback view wants it; it's cheap.)
+        """
+        rows = []
+        cy = self.y
+        cx = self.x
+        for i in range(self.rows):
+            srow = self.grid[i]
+            arow = self.attrs[i]
             if i == self.y:
-                # Cursor row: only rstrip the part AFTER the cursor. Claude Code
-                # positions the caret with CUF (\x1b[1C) for a typed space and
-                # \x08\x1b[K for backspace -- neither writes a char, so the cell
-                # at the cursor is an erase-blank. A full rstrip would delete it
-                # and the render clamp would pull the caret back to before the
-                # space. Keep cells 0..x-1 (so the caret has a real position at
-                # col x) and rstrip only the tail beyond the cursor.
+                # Cursor row: keep cells 0..x-1 verbatim, rstrip the tail. The
+                # cell at the cursor is usually an erase-blank; stripping it
+                # leaves the row ending at col x so the render clamp seats the
+                # caret at line end (see AiTerminalRenderCommand).
                 x = max(self.x, 0)
-                s = s[:x].ljust(x) + s[x:].rstrip()
+                body = [(srow[c], arow[c]) for c in range(min(x, self.cols))]
+                tail = [(srow[c], arow[c]) for c in range(x, self.cols)]
+                rows.append(body + _rstrip_cells(tail))
             else:
-                s = s.rstrip()
-            lines.append(s)
-        # Claude Code emits U+00A0 (NBSP) in the status line to stop wrapping.
-        # word_wrap is off on the Ai view, so normalize to a plain space for
-        # clean display (NBSP and space are both one cell — cursor map is safe).
-        return "\n".join(lines).replace("\u00a0", " ")
+                cells = [(srow[c], arow[c]) for c in range(self.cols)]
+                rows.append(_rstrip_cells(cells))
+        return rows, cy, cx
 
 
 # ─── _Parser: minimal ANSI state machine (Claude ratatui subset) ─────────────
@@ -456,6 +602,15 @@ class _Parser:
         self.s = screen
         self.state = _GROUND
         self.params = ""
+        # Current SGR state. _fg/_bg are 1-based colour ids (0=default);
+        # _flags holds _BOLD/_REVERSE (other styles are parsed but not rendered).
+        self._fg = 0
+        self._bg = 0
+        self._flags = 0
+
+    @property
+    def _cur_attr(self):
+        return _attr(self._fg, self._bg, self._flags)
 
     def feed(self, text):
         for ch in text:
@@ -480,7 +635,7 @@ class _Parser:
             elif o < 0x20 or o == 0x7F:
                 pass  # other C0 / DEL -- ignore
             else:
-                self.s.put_char(ch)
+                self.s.put_char(ch, self._cur_attr)
         elif st == _ESC:
             if ch == "[":
                 self.state = _CSI
@@ -503,6 +658,7 @@ class _Parser:
                 self.state = _GROUND
             elif ch == "c":  # RIS
                 self.s.reset()
+                self._fg = self._bg = self._flags = 0
                 self.state = _GROUND
             elif ch == "M":  # RI -- reverse index; rare, no-op for MVP
                 self.state = _GROUND
@@ -536,10 +692,78 @@ class _Parser:
             out.append(int(p) if p.isdigit() else default)
         return priv, out
 
+    def _parse_ext_color(self, p, j):
+        """Parse a 38/48 extended colour spec starting at p[j] -> 1-based xterm id.
+
+        ;5;N (256-colour) is taken directly (N is already a 256-palette index);
+        ;2;r;g;b (truecolour) is quantized to the nearest xterm 256 entry.
+        Returns 0 (default) on a malformed spec."""
+        if j >= len(p):
+            return 0
+        if p[j] == 5 and j + 1 < len(p):
+            n = p[j + 1]
+            if 0 <= n <= 255:
+                return n + 1
+            return 0
+        if p[j] == 2 and j + 3 < len(p):
+            return _quantize256(p[j + 1], p[j + 2], p[j + 3]) + 1
+        return 0
+
+    def _sgr(self, p):
+        """Apply an SGR parameter list to the current fg/bg/flags.
+
+        Only fg/bg/bold/reverse are rendered in v1; faint/italic/underline/
+        strike are parsed (so the stream stays in sync) but do not affect the
+        scope mapping."""
+        if not p:
+            p = [0]
+        i = 0
+        n = len(p)
+        while i < n:
+            c = p[i]
+            if c == 0:
+                self._fg = self._bg = self._flags = 0
+            elif c == 1:
+                self._flags |= _BOLD
+            elif c == 7:
+                self._flags |= _REVERSE
+            elif c in (21, 22):
+                self._flags &= ~_BOLD
+            elif c == 27:
+                self._flags &= ~_REVERSE
+            elif 2 <= c <= 6 or c == 8 or c == 9 or c in (23, 24, 28, 29):
+                pass  # faint/italic/underline/blink/conceal/strike + clears: parsed, not rendered
+            elif 30 <= c <= 37:
+                self._fg = c - 30 + 1
+            elif c == 38 and i + 1 < n:
+                self._fg = self._parse_ext_color(p, i + 1)
+                if p[i + 1] == 5 and i + 2 < n:
+                    i += 2
+                elif p[i + 1] == 2 and i + 4 < n:
+                    i += 4
+            elif c == 39:
+                self._fg = 0
+            elif 40 <= c <= 47:
+                self._bg = c - 40 + 1
+            elif c == 48 and i + 1 < n:
+                self._bg = self._parse_ext_color(p, i + 1)
+                if p[i + 1] == 5 and i + 2 < n:
+                    i += 2
+                elif p[i + 1] == 2 and i + 4 < n:
+                    i += 4
+            elif c == 49:
+                self._bg = 0
+            elif 90 <= c <= 97:
+                self._fg = c - 90 + 9
+            elif 100 <= c <= 107:
+                self._bg = c - 100 + 9
+            i += 1
+
     def _dispatch_csi(self, final):
         priv, p = self._ints()
         s = self.s
-        if final == "m":  # SGR -- consumed (colour is a follow-up)
+        if final == "m":  # SGR -- select graphic rendition (colour/style)
+            self._sgr(p)
             return
         if final in ("H", "f"):  # CUP / HVP
             r = (p[0] if len(p) > 0 and p[0] else 1) - 1
@@ -646,10 +870,19 @@ class _Terminal:
         with self._lock:
             self.screen.resize(cols, rows)
         self.pty.resize(cols, rows)
+        # Re-render so the view text matches the new (narrower) grid right
+        # away. Without this, the view keeps stale wider text until Claude
+        # next emits output, and the stale wider lines show a horizontal
+        # scrollbar for up to several seconds after a shrink.
+        _schedule_render(self)
 
     def snapshot(self):
+        """Return the current screen as plain text (no colour). Used by any
+        external caller that just wants the visible buffer; the renderer itself
+        goes through render_cells() + _build_text_and_regions for colour."""
         with self._lock:
-            return self.screen.snapshot()
+            rows, _cy, _cx = self.screen.render_cells()
+        return "\n".join("".join(ch for ch, _ in row) for row in rows)
 
     def kill(self):
         try:
@@ -678,10 +911,29 @@ def _terminal_view(window):
     v.set_scratch(True)
     v.settings().set("word_wrap", False)
     v.settings().set("gutter", True)
-    v.settings().set("line_numbers", False)
-    v.settings().set("fold_buttons", False)
+    v.settings().set("line_numbers", True)
+    v.settings().set("fold_buttons", True)
+    # margin=0 on the terminal view: the right margin is "scrollable" in ST
+    # (the horizontal scroll range grows 1px per 1px of margin), so any
+    # nonzero margin shows up as a horizontal scrollbar. Terminals don't need
+    # text padding anyway. See _measure for the width calc.
+    v.settings().set("margin", 0)
     v.settings().set(_VIEW_SETTING, True)
     v.settings().set(_TAG_SETTING, True)
+    # Dedicated colour scheme: defines the ai.fg/bg/fb.* scopes the renderer
+    # maps cells to (see gen_color_scheme.py). Scoped to this view only, so the
+    # rest of the editor keeps the user's theme. find_resources (plural) returns
+    # the installed path; fall back to the canonical Packages/User path.
+    try:
+        hits = sublime.find_resources("ai_terminal.sublime-color-scheme")
+        if hits:
+            v.settings().set("color_scheme", hits[0])
+        else:
+            v.settings().set("color_scheme",
+                             "Packages/User/ai/ai_terminal.sublime-color-scheme")
+    except Exception:
+        v.settings().set("color_scheme",
+                         "Packages/User/ai/ai_terminal.sublime-color-scheme")
     # NOT read-only: on_text_command swallows insert/left_delete/right_delete/
     # move and forwards them to the PTY. Making the view read-only suppresses
     # keyboard `insert` before the listener fires, so real typing would do
@@ -693,8 +945,52 @@ def _measure(view):
     ex = view.viewport_extent()
     cw = view.em_width() or 7.0
     lh = view.line_height() or 18.0
-    cols = max(20, int(ex[0] / cw))
-    rows = max(4, int(ex[1] / lh))
+    # Width math: three things eat horizontal space -- the gutter (line
+    # numbers), the fold buttons, and the `margin` setting. viewport_extent
+    # already excludes the gutter + fold buttons (they live left of the
+    # viewport -- confirmed: cols drops when line_numbers/fold_buttons turn
+    # on). `margin` is padding INSIDE the viewport (left + right of the text),
+    # so it must be subtracted here, otherwise cols is overestimated by the
+    # margin. margin may be an int (all sides) or [left, top, right, bottom].
+    # The terminal view sets margin=0 (see _terminal_view) so this is normally
+    # a no-op, but keep it for safety in case a setting toggles margin back on.
+    margin = view.settings().get("margin", 0) or 0
+    if isinstance(margin, (list, tuple)):
+        ml = margin[0] if len(margin) > 0 else 0
+        mr = margin[2] if len(margin) > 2 else ml
+    else:
+        ml = mr = margin
+    usable_w = ex[0] - ml - mr
+    # word_wrap=False: ST's horizontal scroll range is (maxlen + 3) * cw -
+    # viewport (clamped at 0), NOT content overflow. The +3 = +1 end-of-line
+    # caret position (ST's layout_extent is (longest_line + 1) * cw) + ~2 chars
+    # of ST end-of-line padding that count toward the scroll range even when
+    # text fits. So cols = int(usable_w / cw) - 3 is required for a zero
+    # horizontal scrollbar; -2 or less still leaves a 1-char sliver.
+    #
+    # We deliberately do NOT use word_wrap=True to shrink the gap: word_wrap
+    # kills the horizontal scrollbar, yes, but it makes any single line that
+    # lands at the wrap threshold (box-drawing chars render slightly wider
+    # than em_width, a stale wide line left over from a shrink, or a
+    # transient overshoot during a TUI frame) soft-wrap to a new visual row,
+    # and one extra row = a full line-height of vertical scroll bar. That is
+    # more disruptive than the ~3c right gap we pay here. The gap is the cost
+    # of a non-wrapping terminal view with zero scrollbars.
+    cols = max(20, int(usable_w / cw) - 3)
+    # Subtract 1 row for a vertical safety margin: int(ex[1]/lh) fills the
+    # viewport EXACTLY (content_h == viewport_h), and ST shows a "solid"
+    # vertical scrollbar (thumb fills the track, won't move) whenever
+    # layout_extent >= viewport -- even when they're exactly equal. Whether
+    # that happens depends on where the TUI's current frame lands on the row
+    # boundary, so the bar appeared intermittently ("sometimes solid, won't
+    # move"). The -1 guarantees content_h < viewport_h by one line, so no
+    # vertical scrollbar ever appears.
+    #
+    # The blank line(s) sometimes visible at the top of the view are NOT from
+    # this calc: ST itself reserves a 1-line top margin, and Claude's TUI
+    # independently leaves text line 1 (and sometimes line 2) blank. Those
+    # stack; neither is ai_terminal's doing.
+    rows = max(4, int(ex[1] / lh) - 1)
     return cols, rows
 
 
@@ -723,15 +1019,79 @@ def _do_render(term):
     term._render_pending = False
     if not term.screen.dirty:
         return
-    # Read snapshot + TUI cursor under one lock acquisition so the caret row
-    # (history offset + screen.y) matches the text we render this frame.
+    # Read structured cells + TUI cursor under one lock acquisition so the caret
+    # row (history offset + screen.y) matches the text we render this frame.
     with term._lock:
-        text = term.screen.snapshot()
-        hist = len(term.screen.history)
-        cy = term.screen.y
-        cx = term.screen.x
+        rows, cy, cx = term.screen.render_cells()
     term.screen.dirty = False
-    view.run_command("ai_terminal_render", {"text": text, "cursor": [hist + cy, cx]})
+    text, regions = _build_text_and_regions(rows)
+    view.run_command("ai_terminal_render",
+                     {"text": text, "cursor": [cy, cx], "regions": regions})
+
+
+def _build_text_and_regions(rows):
+    """Flatten structured rows into the view text + a list of [begin, end, scope]
+    colour regions. Adjacent cells whose attr maps to the same scope are
+    coalesced into one region so add_regions stays cheap. NBSP (U+00A0) that
+    Claude emits to stop wrapping is normalized to a plain space here."""
+    parts = []
+    regs = []
+    offset = 0
+    for cells in rows:
+        run_scope = None
+        run_start = -1
+        for ch, attr in cells:
+            parts.append(ch)
+            scope = _scope_for(attr) if attr else None
+            if scope != run_scope:
+                if run_scope is not None:
+                    regs.append([run_start, offset, run_scope])
+                run_scope = scope
+                run_start = offset
+            offset += 1
+        if run_scope is not None:
+            regs.append([run_start, offset, run_scope])
+        parts.append("\n")
+        offset += 1
+    if parts and parts[-1] == "\n":
+        parts.pop()
+    text = "".join(parts).replace(" ", " ")
+    return text, regs
+
+
+# Per-view set of colour region keys added last frame, so we can erase stale
+# scopes (whose cells scrolled away or changed attr) on the next render.
+_LAST_COLOR_KEYS = {}
+_COLOR_KEY_PREFIX = "ai_term_c_"
+
+
+def _apply_color_regions(view, regs):
+    """Group regions by scope and add them; erase any scope keys we added last
+    frame but did not re-add this frame, so stale colour doesn't linger."""
+    by_scope = {}
+    for begin, end, scope in regs:
+        by_scope.setdefault(scope, []).append(sublime.Region(begin, end))
+    used = set()
+    for scope, rs in by_scope.items():
+        key = _COLOR_KEY_PREFIX + scope
+        # The scheme gives every ai.fb.* scope a solid #000001 background
+        # (off-by-one from the view's #000000 global bg -- ST collapses a rule
+        # bg that EQUALS the global bg to None, which re-triggers the swap; so
+        # #000001, visually indistinguishable from pure black, is used) plus
+        # the text colour as foreground. ST's add_regions only colours the
+        # TEXT when the scope defines BOTH fg and a SOLID bg; with only fg it
+        # swaps, painting the fg as the fill and leaving the text default. So
+        # we keep the fill (DRAW_NO_OUTLINE, no DRAW_NO_FILL): the #000001 fill
+        # is invisible and the foreground renders on the text. DRAW_NO_OUTLINE:
+        # no border around the run.
+        view.add_regions(key, rs, scope=scope, flags=sublime.DRAW_NO_OUTLINE)
+        used.add(key)
+    vid = view.id()
+    last = _LAST_COLOR_KEYS.get(vid, ())
+    for k in last:
+        if k not in used:
+            view.erase_regions(k)
+    _LAST_COLOR_KEYS[vid] = used
 
 
 # ─── debug logging ────────────────────────────────────────────────────────────
@@ -797,6 +1157,39 @@ class AiTerminalViewListener(sublime_plugin.ViewEventListener):
         with _REG_LOCK:
             _TERMINALS.pop(self.view.id(), None)
         threading.Thread(target=term.kill, daemon=True).start()
+
+    # ─── pre-empt ST's internal view.show on focus/hover ───────────────────
+    #
+    # ST's compositor repaints the view on Windows activation messages
+    # (WM_ACTIVATE / WM_KILLFOCUS) and on hover, and briefly paints at a stale
+    # viewport position even though vp is (0,0). The continuous clamp loop
+    # catches the resulting vp drift within ~16ms (1 frame), but the user sees
+    # that 1 frame. These handlers run BEFORE ST's internal repaint on the same
+    # event, so clamping vp here pre-empts the bad paint instead of waiting for
+    # the 16ms tick. Only fires when content fits within 1 line of overflow, so
+    # it never fights the user scrolling up to read scrollback.
+    def _preclamp_vp(self):
+        v = self.view
+        try:
+            if not v or not v.is_valid():
+                return
+            le = v.layout_extent()
+            ve = v.viewport_extent()
+            vp = v.viewport_position()
+            lh = v.line_height() or 12.0
+            if le[1] - ve[1] <= lh and (vp[0] != 0.0 or vp[1] != 0.0):
+                v.set_viewport_position((0.0, 0.0), False)
+        except Exception:
+            pass
+
+    def on_hover(self, point, hover_zone):
+        self._preclamp_vp()
+
+    def on_activated(self):
+        self._preclamp_vp()
+
+    def on_deactivated(self):
+        self._preclamp_vp()
 
 
 class AiTerminalKeyInterceptor(sublime_plugin.EventListener):
@@ -1068,7 +1461,7 @@ class AiTerminalKeypressCommand(sublime_plugin.TextCommand):
 class AiTerminalRenderCommand(sublime_plugin.TextCommand):
     """Replace the whole view with the current screen snapshot (main-thread)."""
 
-    def run(self, edit, text="", cursor=None):
+    def run(self, edit, text="", cursor=None, regions=None):
         view = self.view
         view.set_read_only(False)
         # Only re-pin to the bottom if the user is already near it, so scrolling
@@ -1078,12 +1471,16 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
         lh = view.line_height() or 20
         near_bottom = (vp[1] + ve[1]) >= (view.layout_extent()[1] - lh * 2)
         view.replace(edit, sublime.Region(0, view.size()), text)
+        # Re-apply colour regions every frame: view.replace invalidates the old
+        # regions, and add_regions with the same key replaces what was there.
+        _apply_color_regions(view, regions or [])
         if near_bottom:
+            # Place the ST caret at Claude Code's TUI cursor (screen.y +
+            # history offset, screen.x) so it sits on the > input line you
+            # are typing on, not at EOF. Clamp row/col to the view so a
+            # cursor past the rstripped line end stays on the right line.
+            content_fits = view.layout_extent()[1] <= ve[1] + 0.5
             if cursor is not None:
-                # Place the ST caret at Claude Code's TUI cursor (screen.y +
-                # history offset, screen.x) so it sits on the > input line you
-                # are typing on, not at EOF. Clamp row/col to the view so a
-                # cursor past the rstripped line end stays on the right line.
                 last_row = view.rowcol(view.size())[0]
                 row = min(int(cursor[0]), last_row)
                 line_start = view.text_point(row, 0)
@@ -1092,10 +1489,21 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
                 sel = view.sel()
                 sel.clear()
                 sel.add(sublime.Region(pos, pos))
-                view.show(pos, False)
+                # Only scroll when the content exceeds the viewport. When it
+                # fits, the caret is always visible so view.show has nothing to
+                # do -- but ST still pushes vp to a negative "nice" position and
+                # the clamp yanks it back, which the user sees as a 1-line
+                # up/down shift on every TUI frame (mouse move, cursor blink,
+                # status update). Skipping show() when content fits eliminates
+                # the shift entirely; the clamp below pins vp to 0.
+                if not content_fits:
+                    view.show(pos, False)
             else:
                 view.run_command("move_to", {"to": "eof"})
-                view.show(view.size(), False)
+                if not content_fits:
+                    view.show(view.size(), False)
+            if content_fits:
+                view.set_viewport_position((0.0, 0.0), False)
 
 
 class AiTerminalNukeCommand(sublime_plugin.TextCommand):
@@ -1127,9 +1535,14 @@ class AiTerminalDumpScreenCommand(sublime_plugin.TextCommand):
         with term._lock:
             print(f"[ai_terminal] cursor=({term.screen.x},{term.screen.y}) "
                   f"size=({term.screen.cols}x{term.screen.rows}) "
-                  f"alt={term.screen.alt_screen}")
+                  f"alt={term.screen.alt_screen} "
+                  f"sgr=fg={term.parser._fg} bg={term.parser._bg} "
+                  f"flags={term.parser._flags}")
             for r, row in enumerate(term.screen.grid):
+                ar = term.screen.attrs[r]
+                marks = "".join("*" if a else " " for a in ar)
                 print(f"  {r:2d}|{''.join(row)}|")
+                print(f"     {marks}|  (attrs: * = non-default)")
 
 
 # ─── resize poller + lifecycle ───────────────────────────────────────────────
@@ -1166,15 +1579,73 @@ def _poll_loop():
         _poll_event.wait(_POLL_MS / 1000.0)
 
 
+# ─── viewport clamp ───────────────────────────────────────────────────────────
+#
+# ST's view.show() overshoots to a NEGATIVE viewport y (e.g. vp[1]=-20) when
+# content fits the viewport -- it tries to "nicely" position the caret and
+# overshoots because there's nothing to scroll. Our own render clamps this, but
+# ST ALSO calls view.show internally on view focus/hover -- mouse entering the
+# view bbox triggers it BETWEEN renders. During generation a render clamps it
+# within ~110ms, but when Claude is idle there's no TUI output -> no render ->
+# the -20 persists until the next TUI frame (cursor blink ~500ms), so the user
+# sees the text dip one line for ~500ms then snap back. This loop clamps vp to
+# (0,0) whenever content fits, independent of the render clock, killing the dip
+# within 16ms. It only fires when content fits (le <= ve), so it never fights
+# the user scrolling up to read scrollback when content exceeds the viewport.
+
+_clamp_token = None
+
+
+def _clamp_vp_loop():
+    global _clamp_token
+    try:
+        for _vid, term in list(_TERMINALS.items()):
+            v = term.view
+            if not v or not v.is_valid():
+                continue
+            le = v.layout_extent()
+            ve = v.viewport_extent()
+            vp = v.viewport_position()
+            lh = v.line_height() or 12.0
+            # Tolerate small overflow: when ve briefly shrinks (ST shows a transient
+            # bar / the TUI emits a shorter frame), le can exceed ve by a few px and
+            # the strict `le <= ve + 0.5` condition fails, leaving vp drifted to
+            # e.g. (0, 4) for ~200ms until ve recovers -- the user sees a long
+            # down-dip. Clamping vp=0 whenever content exceeds the viewport by <= 1
+            # line height kills that dip (at most the bottom ~1 line is briefly
+            # clipped, which is far less jarring than a 200ms shift). When content
+            # exceeds by more (the user scrolled up to read scrollback), do NOT
+            # clamp -- let vp stay where the user scrolled.
+            if le[1] - ve[1] <= lh and (vp[0] != 0.0 or vp[1] != 0.0):
+                v.set_viewport_position((0.0, 0.0), False)
+    except Exception as e:
+        print(f"[ai_terminal] clamp loop error: {e}")
+    _clamp_token = sublime.set_timeout(_clamp_vp_loop, 16)
+
+
 def plugin_loaded():
     if not _PTY_OK:
         print("[ai_terminal] ConPTY unavailable; commands will report the error.")
     _poll_event.clear()
     _ensure_poller()
+    global _clamp_token
+    if _clamp_token:
+        try:
+            sublime.cancel_timeout(_clamp_token)
+        except Exception:
+            pass
+    _clamp_token = sublime.set_timeout(_clamp_vp_loop, 16)
     print("[ai_terminal] loaded")
 
 
 def plugin_unloaded():
+    global _clamp_token
+    if _clamp_token:
+        try:
+            sublime.cancel_timeout(_clamp_token)
+        except Exception:
+            pass
+        _clamp_token = None
     with _REG_LOCK:
         items = list(_TERMINALS.items())
         _TERMINALS.clear()

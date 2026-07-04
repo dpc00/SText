@@ -1,0 +1,5 @@
+[
+    { "caption": "View: Toggle Gutter", "command": "ai_toggle_gutter" },
+    { "caption": "View: Toggle Line Numbers", "command": "ai_toggle_line_numbers" },
+    { "caption": "View: Toggle Fold Buttons", "command": "ai_toggle_fold_buttons" }
+]
