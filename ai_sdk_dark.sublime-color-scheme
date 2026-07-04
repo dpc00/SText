@@ -1,0 +1,14 @@
+{
+    "name": "AI SDK Dark",
+    "variables": {},
+    "globals": {
+        "background": "#000000",
+        "foreground": "#d8dee9",
+        "caret": "#d8dee9",
+        "selection": "#2d4f67",
+        "line_highlight": "#0d0d0d",
+        "gutter": "#000000",
+        "gutter_foreground": "#4c566a"
+    },
+    "rules": []
+}

@@ -385,6 +385,58 @@ def _rstrip_cells(cells):
     return cells[:end]
 
 
+# ─── plugin settings (ai_terminal.sublime-settings) ──────────────────────────
+# User-tunable knobs read from a settings file so they can be changed without
+# editing source: scrollback history size (the minimap-fill knob -- retune by
+# eye against the minimap) and min/max terminal columns (floor/ceiling on the
+# auto-sized cols). A settings-change callback swaps the live deques; the resize
+# poller picks up new column bounds on its next tick (~750ms), so edits apply
+# without a plugin reload (which would tear down the PTY).
+_SETTINGS_NAME = "ai_terminal.sublime-settings"
+_settings = None  # sublime.Settings; (re)bound in plugin_loaded
+
+_DEFAULT_SCROLLBACK = 300
+_DEFAULT_MIN_COLS = 20
+
+
+def _scrollback_size():
+    s = _settings or sublime.load_settings(_SETTINGS_NAME)
+    try:
+        return max(0, int(s.get("scrollback_history_size", _DEFAULT_SCROLLBACK)))
+    except (TypeError, ValueError):
+        return _DEFAULT_SCROLLBACK
+
+
+def _cols_bounds():
+    s = _settings or sublime.load_settings(_SETTINGS_NAME)
+    try:
+        mn = max(1, int(s.get("min_columns", _DEFAULT_MIN_COLS)))
+    except (TypeError, ValueError):
+        mn = _DEFAULT_MIN_COLS
+    mx_raw = s.get("max_columns", None)
+    mx = None
+    if mx_raw is not None:
+        try:
+            mx = max(mn, int(mx_raw))
+        except (TypeError, ValueError):
+            mx = None
+    return mn, mx
+
+
+def _on_settings_change():
+    """Live-apply a settings edit: swap each live terminal's history deque to
+    the new cap. Column bounds are picked up by the resize poller's next
+    _measure (~750ms), so nothing to do here for cols."""
+    cap = _scrollback_size()
+    with _REG_LOCK:
+        terms = list(_TERMINALS.values())
+    for t in terms:
+        try:
+            t.screen.set_history_cap(cap)
+        except Exception as e:
+            print(f"[ai_terminal] set_history_cap failed: {e}")
+
+
 # ─── _Screen: cursor-aware grid ──────────────────────────────────────────────
 # Cells carry a packed colour attr alongside the char; the renderer coalesces
 # equal-attr runs into add_regions. The cursor-aware layout is what removes the
@@ -402,12 +454,17 @@ class _Screen:
         self.grid = [[_BLANK] * self.cols for _ in range(self.rows)]
         # Per-cell packed colour attr, parallel to grid. 0 = default (no region).
         self.attrs = [[0] * self.cols for _ in range(self.rows)]
-        # Scrollback: rows that scroll off the top are captured here, capped at
-        # 600. Larger caps make the ST view sluggish to re-render and break
-        # scroll-back; 600 is the chosen balance. Rendered above the active grid.
-        # Stored as rstripped [(ch, attr), ...] cell-lists so scrollback keeps
-        # its colour (a plain string would lose the attrs).
-        self.history = collections.deque(maxlen=600)
+        # Scrollback: rows that scroll off the top are captured here. The cap
+        # is a USER setting (ai_terminal.sublime-settings -> scrollback_history_size),
+        # default 300, retuned by eye against the minimap. FIXED in the sense
+        # that it does NOT auto-size on window resize (auto-sizing trimmed
+        # history on shrink and looked buggy; a large safety deque wasn't
+        # worth the memory) -- but the user can change the setting live and
+        # set_history_cap swaps the deque. 300 fills the minimap at font 14 /
+        # 685px viewport. Rendered above the active grid. Stored as rstripped
+        # [(ch, attr), ...] cell-lists so scrollback keeps its colour (a plain
+        # string would lose the attrs).
+        self.history = collections.deque(maxlen=_scrollback_size())
         self.saved = (0, 0)
         self.alt_screen = False
         self.dirty = True
@@ -448,6 +505,17 @@ class _Screen:
         self.history.clear()
         self.x = self.y = 0
         self.dirty = True
+
+    def set_history_cap(self, cap):
+        """Swap the scrollback deque to a new maxlen, preserving contents
+        (trims oldest if smaller). Called from the settings-change callback
+        when the user edits scrollback_history_size -- NOT from resize, so a
+        window shrink does not silently drop history (the bug that got
+        auto-sizing reverted)."""
+        cap = max(0, int(cap))
+        if cap == self.history.maxlen:
+            return
+        self.history = collections.deque(self.history, maxlen=cap)
 
     def _scroll_up(self):
         popped = [(self.grid[0][c], self.attrs[0][c]) for c in range(self.cols)]
@@ -552,27 +620,37 @@ class _Screen:
     def render_cells(self):
         """Return (rows, cy, cx) for rendering.
 
-        rows is a list of [(ch, attr), ...] cell-lists: the active grid only
-        (scrollback history is NOT rendered -- see below). Each grid row is
+        rows is a list of [(ch, attr), ...] cell-lists. Each grid row is
         rstripped of trailing default-blank cells, EXCEPT the cursor row,
         which keeps cells 0..x-1 and rstrips only the tail beyond the cursor --
         mirroring the old snapshot rstrip so the caret col stays valid. cy/cx
-        are the cursor position in grid row space.
+        are the cursor position in the rendered row space (history offset +
+        grid y when history is rendered; grid y otherwise).
 
         NBSP normalization is left to the text builder.
 
-        History is captured (self.history, deque maxlen=600) but deliberately
-        NOT included in the rendered rows: Claude's TUI runs on the alt screen
-        and redraws full frames in place, so any pyte scroll pushes a row into
-        history. Rendering history + grid made the view grow past the viewport
-        whenever the TUI scrolled (e.g. on typing) -> a "solid" vertical
-        scrollbar that shifts a line and covers the bottom status row. With
-        history excluded, the view is always exactly `self.rows` lines, so it
-        can never exceed the viewport and never scrolls. (The captured history
-        is kept in case a future scrollback view wants it; it's cheap.)
+        Whether scrollback history is prepended depends on the renderer mode,
+        gated on self.alt_screen (set by DECSET/DECRST 1049):
+
+        - Classic main-screen renderer (alt_screen False, forced by
+          CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1): Claude Code writes
+          scrolling output to the primary buffer. pyte scrolls genuinely as
+          new output arrives, so history is REAL scrollback. Render
+          history + grid so the full conversation is visible and ST folding
+          works on real scrolling text. cy shifts by len(history) so the
+          caret lands on the right line.
+
+        - Fullscreen alt-screen renderer (alt_screen True, the default when
+          the env var is unset): Claude Code paints a fixed ~rows matrix on
+          the alt screen and redraws full frames in place, so any pyte scroll
+          pushes a row into history spuriously (e.g. on typing). Rendering
+          history + grid made the view grow past the viewport -> a "solid"
+          vertical scrollbar that shifts a line and covers the bottom status
+          row. Grid-only keeps the view exactly `self.rows` lines -> never
+          exceeds the viewport, never scrolls, no shift.
         """
-        rows = []
-        cy = self.y
+        grid_rows = []
+        cy_in_grid = self.y
         cx = self.x
         for i in range(self.rows):
             srow = self.grid[i]
@@ -585,11 +663,14 @@ class _Screen:
                 x = max(self.x, 0)
                 body = [(srow[c], arow[c]) for c in range(min(x, self.cols))]
                 tail = [(srow[c], arow[c]) for c in range(x, self.cols)]
-                rows.append(body + _rstrip_cells(tail))
+                grid_rows.append(body + _rstrip_cells(tail))
             else:
                 cells = [(srow[c], arow[c]) for c in range(self.cols)]
-                rows.append(_rstrip_cells(cells))
-        return rows, cy, cx
+                grid_rows.append(_rstrip_cells(cells))
+        if self.alt_screen:
+            return grid_rows, cy_in_grid, cx
+        hist = list(self.history)
+        return hist + grid_rows, len(hist) + cy_in_grid, cx
 
 
 # ─── _Parser: minimal ANSI state machine (Claude ratatui subset) ─────────────
@@ -834,6 +915,15 @@ class _Terminal:
         self._reader = None
         self._last_cols = screen.cols
         self._last_rows = screen.rows
+        # Auto-follow model (Terminus-style): scroll to the bottom to show new
+        # Claude output whenever _auto_follow is True. It starts True, flips
+        # False when the user scrolls up to read scrollback (detected in the
+        # render by vp drifting below the position we last pinned), and
+        # re-engages when the user scrolls back near the bottom or types. Fresh
+        # per _spawn, so a restart opens at the prompt (bottom) instead of
+        # sticking at the top showing the banner.
+        self._auto_follow = True
+        self._last_vp_y = 0.0
 
     @classmethod
     def from_id(cls, view_id):
@@ -938,6 +1028,15 @@ def _terminal_view(window):
     # nonzero margin shows up as a horizontal scrollbar. Terminals don't need
     # text padding anyway. See _measure for the width calc.
     v.settings().set("margin", 0)
+    # draw_centered=False and a pinned scroll_past_end=False isolate the
+    # terminal from the user's global scroll_past_end preference (which they
+    # may enable for code views). A fixed-height TUI has no use for
+    # scroll-past-end anyway. NOTE: is_widget=True was tried (matching
+    # Terminus) to stop ST's on-activate viewport reposition, but it makes ST
+    # hide the main menu while the terminal is focused -- unacceptable, so it
+    # is NOT set.
+    v.settings().set("draw_centered", False)
+    v.settings().set("scroll_past_end", False)
     v.settings().set(_VIEW_SETTING, True)
     v.settings().set(_TAG_SETTING, True)
     # Instant resize on gutter / line_numbers / fold_buttons / margin toggles.
@@ -1010,7 +1109,13 @@ def _measure(view):
     # and one extra row = a full line-height of vertical scroll bar. That is
     # more disruptive than the ~3c right gap we pay here. The gap is the cost
     # of a non-wrapping terminal view with zero scrollbars.
-    cols = max(20, int(usable_w / cw) - 3)
+    # Floor/ceiling from settings (ai_terminal.sublime-settings ->
+    # min_columns / max_columns). The -3 no-horizontal-scrollbar math still
+    # applies inside these bounds; max_columns=null means no ceiling.
+    mn, mx = _cols_bounds()
+    cols = max(mn, int(usable_w / cw) - 3)
+    if mx is not None:
+        cols = min(mx, cols)
     # Subtract 1 row for a vertical safety margin: int(ex[1]/lh) fills the
     # viewport EXACTLY (content_h == viewport_h), and ST shows a "solid"
     # vertical scrollbar (thumb fills the track, won't move) whenever
@@ -1164,22 +1269,37 @@ class AiTerminalViewListener(sublime_plugin.ViewEventListener):
         if command == "insert":
             chars = (args or {}).get("characters", "")
             if chars:
+                term._auto_follow = True
+                _scroll_to_bottom(self.view)
+                term._last_vp_y = self.view.viewport_position()[1]
                 # Enter in ST is an insert of "\n"; TUIs expect CR.
                 term.send_string("\r" if chars == "\n" else chars)
             return ("ai_terminal_noop", {})
         if command == "left_delete":
+            term._auto_follow = True
+            _scroll_to_bottom(self.view)
+            term._last_vp_y = self.view.viewport_position()[1]
             term.send_string("\x7f")
             return ("ai_terminal_noop", {})
         if command == "right_delete":
+            term._auto_follow = True
+            _scroll_to_bottom(self.view)
+            term._last_vp_y = self.view.viewport_position()[1]
             term.send_string("\x1b[3~")
             return ("ai_terminal_noop", {})
         if command == "move":
             by = (args or {}).get("by")
             fwd = (args or {}).get("forward", False)
             if by == "characters":
+                term._auto_follow = True
+                _scroll_to_bottom(self.view)
+                term._last_vp_y = self.view.viewport_position()[1]
                 term.send_string("\x1b[C" if fwd else "\x1b[D")
                 return ("ai_terminal_noop", {})
             if by == "lines":
+                term._auto_follow = True
+                _scroll_to_bottom(self.view)
+                term._last_vp_y = self.view.viewport_position()[1]
                 term.send_string("\x1b[B" if fwd else "\x1b[A")
                 return ("ai_terminal_noop", {})
         return None
@@ -1279,6 +1399,16 @@ def _spawn(window, path):
     cols, rows = _measure(view)
     env = dict(os.environ)
     env["CLAUDE_CODE_FORCE_INTERACTIVE"] = "1"
+    # Force the classic main-screen renderer (no alternate-screen fullscreen
+    # TUI). Claude Code's default fullscreen mode paints a fixed ~60-row matrix
+    # on the alt screen, bypassing terminal scrollback -- so only the last
+    # screenful of conversation is ever visible and ST folding damages the
+    # matrix. The classic renderer writes scrolling output to the primary
+    # buffer, where our pyte screen + history deque capture the full
+    # conversation and ST folding works on real scrolling text. Added in
+    # Claude Code v2.1.132; takes precedence over CLAUDE_CODE_NO_FLICKER and
+    # the tui setting. See https://code.claude.com/docs/en/env-vars
+    env["CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN"] = "1"
     argv = ["cmd", "/c", "ollama", "launch", "claude"]
     pty = _Pty(argv, path, cols, rows, env)
     try:
@@ -1467,6 +1597,17 @@ def _translate_key(key, ctrl=False, alt=False, shift=False):
     return _get_key_code(key)
 
 
+def _scroll_to_bottom(view):
+    """Jump the viewport to the bottom of the content so the prompt line +
+    caret are visible. Called on user input so typing brings the user back to
+    the prompt after scrolling up to read scrollback (standard terminal
+    behavior). No-op when content fits the viewport (vp is already at 0)."""
+    le = view.layout_extent()
+    ve = view.viewport_extent()
+    if le[1] > ve[1]:
+        view.set_viewport_position((0.0, le[1] - ve[1]), False)
+
+
 class AiTerminalKeypressCommand(sublime_plugin.TextCommand):
     """Forward a physical key (bound in Default.sublime-keymap) to the PTY.
 
@@ -1489,6 +1630,9 @@ class AiTerminalKeypressCommand(sublime_plugin.TextCommand):
                 return
         code = _translate_key(key, ctrl=ctrl, alt=alt, shift=shift)
         if code:
+            term._auto_follow = True
+            _scroll_to_bottom(self.view)
+            term._last_vp_y = self.view.viewport_position()[1]
             term.send_string(code)
 
 
@@ -1508,36 +1652,61 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
         # Re-apply colour regions every frame: view.replace invalidates the old
         # regions, and add_regions with the same key replaces what was there.
         _apply_color_regions(view, regions or [])
-        if near_bottom:
-            # Place the ST caret at Claude Code's TUI cursor (screen.y +
-            # history offset, screen.x) so it sits on the > input line you
-            # are typing on, not at EOF. Clamp row/col to the view so a
-            # cursor past the rstripped line end stays on the right line.
-            content_fits = view.layout_extent()[1] <= ve[1] + 0.5
-            if cursor is not None:
-                last_row = view.rowcol(view.size())[0]
-                row = min(int(cursor[0]), last_row)
-                line_start = view.text_point(row, 0)
-                line_end = view.line(line_start).b
-                pos = min(line_start + int(cursor[1]), line_end)
-                sel = view.sel()
-                sel.clear()
-                sel.add(sublime.Region(pos, pos))
-                # Only scroll when the content exceeds the viewport. When it
-                # fits, the caret is always visible so view.show has nothing to
-                # do -- but ST still pushes vp to a negative "nice" position and
-                # the clamp yanks it back, which the user sees as a 1-line
-                # up/down shift on every TUI frame (mouse move, cursor blink,
-                # status update). Skipping show() when content fits eliminates
-                # the shift entirely; the clamp below pins vp to 0.
-                if not content_fits:
-                    view.show(pos, False)
-            else:
-                view.run_command("move_to", {"to": "eof"})
-                if not content_fits:
-                    view.show(view.size(), False)
-            if content_fits:
-                view.set_viewport_position((0.0, 0.0), False)
+        # Always reposition the ST caret at Claude Code's TUI cursor (screen.y +
+        # history offset, screen.x) so it sits on the > input line you are
+        # typing on, not at EOF -- even when the user has scrolled up to read
+        # scrollback (the caret is then off-screen below, correct in content
+        # but not yanked into view). Only scroll to show it when the user is
+        # already near the bottom, so scrolling up to read scrollback isn't
+        # yanked back on the next 40ms render. User input handlers explicitly
+        # scroll to the bottom before forwarding the key (see
+        # _scroll_to_bottom), so typing brings the viewport back to the prompt
+        # -- standard terminal behavior.
+        content_fits = view.layout_extent()[1] <= ve[1] + 0.5
+        # Auto-follow (Terminus-style): scroll to the bottom on new Claude
+        # output when _auto_follow is True. The flag flips False when the user
+        # scrolls up to read scrollback (vp drifts below where we last pinned)
+        # and re-engages when they scroll back near the bottom or type. This
+        # replaces the old near_bottom-only gate, which never followed on a
+        # fresh restart (vp starts at the top so near_bottom was False) and
+        # stopped following the moment the viewport drifted a couple of lines
+        # above the bottom -- so Claude's output appeared below the fold and
+        # the user said "our terminal is not listening to Claude."
+        term = _Terminal.from_id(view.id())
+        if term is not None:
+            if vp[1] < term._last_vp_y - lh * 1.5:
+                term._auto_follow = False
+            if near_bottom:
+                term._auto_follow = True
+        do_follow = (term is not None and term._auto_follow) if term is not None else near_bottom
+        if cursor is not None:
+            last_row = view.rowcol(view.size())[0]
+            row = min(int(cursor[0]), last_row)
+            line_start = view.text_point(row, 0)
+            line_end = view.line(line_start).b
+            pos = min(line_start + int(cursor[1]), line_end)
+            sel = view.sel()
+            sel.clear()
+            sel.add(sublime.Region(pos, pos))
+            # Pin to the exact bottom (not view.show's "nice" position) when
+            # following and content exceeds the viewport. When content fits,
+            # the caret is always visible and we must NOT call show -- ST
+            # pushes vp to a negative "nice" position and the clamp yanks it
+            # back, which the user sees as a 1-line up/down shift on every TUI
+            # frame. Skipping show() when content fits eliminates the shift;
+            # the clamp below pins vp to 0.
+            if do_follow and not content_fits:
+                _scroll_to_bottom(view)
+                if term is not None:
+                    term._last_vp_y = view.viewport_position()[1]
+        else:
+            view.run_command("move_to", {"to": "eof"})
+            if do_follow and not content_fits:
+                _scroll_to_bottom(view)
+                if term is not None:
+                    term._last_vp_y = view.viewport_position()[1]
+        if content_fits:
+            view.set_viewport_position((0.0, 0.0), False)
 
 
 class AiTerminalNukeCommand(sublime_plugin.TextCommand):
@@ -1662,7 +1831,11 @@ def plugin_loaded():
         print("[ai_terminal] ConPTY unavailable; commands will report the error.")
     _poll_event.clear()
     _ensure_poller()
-    global _clamp_token
+    global _clamp_token, _settings
+    # Bind the settings object and live-apply edits (the callback fires on the
+    # main thread right after a settings file write).
+    _settings = sublime.load_settings(_SETTINGS_NAME)
+    _settings.add_on_change("ai_terminal", _on_settings_change)
     if _clamp_token:
         try:
             sublime.cancel_timeout(_clamp_token)
@@ -1673,7 +1846,12 @@ def plugin_loaded():
 
 
 def plugin_unloaded():
-    global _clamp_token
+    global _clamp_token, _settings
+    if _settings is not None:
+        try:
+            _settings.clear_on_change("ai_terminal")
+        except Exception:
+            pass
     if _clamp_token:
         try:
             sublime.cancel_timeout(_clamp_token)
