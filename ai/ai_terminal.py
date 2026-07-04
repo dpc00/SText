@@ -905,6 +905,26 @@ def _vwrite(view, text):
     sublime.set_timeout(_do, 0)
 
 
+def _trigger_resize_for(vid):
+    """Immediately re-measure and resize the terminal for the given view id.
+    Used by the settings().add_on_change callbacks so that toggling the gutter,
+    line numbers, fold buttons, or margin resizes the PTY at once instead of
+    waiting up to _POLL_MS (750ms) for the poller to notice."""
+    with _REG_LOCK:
+        term = _TERMINALS.get(vid)
+    if term is None:
+        return
+    view = term.view
+    if not view or not view.is_valid():
+        return
+    try:
+        cols, rows = _measure(view)
+        if (cols, rows) != (term._last_cols, term._last_rows):
+            term.resize(cols, rows)
+    except Exception as e:
+        print(f"[ai_terminal] on_change resize error: {e}")
+
+
 def _terminal_view(window):
     v = window.new_file()
     v.set_name(_VIEW_NAME)
@@ -920,6 +940,20 @@ def _terminal_view(window):
     v.settings().set("margin", 0)
     v.settings().set(_VIEW_SETTING, True)
     v.settings().set(_TAG_SETTING, True)
+    # Instant resize on gutter / line_numbers / fold_buttons / margin toggles.
+    # add_on_change fires on the main thread right after the setting changes,
+    # but viewport_extent() may not yet reflect the new gutter width (ST lays
+    # out asynchronously), so defer the measure+resize to the next main-thread
+    # tick. Without this, the poller catches the change up to 750ms later and
+    # the TUI keeps the old column count (text gets truncated / scrollbars
+    # appear) for that lag.
+    vid = v.id()
+
+    def _on_layout_setting_change():
+        sublime.set_timeout(lambda: _trigger_resize_for(vid), 0)
+
+    for _key in ("gutter", "line_numbers", "fold_buttons", "margin"):
+        v.settings().add_on_change(_key, _on_layout_setting_change)
     # Dedicated colour scheme: defines the ai.fg/bg/fb.* scopes the renderer
     # maps cells to (see gen_color_scheme.py). Scoped to this view only, so the
     # rest of the editor keeps the user's theme. find_resources (plural) returns
