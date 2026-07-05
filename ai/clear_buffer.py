@@ -19,7 +19,7 @@ def _terminal_for(view):
     """Return the Terminus Terminal for view, or None if Terminus is absent.
 
     Imported lazily so a missing/removed Terminus package only breaks this
-    one command, instead of failing the whole User package load (loader.py
+    one command, instead of failing the whole User package load (PluginLoader.py
     imports this module at top level).
     """
     try:

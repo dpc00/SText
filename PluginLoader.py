@@ -58,6 +58,11 @@ from User.ai.panic_dialog import (
 from User.ai.capture_idea import CaptureIdeaCommand, OpenIdeaInboxCommand
 from User.ai.claude_code_here import ClaudeCodeHereCommand
 from User.ai.clear_buffer import ClearBufferCommand
+from User.ai.view_toggles import (
+    AiToggleGutterCommand,
+    AiToggleLineNumbersCommand,
+    AiToggleFoldButtonsCommand,
+)
 from User.logs.ai_logger import AiCaptureScrollPositionCommand
 from User.launchers.pb_flask_launcher import PbFlaskLauncherCommand
 from User.launchers.pb_flask_launcher_silent import PbFlaskSilentCommand
@@ -82,7 +87,7 @@ def plugin_loaded():
         try:
             importlib.import_module(mod_name).plugin_loaded()
         except Exception as e:
-            print(f"loader: {mod_name}.plugin_loaded failed: {e}")
+            print(f"PluginLoader: {mod_name}.plugin_loaded failed: {e}")
 
 
 def plugin_unloaded():
@@ -91,7 +96,7 @@ def plugin_unloaded():
         try:
             importlib.import_module(mod_name).plugin_unloaded()
         except Exception as e:
-            print(f"loader: {mod_name}.plugin_unloaded failed: {e}")
+            print(f"PluginLoader: {mod_name}.plugin_unloaded failed: {e}")
 
 
 # Every subfolder module that defines plugin_loaded(). ST only calls the

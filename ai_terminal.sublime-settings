@@ -1,0 +1,53 @@
+{
+    // ai_terminal — ConPTY terminal for Sublime Text (currently Claude Code).
+    // Edit this file to retune without source edits; changes apply live
+    // (no plugin reload needed): the history deque is swapped in place and
+    // the resize poller picks up new column bounds within ~750ms.
+
+    // Number of lines kept in scrollback history (the `history` deque).
+    // This is the minimap-fill knob: at font 14 / 685px viewport, 300 fills
+    // the minimap. Retune by eye against the minimap when you change the
+    // window height or font size. Decreasing it may improve performance.
+    // Live: changing this swaps the live deque (trims oldest if smaller).
+    "scrollback_history_size": 300,
+
+    // Floor and ceiling on the auto-sized terminal width in characters.
+    // cols is computed from the viewport width; min_columns is the lower
+    // bound, max_columns caps it (null = no cap). The renderer's no-horizontal-
+    // scrollbar math (cols = int(usable_w/cw) - 3) still applies inside these
+    // bounds. Live: the resize poller picks up new bounds within ~750ms.
+    "min_columns": 20,
+    "max_columns": null,
+
+    // argv list used to spawn the terminal program. Default runs Claude Code
+    // via the Ollama local proxy (127.0.0.1:11434, glm-5.2:cloud). Swap to e.g.
+    //   ["claude"]                          -- Claude Code direct against Anthropic API
+    //   ["cmd", "/c", "opencode"]            -- OpenCode instead of Claude Code
+    //   ["cmd", "/c", "claude"]              -- Claude Code on Windows (native cmd shim)
+    // Applied on the next _spawn: close and reopen the ai_terminal tab to pick up.
+    "launch_command": ["cmd", "/c", "ollama", "launch", "claude"],
+
+    // Env vars applied to the spawned terminal process (merged on top of
+    // os.environ). Swap or add agent-specific vars here without editing the
+    // plugin. Applied on the next _spawn: close and reopen the ai_terminal
+    // tab to pick up. Keys and values must be strings.
+    //
+    // CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 -- force the classic main-screen
+    // renderer (no alternate-screen fullscreen TUI). Claude Code's default
+    // fullscreen mode paints a fixed ~60-row matrix on the alt screen,
+    // bypassing terminal scrollback -- so only the last screenful of
+    // conversation is ever visible and ST folding damages the matrix. The
+    // classic renderer writes scrolling output to the primary buffer, where
+    // our pyte screen + history deque capture the full conversation and ST
+    // folding works on real scrolling text. Added in Claude Code v2.1.132;
+    // takes precedence over CLAUDE_CODE_NO_FLICKER and the tui setting.
+    // See https://code.claude.com/docs/en/env-vars
+    //
+    // CLAUDE_CODE_AI_TERMINAL_SENTINEL -- propagation marker proving the
+    // spawn_env dict reaches the child process. Harmless; drop it if you
+    // don't need the test.
+    "spawn_env": {
+        "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
+        "CLAUDE_CODE_AI_TERMINAL_SENTINEL": "propagated"
+    }
+}

@@ -33,7 +33,7 @@ import threading
 import sublime
 import sublime_plugin
 
-# ─── ctypes ConPTY binding (guarded: a failure must not crash loader.py) ─────
+# ─── ctypes ConPTY binding (guarded: a failure must not crash PluginLoader.py) ─────
 
 _PTY_OK = False
 _k32 = None
@@ -397,6 +397,11 @@ _settings = None  # sublime.Settings; (re)bound in plugin_loaded
 
 _DEFAULT_SCROLLBACK = 300
 _DEFAULT_MIN_COLS = 20
+_DEFAULT_LAUNCH_COMMAND = ["cmd", "/c", "ollama", "launch", "claude"]
+_DEFAULT_SPAWN_ENV = {
+    "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
+    "CLAUDE_CODE_AI_TERMINAL_SENTINEL": "propagated",
+}
 
 
 def _scrollback_size():
@@ -421,6 +426,34 @@ def _cols_bounds():
         except (TypeError, ValueError):
             mx = None
     return mn, mx
+
+
+def _launch_command():
+    """argv list used to spawn the terminal program. Read from the
+    `launch_command` setting so the agent/gateway can be swapped (e.g. to
+    `["claude"]` for direct Anthropic API, or `["opencode"]`) without editing
+    the plugin. Falls back to _DEFAULT_LAUNCH_COMMAND on any shape error.
+    Applied on the next _spawn (reopen the ai_terminal tab)."""
+    s = _settings or sublime.load_settings(_SETTINGS_NAME)
+    cmd = s.get("launch_command", _DEFAULT_LAUNCH_COMMAND)
+    if not isinstance(cmd, list) or not all(isinstance(a, str) for a in cmd):
+        return _DEFAULT_LAUNCH_COMMAND
+    return list(cmd)
+
+
+def _spawn_env():
+    """Dict of env vars to apply to the spawned terminal process (merged on
+    top of os.environ). Read from the `spawn_env` setting so agent-specific
+    env can be swapped alongside `launch_command` without editing the plugin.
+    Keys and values must be strings; falls back to _DEFAULT_SPAWN_ENV on any
+    shape error. Applied on the next _spawn (reopen the ai_terminal tab)."""
+    s = _settings or sublime.load_settings(_SETTINGS_NAME)
+    ev = s.get("spawn_env", _DEFAULT_SPAWN_ENV)
+    if not isinstance(ev, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in ev.items()
+    ):
+        return dict(_DEFAULT_SPAWN_ENV)
+    return dict(ev)
 
 
 def _on_settings_change():
@@ -1397,19 +1430,13 @@ def _spawn(window, path):
     view = _terminal_view(window)
     window.focus_view(view)
     cols, rows = _measure(view)
+    # Agent-specific env (defaults + rationale) live in the `spawn_env` setting
+    # so they can be swapped alongside `launch_command`. See
+    # ai_terminal.sublime-settings for the per-var rationale.
     env = dict(os.environ)
-    env["CLAUDE_CODE_FORCE_INTERACTIVE"] = "1"
-    # Force the classic main-screen renderer (no alternate-screen fullscreen
-    # TUI). Claude Code's default fullscreen mode paints a fixed ~60-row matrix
-    # on the alt screen, bypassing terminal scrollback -- so only the last
-    # screenful of conversation is ever visible and ST folding damages the
-    # matrix. The classic renderer writes scrolling output to the primary
-    # buffer, where our pyte screen + history deque capture the full
-    # conversation and ST folding works on real scrolling text. Added in
-    # Claude Code v2.1.132; takes precedence over CLAUDE_CODE_NO_FLICKER and
-    # the tui setting. See https://code.claude.com/docs/en/env-vars
-    env["CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN"] = "1"
-    argv = ["cmd", "/c", "ollama", "launch", "claude"]
+    env.update(_spawn_env())
+
+    argv = _launch_command()
     pty = _Pty(argv, path, cols, rows, env)
     try:
         pty.start()

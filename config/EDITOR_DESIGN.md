@@ -257,7 +257,7 @@ json5). Writes via the position-based set/delete/add path above. Vendored
 json5 + sly into `config/lib/` (patched json5: `import regex as re` → `import re`
 and dropped `\p{Pc}\p{Mn}\p{Mc}` from the NAME pattern — `regex`-lib-only Unicode
 properties that ST config keys never use; `regex` ships only a cp312 `.pyd` so
-can't run in ST's 3.8). Wired into `loader.py` + `Default.sublime-commands`
+can't run in ST's 3.8). Wired into `PluginLoader.py` + `Default.sublime-commands`
 ("Sublime Settings Editor" → `settings_editor_open`).
 
 **Q4 — Where the fact base lives.** In-ST Python HTTP server + browser UI (the
