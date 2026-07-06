@@ -47,6 +47,7 @@
     // spawn_env dict reaches the child process. Harmless; drop it if you
     // don't need the test.
     "spawn_env": {
+        "OLLAMA_MODEL":"minimax-m3:cloud",
         "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
         "CLAUDE_CODE_AI_TERMINAL_SENTINEL": "propagated"
     }
