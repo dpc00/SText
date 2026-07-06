@@ -292,10 +292,45 @@ class _Bridge:
 
 
 def plugin_loaded():
-    pass
+    # Tab title spinner was removed (see _start_spinner comment). On
+    # reload, we need to also stop any *stale* _animate loops from
+    # previous plugin instances that are still ticking in ST's
+    # set_timeout queue. ST has no API to cancel queued callbacks, so
+    # we patch the old module globals to make their _animate a no-op
+    # and _working False. The stale lambdas (still in the queue from
+    # previous reloads) will then call the no-op and stop writing
+    # spinner characters to the view's name.
+    import gc
+    import sys as _sys
+    current = _sys.modules.get(__name__)
+    funcs = [obj for obj in gc.get_objects()
+             if callable(obj) and hasattr(obj, "__module__")
+             and obj.__module__ == "User.ai.ai_sdk"
+             and obj.__name__ == "<lambda>"]
+    for lam in funcs:
+        g = lam.__globals__
+        if g is current.__dict__:
+            continue  # don't patch our own globals
+        def _no_op(window, _g=g):
+            return
+        g["_animate"] = _no_op
+        g["_working"] = False
+        g["_spinner_frame"] = 0
+    # Reset the SDK view's name to the canonical label.
+    for w in sublime.windows():
+        for v in w.views():
+            if v.settings().get("ai_sdk_view"):
+                v.set_name(_VIEW_NAME)
+                break
 
 
 def plugin_unloaded():
+    # Reset the SDK view's name on unload too.
+    for w in sublime.windows():
+        for v in w.views():
+            if v.settings().get("ai_sdk_view"):
+                v.set_name(_VIEW_NAME)
+                break
     # Deliberately do NOT stop the bridge or socket server on unload.
     # They hold the conversation history (`messages` list) and the MCP
     # session state. Killing them on every plugin reload (which can
@@ -428,33 +463,61 @@ def _vwrite(view, text):
 
 
 # ─── Spinner ──────────────────────────────────────────────────────────────────
+#
+# Note: the tab title spinner was REMOVED. It cycled spinner characters
+# (⠋⠙⠹…) into the view's `name` field, which is what ST shows in the
+# tab strip. The user found this actively harmful — the moving char
+# makes the tab hard to locate visually among the other static-named
+# tabs. The view name is now set once at creation to "Ai (SDK)" and
+# stays there. Activity is still indicated by:
+#   1. the per-turn @done footer with timing/token info
+#   2. the ccstatusline phantom below the input (model, cost, ctx %)
+# The _start_spinner/_stop_spinner functions are kept as no-ops so
+# callers don't break, but the view name is not touched.
+#
+# Why no-ops rather than deletion: a half-dozen code paths call
+# _start_spinner/_stop_spinner; touching them all is a wider change
+# than the user asked for. Removing the side effect (the set_name
+# inside _animate) gets the user's win without the risk of breaking
+# the call sites.
+#
+# Implementation note on the re-resolve: _animate_recheck looks up
+# the *current* module's _animate and _working at call time. This
+# way, stale set_timeout lambdas from previous plugin reloads call
+# the *new* _animate (which is a no-op) and the spinner stops cleanly.
+# Without this indirection, the closure would capture the old _animate
+# and the spinner would loop forever using the old module's stale state.
 
 
 def _start_spinner(window):
-    global _working, _spinner_frame
-    _working = True
-    _spinner_frame = 0
-    _animate(window)
+    return  # no-op: tab title spinner removed
 
 
 def _animate(window):
-    global _spinner_frame
-    if not _working:
+    return  # no-op: tab title spinner removed
+
+
+def _animate_recheck(window):
+    """Re-scheduling trampoline. Always looks up the current module's
+    _animate and _working via sys.modules, so stale callbacks from
+    previous plugin reloads become no-ops."""
+    import sys as _sys
+    mod = _sys.modules.get(__name__)
+    if mod is None:
         return
-    v = _find_sdk_view(window)
-    if v:
-        frame = _SPINNER_FRAMES[_spinner_frame % len(_SPINNER_FRAMES)]
-        v.set_name(f"{frame} {_VIEW_NAME}")
-        _spinner_frame += 1
-    sublime.set_timeout(lambda: _animate(window), 200)
+    fn = getattr(mod, "_animate", None)
+    if fn is None:
+        return
+    fn(window)
 
 
 def _stop_spinner(window):
-    global _working
-    _working = False
+    # Force the view name back to the canonical label. The user noticed
+    # that a stale spinner character could remain in the tab title after
+    # a response completes. This explicit reset is the safety net.
     v = _find_sdk_view(window)
     if v:
-        v.set_name(f"◇ {_VIEW_NAME}")
+        v.set_name(_VIEW_NAME)
 
 
 # ─── ccstatusline phantom (below input line) ──────────────────────────────────
@@ -764,7 +827,7 @@ def _enter_input_mode(view, window):
             window.focus_view(view)
         v = _find_sdk_view(window)
         if v:
-            v.set_name(f"◇ {_VIEW_NAME}")
+            v.set_name(_VIEW_NAME)
 
     sublime.set_timeout(_do, 0)
 
@@ -884,7 +947,7 @@ def _on_event(view, window, event):
             view.set_read_only(True)
             _enter_input_mode(view, window)
 
-        sublime.set_timeout(_stop_spinner(window), 0)
+        sublime.set_timeout(lambda: _stop_spinner(window), 0)
         sublime.set_timeout(_lock_and_enter, 50)
     elif t == "stopped":
         _streaming_views.add(view.id())
@@ -897,7 +960,7 @@ def _on_event(view, window, event):
             view.set_read_only(True)
             _enter_input_mode(view, window)
 
-        sublime.set_timeout(_stop_spinner(window), 0)
+        sublime.set_timeout(lambda: _stop_spinner(window), 0)
         sublime.set_timeout(_lock_and_enter, 50)
     elif t == "error":
         err = event.get("error", "unknown error")
@@ -911,7 +974,7 @@ def _on_event(view, window, event):
             view.set_read_only(True)
             _enter_input_mode(view, window)
 
-        sublime.set_timeout(_stop_spinner(window), 0)
+        sublime.set_timeout(lambda: _stop_spinner(window), 0)
         sublime.set_timeout(_lock_and_enter, 50)
 
 
