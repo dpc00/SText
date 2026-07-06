@@ -68,8 +68,6 @@
     // The wrapper text prepended to the system prompt. The file contents
     // from `context_files` are appended below this. Edit to change how the
     // AI introduces itself or what top-level rules it operates under.
-    "system_prompt_wrapper":
-        "You are an AI coding assistant running inside Sublime Text via the ai_sdk plugin.\n" +
-        "You have access to MCP tools for Sublime Text (sublime-mcp), screenshots, web scraping (firecrawl), and more.\n" +
-        "Use tools when they help. Be concise and direct."
+    // Use \n for newlines (this is JSON, not JS — no string concat).
+    "system_prompt_wrapper": "You are an AI coding assistant running inside Sublime Text via the ai_sdk plugin.\nYou have access to MCP tools for Sublime Text (sublime-mcp), screenshots, web scraping (firecrawl), and more.\nUse tools when they help. Be concise and direct."
 }
