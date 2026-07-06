@@ -1,9 +1,9 @@
 """Async MCP server connector for the SText Ollama backend.
 
 Slimmed from jonigl/mcp-client-for-ollama/server/connector.py (MIT). Drops the
-rich Console, prompts/resources/templates discovery, and the interactive
-server-selection path — this backend only needs tools. Logs to stderr as
-plain text so it shows up in the ai_sdk bridge monitor.
+rich Console and the interactive server-selection path. Surfaces the three
+core MCP primitives the backend needs: tools, prompts, and resources.
+Logs to stderr as plain text so it shows up in the ai_sdk bridge monitor.
 
 Transport uses the official `mcp` SDK: stdio / sse / streamable_http. Tool
 names are exposed to the model as `mcp__<server>__<tool>` — the same convention
@@ -129,6 +129,47 @@ class ServerConnector:
         self.tools.extend(server_tools)
         _log(f"[mcp] {name}: {len(server_tools)} tools loaded")
 
+        # Prompts and resources are optional MCP primitives — many servers
+        # don't expose them, so failures here are non-fatal.
+        prompts = []
+        try:
+            presp = await session.list_prompts()
+            for p in presp.prompts:
+                prompts.append({
+                    "name": p.name,
+                    "description": getattr(p, "description", "") or "",
+                    "arguments": [
+                        {
+                            "name": a.name,
+                            "description": getattr(a, "description", "") or "",
+                            "required": bool(getattr(a, "required", False)),
+                        }
+                        for a in (p.arguments or [])
+                    ],
+                })
+        except Exception as e:
+            _log(f"[mcp] {name}: list_prompts failed: {e}")
+        self.sessions[name]["prompts"] = prompts
+
+        resources = []
+        try:
+            rresp = await session.list_resources()
+            for r in rresp.resources:
+                resources.append({
+                    "uri": str(r.uri),
+                    "name": getattr(r, "name", "") or "",
+                    "description": getattr(r, "description", "") or "",
+                    "mimeType": getattr(r, "mimeType", "") or "",
+                })
+        except Exception as e:
+            _log(f"[mcp] {name}: list_resources failed: {e}")
+        self.sessions[name]["resources"] = resources
+        if prompts or resources:
+            _log(
+                f"[mcp] {name}: {len(prompts)} prompts, "
+                f"{len(resources)} resources"
+            )
+
     async def call_tool(self, full_name, arguments):
         """Execute a tool by its qualified mcp__<server>__<tool> name.
 
@@ -148,6 +189,63 @@ class ServerConnector:
                         texts.append(json.dumps(getattr(block, "model_dump", lambda: {})()))
                 return "\n".join(texts) if texts else ""
         return f"Error: tool {full_name} not found"
+
+    # ─── Prompts ────────────────────────────────────────────────────────────
+
+    def all_prompts(self):
+        """Flat list of every prompt across all servers, tagged with `server`."""
+        out = []
+        for name, s in self.sessions.items():
+            for p in s.get("prompts", []):
+                out.append({**p, "server": name})
+        return out
+
+    async def get_prompt(self, server, name, arguments):
+        """Invoke a prompt. Returns a list of {role, text} dicts."""
+        if server not in self.sessions:
+            return None
+        session = self.sessions[server]["session"]
+        result = await session.get_prompt(name, arguments or {})
+        out = []
+        for m in result.messages:
+            content = m.content
+            if hasattr(content, "text"):
+                text = content.text or ""
+            else:
+                text = json.dumps(getattr(content, "model_dump", lambda: {})())
+            out.append({"role": m.role, "text": text})
+        return out
+
+    # ─── Resources ──────────────────────────────────────────────────────────
+
+    def all_resources(self):
+        """Flat list of every resource across all servers, tagged with `server`."""
+        out = []
+        for name, s in self.sessions.items():
+            for r in s.get("resources", []):
+                out.append({**r, "server": name})
+        return out
+
+    async def read_resource(self, uri):
+        """Read a resource by URI. Finds the owning session by URI match;
+        falls back to trying each session directly. Returns text or None."""
+        for name, s in self.sessions.items():
+            for r in s.get("resources", []):
+                if r["uri"] == uri:
+                    result = await s["session"].read_resource(uri)
+                    return "\n".join(
+                        getattr(c, "text", "") or "" for c in result.contents
+                    )
+        # Not in any list — try each session (server may expose unlisted URIs)
+        for name, s in self.sessions.items():
+            try:
+                result = await s["session"].read_resource(uri)
+                return "\n".join(
+                    getattr(c, "text", "") or "" for c in result.contents
+                )
+            except Exception:
+                continue
+        return None
 
     async def aclose(self):
         """Shut down all server connections."""
