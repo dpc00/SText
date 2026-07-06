@@ -146,18 +146,10 @@ def _read_setting_from_json(key):
     ai_terminal.sublime-settings. Returns None if the key is missing or the
     file can't be parsed. Falls back to the SText repo copy.
 
-    Tolerates JS-style line comments and raw newlines inside quoted string
-    values (raw newlines become \n in the returned value), so the user can
-    write a multi-line wrapper without using \\n escapes:
-
-        "system_prompt_wrapper": "First line.
-        Second line.
-        Third line."
-
-    ST's own settings parser is strict JSON and doesn't allow raw newlines
-    in strings, so this would fail if ST tried to load the file. But the
-    bridge reads the file directly (with its own parser), so we have more
-    freedom than the live settings system does.
+    Strict JSON: tolerates // line comments and trailing commas (ST's
+    settings format), but does not handle raw newlines inside quoted
+    strings, JS string concatenation, or other JS-only features. Put
+    multi-line values in a separate file referenced by a path setting.
     """
     for path in _AI_TERMINAL_SETTINGS_PATHS:
         try:
@@ -166,52 +158,67 @@ def _read_setting_from_json(key):
         except OSError:
             continue
         # Strip JS-style line comments (// ...) — the settings file uses them.
-        # Strip the comment portion but keep the trailing newline so the
-        # line count is preserved for any later parse.
-        cleaned_lines = []
-        for line in text.splitlines(keepends=True):
-            # Comment-only lines: drop the whole line including the newline
-            stripped = line.lstrip()
-            if stripped.startswith("//"):
-                continue
-            # Inline comment: keep the leading content, drop the comment.
-            # Naive but adequate — a // inside a quoted string is rare and
-            # we'd rather over-strip than under-strip.
-            idx = line.find("//")
-            if idx >= 0:
-                line = line[:idx].rstrip() + "\n"
-            cleaned_lines.append(line)
-        cleaned = "".join(cleaned_lines)
+        cleaned = "\n".join(
+            line for line in text.splitlines()
+            if not line.lstrip().startswith("//")
+        )
         # Strip block comments
         cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
-        # Extract the value for `key` — handles strings (which may contain
-        # raw newlines that we turn into \n) and arrays of strings. The
-        # string-content class [^"\\] is widened to [^"\\\n] so the regex
-        # can match a multi-line quoted string. We rely on the fact that
-        # the comment-stripping step above has already removed any // that
-        # could appear inside the string.
-        m = re.search(
-            rf'"{re.escape(key)}"\s*:\s*("([^"\\\\\n]*(?:\\.[^"\\\\\n]*)*)"|\[([^\]]*)\])',
-            cleaned,
-            flags=re.DOTALL,
-        )
+        # Extract the value for `key` — handles strings and arrays of strings.
+        # The two branches can't share a single alternation cleanly: when an
+        # array's first string begins with `"` after whitespace, a naive
+        # `"..."|[...]` alternation will start matching the string branch on
+        # that quote and backtrack. Pick the branch by what follows the colon.
+        m = re.search(rf'"{re.escape(key)}"\s*:\s*', cleaned)
         if not m:
             return None
-        if m.group(1):  # string value
-            raw = m.group(2)
-            return (
-                raw.replace("\\\\", "\x00")
-                .replace('\\"', '"')
-                .replace("\\n", "\n")
-                .replace("\\t", "\t")
-                .replace("\x00", "\\")
-            )
-        # array value — extract each quoted string
-        items = re.findall(r'"((?:[^"\\]|\\.)*)"', m.group(3) or "")
-        return [
-            s.replace("\\\\", "\x00").replace('\\"', '"').replace("\x00", "\\")
-            for s in items
-        ]
+        rest = cleaned[m.end():]
+        # Skip leading whitespace then dispatch on next non-space char.
+        stripped = rest.lstrip()
+        leading_ws = len(rest) - len(stripped)
+        if stripped.startswith("["):
+            # Find the matching ']' (no nested arrays in practice).
+            depth = 0
+            end = -1
+            for i in range(len(stripped)):
+                ch = stripped[i]
+                if ch == "[":
+                    depth += 1
+                elif ch == "]":
+                    depth -= 1
+                    if depth == 0:
+                        end = i
+                        break
+            if end < 0:
+                return None
+            body = stripped[1:end]
+            items = re.findall(r'"((?:[^"\\]|\\.)*)"', body)
+            return [
+                s.replace("\\\\", "\x00").replace('\\"', '"').replace("\x00", "\\")
+                for s in items
+            ]
+        if stripped.startswith('"'):
+            # Quoted string up to the next unescaped quote.
+            esc = False
+            for i in range(1, len(stripped)):
+                ch = stripped[i]
+                if esc:
+                    esc = False
+                    continue
+                if ch == "\\":
+                    esc = True
+                    continue
+                if ch == '"':
+                    raw = stripped[1:i]
+                    return (
+                        raw.replace("\\\\", "\x00")
+                        .replace('\\"', '"')
+                        .replace("\\n", "\n")
+                        .replace("\\t", "\t")
+                        .replace("\x00", "\\")
+                    )
+            return None
+        return None
     return None
 
 
@@ -229,12 +236,28 @@ def _build_system_prompt():
         except OSError:
             pass
     context = "\n\n---\n\n".join(parts)
-    wrapper = _read_setting_from_json("system_prompt_wrapper") or (
-        "You are an AI coding assistant running inside Sublime Text via the "
-        "ai_sdk plugin.\nYou have access to MCP tools for Sublime Text "
-        "(sublime-mcp), screenshots, web scraping (firecrawl), and more.\n"
-        "Use tools when they help. Be concise and direct."
-    )
+
+    # Wrapper text comes from a separate markdown file referenced by
+    # system_prompt_wrapper_file. Falls back to the inline setting (or a
+    # built-in default) if the file is missing or unreadable. The file
+    # approach lets the user edit a plain markdown file with real newlines
+    # instead of fighting JSON escapes inside a settings file.
+    wrapper_path = _read_setting_from_json("system_prompt_wrapper_file")
+    if isinstance(wrapper_path, str) and os.path.exists(wrapper_path):
+        try:
+            with open(wrapper_path, encoding="utf-8") as f:
+                wrapper = f.read().rstrip("\n")
+        except OSError:
+            wrapper = None
+    else:
+        wrapper = None
+    if wrapper is None:
+        wrapper = _read_setting_from_json("system_prompt_wrapper") or (
+            "You are an AI coding assistant running inside Sublime Text via the "
+            "ai_sdk plugin.\nYou have access to MCP tools for Sublime Text "
+            "(sublime-mcp), screenshots, web scraping (firecrawl), and more.\n"
+            "Use tools when they help. Be concise and direct."
+        )
     return f"{wrapper}\n\n{context}"
 
 

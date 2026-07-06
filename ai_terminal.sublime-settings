@@ -53,24 +53,20 @@
     },
 
     // Files whose content is appended to the system prompt on every bridge
-    // startup. Each file is read and prepended with its basename as a
-    // markdown header, then joined with '---'. This is how the AI gets its
-    // working context: agents.md (the lobby), router.md (project map), and
-    // the project's CLAUDE.md (project-specific rules). Edit this list to
-    // add or remove context. Restart the bridge to pick up changes
-    // (Ctrl+Alt+X in the SDK tab).
+    // startup. Each is read and prepended with its basename as a markdown
+    // header, then joined with '---'. This is how the AI gets its working
+    // context: agents.md (the lobby), router.md (project map), and the
+    // project's CLAUDE.md (project-specific rules). Edit this list to add
+    // or remove context. Restart the bridge to pick up changes.
     "context_files": [
         "C:\\Users\\donal\\agents.md",
         "C:\\Users\\donal\\router.md",
         "C:\\Users\\donal\\projects\\SText\\CLAUDE.md"
     ],
 
-    // The wrapper text prepended to the system prompt. The file contents
-    // from `context_files` are appended below this. Edit to change how the
-    // AI introduces itself or what top-level rules it operates under.
-    // Real newlines inside the string are allowed and become \n in the
-    // runtime value (the bridge's parser handles this).
-    "system_prompt_wrapper": "You are an AI coding assistant running inside Sublime Text via the ai_sdk plugin.
-You have access to MCP tools for Sublime Text (sublime-mcp), screenshots, web scraping (firecrawl), and more.
-Use tools when they help. Be concise and direct."
+    // Path to a markdown file whose contents are prepended to the system
+    // prompt (above the context files). Edit the file directly to change
+    // the wrapper text — the file is plain markdown, no JSON escaping.
+    // Default location is ai_sdk_prompt.md alongside this settings file.
+    "system_prompt_wrapper_file": "C:\\Users\\donal\\projects\\SText\\ai_sdk_prompt.md"
 }
