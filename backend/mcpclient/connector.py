@@ -130,7 +130,10 @@ class ServerConnector:
         _log(f"[mcp] {name}: {len(server_tools)} tools loaded")
 
         # Prompts and resources are optional MCP primitives — many servers
-        # don't expose them, so failures here are non-fatal.
+        # don't expose them, so failures here are non-fatal. We deliberately
+        # stay quiet for the common "Method not found" case (server doesn't
+        # implement the primitive) so the python console doesn't fill up
+        # with expected warnings every bridge start. Real errors still log.
         prompts = []
         try:
             presp = await session.list_prompts()
@@ -148,7 +151,8 @@ class ServerConnector:
                     ],
                 })
         except Exception as e:
-            _log(f"[mcp] {name}: list_prompts failed: {e}")
+            if "method not found" not in str(e).lower():
+                _log(f"[mcp] {name}: list_prompts failed: {e}")
         self.sessions[name]["prompts"] = prompts
 
         resources = []
@@ -162,7 +166,8 @@ class ServerConnector:
                     "mimeType": getattr(r, "mimeType", "") or "",
                 })
         except Exception as e:
-            _log(f"[mcp] {name}: list_resources failed: {e}")
+            if "method not found" not in str(e).lower():
+                _log(f"[mcp] {name}: list_resources failed: {e}")
         self.sessions[name]["resources"] = resources
         if prompts or resources:
             _log(

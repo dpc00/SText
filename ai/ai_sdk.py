@@ -322,6 +322,17 @@ def plugin_loaded():
             if v.settings().get("ai_sdk_view"):
                 v.set_name(_VIEW_NAME)
                 break
+    # Re-bind to any existing bridge subprocess. After a plugin reload,
+    # the bridge subprocess (started by the previous instance) is
+    # usually still running on port 9504 — but our local _bridge
+    # wrapper was reset to None. _ensure_bridge probes the port and
+    # reattaches if a listener responds. Without this, the first
+    # prompt submission after a reload gets "Bridge not ready" until
+    # something else triggers _ensure_bridge.
+    try:
+        _ensure_bridge()
+    except Exception:
+        pass  # non-fatal: bridge will be started on first submit
 
 
 def plugin_unloaded():
