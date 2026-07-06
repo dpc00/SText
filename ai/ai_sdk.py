@@ -46,6 +46,13 @@ _spinner_frame = 0
 # only re-lock it on `done`. The set is keyed by view.id() to be per-tab.
 _streaming_views = set()
 
+# Views that have already received their first thinking chunk in the
+# current burst. The thinking marker ('  💭 ') should be written only
+# once at the start of the thinking block; subsequent deltas just append
+# text so we don't get '💭 The user  💭 is...' with a marker on every
+# chunk. Cleared on done/stopped/error along with _streaming_views.
+_thinking_started = set()
+
 
 # ─── Socket server (ST eval for the agent) ────────────────────────────────────
 
@@ -700,9 +707,21 @@ def _on_event(view, window, event):
     elif t == "text_delta":
         _vwrite(view, event.get("text", ""))
     elif t == "thinking":
-        _vwrite(view, f"  💭 {event.get('text', '')}\n")
+        # Complete (non-streaming) thinking block. The trailing newline
+        # ends the line. Only the first one in a burst needs the marker.
+        if view.id() in _thinking_started:
+            _vwrite(view, event.get("text", "") + "\n")
+        else:
+            _thinking_started.add(view.id())
+            _vwrite(view, f"  💭 {event.get('text', '')}\n")
     elif t == "thinking_delta":
-        _vwrite(view, f"  💭 {event.get('text', '')}")
+        # Streamed thinking. Only the first delta gets the marker; later
+        # deltas just continue the line. No trailing newline until done.
+        if view.id() in _thinking_started:
+            _vwrite(view, event.get("text", ""))
+        else:
+            _thinking_started.add(view.id())
+            _vwrite(view, f"  💭 {event.get('text', '')}")
     elif t == "tool_use":
         _render_tool_start(view, event.get("name", "?"), event.get("tool_id", ""))
     elif t == "tool_approval_request":
@@ -729,6 +748,7 @@ def _on_event(view, window, event):
         _update_ccstatus(view, event)
         # Exit streaming: re-lock the view, then enter input mode.
         _streaming_views.discard(view.id())
+        _thinking_started.discard(view.id())
 
         def _lock_and_enter():
             view.set_read_only(True)
@@ -741,6 +761,7 @@ def _on_event(view, window, event):
         _vwrite(view, "\n[Stopped]\n")
         _update_ccstatus(view, event)
         _streaming_views.discard(view.id())
+        _thinking_started.discard(view.id())
 
         def _lock_and_enter():
             view.set_read_only(True)
@@ -754,6 +775,7 @@ def _on_event(view, window, event):
         _vwrite(view, f"\n[Error: {err}]\n")
         _update_ccstatus(view, event)
         _streaming_views.discard(view.id())
+        _thinking_started.discard(view.id())
 
         def _lock_and_enter():
             view.set_read_only(True)
