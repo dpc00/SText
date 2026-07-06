@@ -208,6 +208,19 @@ class _Bridge:
             target=self._send_thread, args=(None, on_event, req), daemon=True
         ).start()
 
+    def send_raw(self, msg):
+        """Send a raw JSON line on the current query socket (for HIL approvals).
+
+        Reuses the in-flight socket so the bridge's socket watcher receives it
+        on the same connection as the query it's gating.
+        """
+        sock = self._current_sock
+        if sock:
+            try:
+                sock.sendall((json.dumps(msg) + "\n").encode())
+            except Exception:
+                pass
+
     def _send_thread(self, prompt, on_event, req=None):
         if req is None:
             req = {"id": 1, "prompt": prompt}
@@ -572,6 +585,11 @@ def _render_meta(view, event):
             parts.append(f"${cost:.4f}")
         if turns:
             parts.append(f"{turns} turns")
+        cw = event.get("context_window") or {}
+        in_tok = cw.get("total_input_tokens", 0)
+        out_tok = cw.get("total_output_tokens", 0)
+        if in_tok or out_tok:
+            parts.append(f"in {in_tok:,}/out {out_tok:,}")
         if stop and stop != "end_turn":
             parts.append(stop)
         meta = f"\n@done({', '.join(parts)})\n"
@@ -623,17 +641,56 @@ def _get_input_text(view):
 # ─── Event dispatch ───────────────────────────────────────────────────────────
 
 
+def _prompt_approval(window, tool_id, name, args):
+    """Pop ST's input panel asking y/n. Sends the answer on the in-flight
+    query socket so the bridge's watcher unblocks the gated tool call."""
+    def _show():
+        def on_done(text):
+            approve = text.strip().lower() in ("y", "yes")
+            if _bridge:
+                _bridge.send_raw(
+                    {"type": "tool_approval", "tool_id": tool_id, "approve": approve}
+                )
+
+        def on_cancel():
+            if _bridge:
+                _bridge.send_raw(
+                    {"type": "tool_approval", "tool_id": tool_id, "approve": False}
+                )
+
+        window.show_input_panel(
+            f"Approve {name}? (y/n)", "", on_done, None, on_cancel
+        )
+
+    sublime.set_timeout(_show, 0)
+
+
 def _on_event(view, window, event):
     """Route one bridge event to the appropriate renderer. Called from bg thread."""
     t = event.get("type")
     if t == "text":
         _vwrite(view, event.get("text", ""))
+    elif t == "text_delta":
+        _vwrite(view, event.get("text", ""))
+    elif t == "thinking":
+        _vwrite(view, f"  💭 {event.get('text', '')}\n")
+    elif t == "thinking_delta":
+        _vwrite(view, f"  💭 {event.get('text', '')}")
     elif t == "tool_use":
         _render_tool_start(view, event.get("name", "?"), event.get("tool_id", ""))
+    elif t == "tool_approval_request":
+        _prompt_approval(
+            window,
+            event.get("tool_id", ""),
+            event.get("name", "?"),
+            event.get("input", {}),
+        )
     elif t == "tool_result":
         _render_tool_result(
             view, event.get("tool_id", ""), event.get("is_error", False)
         )
+        if event.get("rejected"):
+            _vwrite(view, "  [rejected]\n")
     elif t == "done":
         if event.get("stop_reason") == "interrupted":
             _vwrite(view, "\nInterrupted\n")
@@ -862,11 +919,21 @@ def _render_status(view, window, event):
 # ─── Slash command handler ────────────────────────────────────────────────────
 
 _SLASH_COMMANDS = {
-    "clear": "Reset conversation to empty context (forwarded to SDK)",
+    "clear": "Clear the view and reset the conversation",
+    "cls": "Clear the view text only (keeps conversation history)",
     "help": "Show available slash commands",
     "status": "Show bridge status",
-    "tools": "List allowed tools",
+    "tools": "List tools with on/off state, or /tools on|off <name>",
+    "reload-servers": "Reconnect MCP servers without clearing conversation history",
     "compact": "Summarize conversation context (forwarded to SDK)",
+    "export-history": "Save conversation to JSON (default ~/.cache/ai_sdk/history_<ts>.json)",
+    "import-history": "Load conversation from JSON: /import-history <path>",
+    "loop-limit": "Set max tool-loop iterations (default 15): /loop-limit <n>",
+    "model": "Switch Ollama model: /model [name] — no arg lists available models",
+    "thinking": "Toggle thinking mode (reasoning models): /thinking on|off",
+    "prompts": "List MCP prompts, or invoke: /prompts <server:name> arg=value ...",
+    "resources": "List MCP resources (read with @<uri>)",
+    "hil": "Gate each tool call on approval: /hil on|off",
 }
 
 
@@ -875,6 +942,31 @@ def _handle_slash(view, window, prompt):
     parts = prompt[1:].split(None, 1)
     cmd = parts[0].lower() if parts else ""
     args = parts[1] if len(parts) > 1 else ""
+
+    def _wipe_view():
+        """Erase all rendered text. Call on the main thread."""
+        view.set_read_only(False)
+        view.run_command("select_all")
+        view.run_command("left_delete")
+        view.set_read_only(True)
+
+    if cmd == "clear":
+        # Wipe the view AND reset the backend conversation in place (no
+        # subprocess restart). Best-effort clear_history: if the running
+        # backend doesn't handle it, the view still clears.
+        sublime.set_timeout(_wipe_view, 0)
+        if _bridge:
+            _bridge.send_request(
+                {"id": 1, "type": "clear_history"}, lambda ev: None
+            )
+        sublime.set_timeout(lambda: _enter_input_mode(view, window), 60)
+        return True
+
+    if cmd == "cls":
+        # Clear the screen only — keep backend conversation history.
+        sublime.set_timeout(_wipe_view, 0)
+        sublime.set_timeout(lambda: _enter_input_mode(view, window), 60)
+        return True
 
     if cmd == "help":
         lines = ["", "Slash commands:", ""]
@@ -902,17 +994,342 @@ def _handle_slash(view, window, prompt):
         return True
 
     if cmd == "tools":
-        import importlib.util
+        sub_parts = args.split(None, 1) if args else []
+        sub = sub_parts[0].lower() if sub_parts else ""
+        name = sub_parts[1].strip() if len(sub_parts) > 1 else ""
 
-        spec = importlib.util.spec_from_file_location("agent_query", _SCRIPT)
-        aq = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(aq)
-        lines = ["", "Allowed tools:", ""]
-        for t in aq._ALLOWED_TOOLS:
-            lines.append(f"  {t}")
-        lines.append("")
-        _vwrite(view, "\n".join(lines))
-        _enter_input_mode(view, window)
+        if sub in ("on", "off"):
+            if not name:
+                _vwrite(view, f"\n[Usage: /tools {sub} <tool_name>]\n")
+                _enter_input_mode(view, window)
+                return True
+
+            def on_set(ev):
+                if ev.get("type") == "tool_set":
+                    state = "enabled" if ev.get("enabled") else "disabled"
+                    _vwrite(view, f"\n[Tool {ev.get('name')} {state}]\n")
+                elif ev.get("type") == "error":
+                    _vwrite(view, f"\n[Error: {ev.get('error')}]\n")
+                sublime.set_timeout(lambda: _enter_input_mode(view, window), 0)
+
+            _bridge.send_request(
+                {"id": 1, "type": "set_tool", "name": name, "enabled": sub == "on"},
+                on_set,
+            )
+            return True
+
+        def on_list(ev):
+            if ev.get("type") == "tools_list":
+                tools = ev.get("tools", [])
+                if not tools:
+                    _vwrite(view, "\n[No tools loaded — check MCP servers]\n")
+                else:
+                    by_client = {}
+                    for t in tools:
+                        by_client.setdefault(t.get("client", "?"), []).append(t)
+                    lines = ["", "Tools:", ""]
+                    for client, ts in sorted(by_client.items()):
+                        lines.append(f"  {client}")
+                        for t in sorted(ts, key=lambda x: x["name"]):
+                            mark = "✔" if t.get("enabled") else "✘"
+                            lines.append(f"    {mark} {t['name']}")
+                    lines.append("")
+                    lines.append("  use /tools on|off <name> to toggle")
+                    _vwrite(view, "\n".join(lines))
+            elif ev.get("type") == "error":
+                _vwrite(view, f"\n[Error: {ev.get('error')}]\n")
+            sublime.set_timeout(lambda: _enter_input_mode(view, window), 0)
+
+        _bridge.send_request({"id": 1, "type": "list_tools"}, on_list)
+        return True
+
+    if cmd == "reload-servers":
+        def on_reload(ev):
+            if ev.get("type") == "servers_reloaded":
+                _vwrite(
+                    view,
+                    f"\n[Servers reloaded — {ev.get('mcp_tools')} MCP tools, "
+                    f"{ev.get('total_tools')} total]\n",
+                )
+            elif ev.get("type") == "error":
+                _vwrite(view, f"\n[Reload error: {ev.get('error')}]\n")
+            sublime.set_timeout(lambda: _enter_input_mode(view, window), 0)
+
+        _bridge.send_request({"id": 1, "type": "reload_servers"}, on_reload)
+        return True
+
+    if cmd == "export-history":
+        import time as _time
+
+        path = args.strip()
+        if not path:
+            _dir = os.path.expanduser("~/.cache/ai_sdk")
+            os.makedirs(_dir, exist_ok=True)
+            path = os.path.join(
+                _dir, f"history_{_time.strftime('%Y%m%d_%H%M%S')}.json"
+            )
+        path = os.path.expanduser(path)
+
+        def on_export(ev):
+            if ev.get("type") == "history_exported":
+                _vwrite(view, f"\n[History exported to {ev.get('path')}]\n")
+            elif ev.get("type") == "error":
+                _vwrite(view, f"\n[Export error: {ev.get('error')}]\n")
+            sublime.set_timeout(lambda: _enter_input_mode(view, window), 0)
+
+        _bridge.send_request({"id": 1, "type": "export_history", "path": path}, on_export)
+        return True
+
+    if cmd == "import-history":
+        path = args.strip()
+        if not path:
+            _vwrite(view, "\n[Usage: /import-history <path>]\n")
+            _enter_input_mode(view, window)
+            return True
+        path = os.path.expanduser(path)
+
+        def on_import(ev):
+            if ev.get("type") == "history_imported":
+                _vwrite(
+                    view,
+                    f"\n[History imported from {ev.get('path')} — "
+                    f"{ev.get('turns', 0)} turns]\n",
+                )
+            elif ev.get("type") == "error":
+                _vwrite(view, f"\n[Import error: {ev.get('error')}]\n")
+            sublime.set_timeout(lambda: _enter_input_mode(view, window), 0)
+
+        _bridge.send_request({"id": 1, "type": "import_history", "path": path}, on_import)
+        return True
+
+    if cmd == "loop-limit":
+        arg = args.strip()
+        if not arg:
+            _vwrite(
+                view,
+                "\n[Usage: /loop-limit <n> — max tool-loop iterations, "
+                "default 15]\n",
+            )
+            _enter_input_mode(view, window)
+            return True
+        try:
+            n = int(arg)
+            if n < 1:
+                raise ValueError
+        except ValueError:
+            _vwrite(view, f"\n[Loop limit must be a positive integer, got {arg!r}]\n")
+            _enter_input_mode(view, window)
+            return True
+
+        def on_ll(ev):
+            if ev.get("type") == "loop_limit_set":
+                _vwrite(view, f"\n[Loop limit set to {ev.get('limit')}]\n")
+            elif ev.get("type") == "error":
+                _vwrite(view, f"\n[Error: {ev.get('error')}]\n")
+            sublime.set_timeout(lambda: _enter_input_mode(view, window), 0)
+
+        _bridge.send_request({"id": 1, "type": "set_loop_limit", "limit": n}, on_ll)
+        return True
+
+    if cmd == "model":
+        arg = args.strip()
+        if not arg:
+            def on_list(ev):
+                if ev.get("type") == "model_list":
+                    current = ev.get("current", "")
+                    names = ev.get("models", [])
+                    if not names:
+                        _vwrite(
+                            view,
+                            "\n[No Ollama models installed — "
+                            "pull one with `ollama pull <name>`]\n",
+                        )
+                    else:
+                        lines = ["", "Available Ollama models:", ""]
+                        for m in names:
+                            mark = " *" if m == current else "  "
+                            lines.append(f"{mark} {m}")
+                        lines.append(f"\n  current: {current}")
+                        lines.append("  use /model <name> to switch")
+                        _vwrite(view, "\n".join(lines) + "\n")
+                elif ev.get("type") == "error":
+                    _vwrite(view, f"\n[Error: {ev.get('error')}]\n")
+                sublime.set_timeout(lambda: _enter_input_mode(view, window), 0)
+
+            # First reload model from settings (in case the settings file
+            # was edited since the bridge started), then list. This makes
+            # /model with no args double as a "reset to settings" action.
+            def on_reload_then_list(ev):
+                if ev.get("type") == "model_reloaded":
+                    if ev.get("source") == "settings":
+                        _vwrite(
+                            view,
+                            f"\n[Model reloaded from settings: "
+                            f"{ev.get('model')}]\n",
+                        )
+                    # fall through to list
+                if ev.get("type") == "error":
+                    _vwrite(view, f"\n[Error: {ev.get('error')}]\n")
+                _bridge.send_request({"id": 1, "type": "list_models"}, on_list)
+
+            _bridge.send_request(
+                {"id": 1, "type": "reload_model_from_settings"}, on_reload_then_list
+            )
+            return True
+
+        def on_switch(ev):
+            if ev.get("type") == "model_set":
+                _vwrite(view, f"\n[Model switched to {ev.get('model')}]\n")
+            elif ev.get("type") == "error":
+                _vwrite(view, f"\n[Error: {ev.get('error')}]\n")
+            sublime.set_timeout(lambda: _enter_input_mode(view, window), 0)
+
+        _bridge.send_request({"id": 1, "type": "set_model", "model": arg}, on_switch)
+        return True
+
+    if cmd == "thinking":
+        sub = args.strip().lower()
+        if sub == "on":
+            enabled = True
+        elif sub == "off":
+            enabled = False
+        else:
+            _vwrite(view, "\n[Usage: /thinking on|off — surfaces reasoning for thinking models]\n")
+            _enter_input_mode(view, window)
+            return True
+
+        def on_thinking(ev):
+            if ev.get("type") == "thinking_set":
+                state = "on" if ev.get("enabled") else "off"
+                _vwrite(view, f"\n[Thinking mode {state}]\n")
+            elif ev.get("type") == "error":
+                _vwrite(view, f"\n[Error: {ev.get('error')}]\n")
+            sublime.set_timeout(lambda: _enter_input_mode(view, window), 0)
+
+        _bridge.send_request(
+            {"id": 1, "type": "set_thinking", "enabled": enabled}, on_thinking
+        )
+        return True
+
+    if cmd == "hil":
+        sub = args.strip().lower()
+        if sub == "on":
+            enabled = True
+        elif sub == "off":
+            enabled = False
+        else:
+            _vwrite(
+                view,
+                "\n[Usage: /hil on|off — gate each tool call on a y/n prompt]\n",
+            )
+            _enter_input_mode(view, window)
+            return True
+
+        def on_hil(ev):
+            if ev.get("type") == "hil_set":
+                state = "on" if ev.get("enabled") else "off"
+                _vwrite(view, f"\n[Human-in-the-loop {state}]\n")
+            elif ev.get("type") == "error":
+                _vwrite(view, f"\n[Error: {ev.get('error')}]\n")
+            sublime.set_timeout(lambda: _enter_input_mode(view, window), 0)
+
+        _bridge.send_request(
+            {"id": 1, "type": "set_hil", "enabled": enabled}, on_hil
+        )
+        return True
+
+    if cmd == "prompts":
+        if args:
+            parts = args.split(None, 1)
+            ref = parts[0]
+            arg_str = parts[1] if len(parts) > 1 else ""
+            if ":" not in ref:
+                _vwrite(view, "\n[Prompt ref must be server:name]\n")
+                _enter_input_mode(view, window)
+                return True
+            server, pname = ref.split(":", 1)
+            arguments = {}
+            for token in arg_str.split():
+                if "=" in token:
+                    k, v = token.split("=", 1)
+                    arguments[k] = v
+
+            def on_prompt(ev):
+                if ev.get("type") == "prompt_result":
+                    msgs = ev.get("messages", [])
+                    lines = ["", f"◆ prompt {server}:{pname}:", ""]
+                    for m in msgs:
+                        lines.append(f"  [{m.get('role', '?')}] {m.get('text', '')}")
+                    lines.append("")
+                    _vwrite(view, "\n".join(lines))
+                elif ev.get("type") == "error":
+                    _vwrite(view, f"\n[Prompt error: {ev.get('error')}]\n")
+                sublime.set_timeout(lambda: _enter_input_mode(view, window), 0)
+
+            _bridge.send_request(
+                {
+                    "id": 1,
+                    "type": "get_prompt",
+                    "server": server,
+                    "name": pname,
+                    "arguments": arguments,
+                },
+                on_prompt,
+            )
+            return True
+
+        def on_plist(ev):
+            if ev.get("type") == "prompts_list":
+                prompts = ev.get("prompts", [])
+                if not prompts:
+                    _vwrite(view, "\n[No MCP prompts available]\n")
+                else:
+                    lines = ["", "MCP prompts:", ""]
+                    for p in prompts:
+                        ref = f"{p['server']}:{p['name']}"
+                        if p.get("arguments"):
+                            argnames = [
+                                a["name"] + ("*" if a.get("required") else "")
+                                for a in p["arguments"]
+                            ]
+                            argstr = f"  ({' '.join(argnames)})" if argnames else ""
+                        else:
+                            argstr = ""
+                        desc = (
+                            f"  — {p['description']}" if p.get("description") else ""
+                        )
+                        lines.append(f"  {ref}{argstr}{desc}")
+                    lines.append("")
+                    lines.append("  use /prompts <server:name> arg=value ...")
+                    _vwrite(view, "\n".join(lines))
+            elif ev.get("type") == "error":
+                _vwrite(view, f"\n[Error: {ev.get('error')}]\n")
+            sublime.set_timeout(lambda: _enter_input_mode(view, window), 0)
+
+        _bridge.send_request({"id": 1, "type": "list_prompts"}, on_plist)
+        return True
+
+    if cmd == "resources":
+        def on_rlist(ev):
+            if ev.get("type") == "resources_list":
+                resources = ev.get("resources", [])
+                if not resources:
+                    _vwrite(view, "\n[No MCP resources available]\n")
+                else:
+                    lines = ["", "MCP resources:", ""]
+                    for r in resources:
+                        desc = (
+                            f"  — {r['description']}" if r.get("description") else ""
+                        )
+                        lines.append(f"  @{r['uri']}  ({r['server']}){desc}")
+                    lines.append("")
+                    lines.append("  use @<uri> to read a resource")
+                    _vwrite(view, "\n".join(lines))
+            elif ev.get("type") == "error":
+                _vwrite(view, f"\n[Error: {ev.get('error')}]\n")
+            sublime.set_timeout(lambda: _enter_input_mode(view, window), 0)
+
+        _bridge.send_request({"id": 1, "type": "list_resources"}, on_rlist)
         return True
 
     # Unknown command — forward to bridge (handles /compact, /loop, etc.)
@@ -922,6 +1339,17 @@ def _handle_slash(view, window, prompt):
 def _do_submit(view, window, prompt):
     _exit_input_mode(view)
     _render_prompt(view, prompt)
+
+    if prompt.startswith("@"):
+        uri = prompt[1:].strip()
+        def on_res(ev):
+            if ev.get("type") == "resource_read":
+                _vwrite(view, f"\n{ev.get('text', '')}\n")
+            elif ev.get("type") == "error":
+                _vwrite(view, f"\n[Resource error: {ev.get('error')}]\n")
+            sublime.set_timeout(lambda: _enter_input_mode(view, window), 0)
+        _bridge.send_request({"id": 1, "type": "read_resource", "uri": uri}, on_res)
+        return
 
     if prompt.startswith("/"):
         if _handle_slash(view, window, prompt):
