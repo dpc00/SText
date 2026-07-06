@@ -39,6 +39,13 @@ _bridge_cwd = None
 _working = False
 _spinner_frame = 0
 
+# Views currently in a streaming burst. Toggling read_only per-token in a
+# burst causes races where one callback's set_read_only(True) lands between
+# another's set_read_only(False)/append and silently drops the write (the
+# "3-token response" bug). During a burst we leave the view writable and
+# only re-lock it on `done`. The set is keyed by view.id() to be per-tab.
+_streaming_views = set()
+
 
 # ─── Socket server (ST eval for the agent) ────────────────────────────────────
 
@@ -325,12 +332,22 @@ def _sdk_view(window):
 
 
 def _vwrite(view, text):
-    """Append text to the (read-only) history area. Safe to call from any thread."""
+    """Append text to the history area. Safe to call from any thread.
+
+    During a streaming burst (between the first text/thinking delta and the
+    matching `done`), the view is kept writable as long as the burst lasts;
+    we just append. The dispatcher unlocks/re-locks the view at the burst
+    boundaries, so per-token toggles here would only race with each other.
+    """
 
     def _do(t=text):
-        view.set_read_only(False)
-        view.run_command("append", {"characters": t, "scroll_to_end": True})
-        view.set_read_only(True)
+        if view.id() in _streaming_views:
+            # Streaming: view is already writable. Just append.
+            view.run_command("append", {"characters": t, "scroll_to_end": True})
+        else:
+            view.set_read_only(False)
+            view.run_command("append", {"characters": t, "scroll_to_end": True})
+            view.set_read_only(True)
 
     sublime.set_timeout(_do, 0)
 
@@ -668,6 +685,16 @@ def _prompt_approval(window, tool_id, name, args):
 def _on_event(view, window, event):
     """Route one bridge event to the appropriate renderer. Called from bg thread."""
     t = event.get("type")
+
+    # Burst boundaries. The first content event in a response marks the view
+    # as streaming (kept writable) so subsequent per-token _vwrite calls
+    # don't race with each other. The matching `done`/`stopped`/`error`
+    # exits streaming mode and re-locks the view for input.
+    if t in ("text", "text_delta", "thinking", "thinking_delta", "tool_use", "tool_result"):
+        if view.id() not in _streaming_views:
+            _streaming_views.add(view.id())
+            sublime.set_timeout(lambda: view.set_read_only(False), 0)
+
     if t == "text":
         _vwrite(view, event.get("text", ""))
     elif t == "text_delta":
@@ -692,23 +719,48 @@ def _on_event(view, window, event):
         if event.get("rejected"):
             _vwrite(view, "  [rejected]\n")
     elif t == "done":
+        # Make sure the meta + error/stop text land in a writable view even
+        # if no content events preceded this (edge case: empty response).
+        _streaming_views.add(view.id())
         if event.get("stop_reason") == "interrupted":
             _vwrite(view, "\nInterrupted\n")
         else:
             _render_meta(view, event)
         _update_ccstatus(view, event)
-        sublime.set_timeout(lambda: _stop_spinner(window), 0)
-        sublime.set_timeout(lambda: _enter_input_mode(view, window), 50)
+        # Exit streaming: re-lock the view, then enter input mode.
+        _streaming_views.discard(view.id())
+
+        def _lock_and_enter():
+            view.set_read_only(True)
+            _enter_input_mode(view, window)
+
+        sublime.set_timeout(_stop_spinner(window), 0)
+        sublime.set_timeout(_lock_and_enter, 50)
     elif t == "stopped":
+        _streaming_views.add(view.id())
         _vwrite(view, "\n[Stopped]\n")
         _update_ccstatus(view, event)
-        sublime.set_timeout(lambda: _stop_spinner(window), 0)
-        sublime.set_timeout(lambda: _enter_input_mode(view, window), 50)
+        _streaming_views.discard(view.id())
+
+        def _lock_and_enter():
+            view.set_read_only(True)
+            _enter_input_mode(view, window)
+
+        sublime.set_timeout(_stop_spinner(window), 0)
+        sublime.set_timeout(_lock_and_enter, 50)
     elif t == "error":
         err = event.get("error", "unknown error")
+        _streaming_views.add(view.id())
         _vwrite(view, f"\n[Error: {err}]\n")
-        sublime.set_timeout(lambda: _stop_spinner(window), 0)
-        sublime.set_timeout(lambda: _enter_input_mode(view, window), 50)
+        _update_ccstatus(view, event)
+        _streaming_views.discard(view.id())
+
+        def _lock_and_enter():
+            view.set_read_only(True)
+            _enter_input_mode(view, window)
+
+        sublime.set_timeout(_stop_spinner(window), 0)
+        sublime.set_timeout(_lock_and_enter, 50)
 
 
 # ─── View event listener (intercepts Enter in input mode) ────────────────────
