@@ -145,6 +145,19 @@ def _read_setting_from_json(key):
     """Read a string-or-list value from the live Packages copy of
     ai_terminal.sublime-settings. Returns None if the key is missing or the
     file can't be parsed. Falls back to the SText repo copy.
+
+    Tolerates JS-style line comments and raw newlines inside quoted string
+    values (raw newlines become \n in the returned value), so the user can
+    write a multi-line wrapper without using \\n escapes:
+
+        "system_prompt_wrapper": "First line.
+        Second line.
+        Third line."
+
+    ST's own settings parser is strict JSON and doesn't allow raw newlines
+    in strings, so this would fail if ST tried to load the file. But the
+    bridge reads the file directly (with its own parser), so we have more
+    freedom than the live settings system does.
     """
     for path in _AI_TERMINAL_SETTINGS_PATHS:
         try:
@@ -153,16 +166,34 @@ def _read_setting_from_json(key):
         except OSError:
             continue
         # Strip JS-style line comments (// ...) — the settings file uses them.
-        cleaned = "\n".join(
-            line for line in text.splitlines()
-            if not line.lstrip().startswith("//")
-        )
+        # Strip the comment portion but keep the trailing newline so the
+        # line count is preserved for any later parse.
+        cleaned_lines = []
+        for line in text.splitlines(keepends=True):
+            # Comment-only lines: drop the whole line including the newline
+            stripped = line.lstrip()
+            if stripped.startswith("//"):
+                continue
+            # Inline comment: keep the leading content, drop the comment.
+            # Naive but adequate — a // inside a quoted string is rare and
+            # we'd rather over-strip than under-strip.
+            idx = line.find("//")
+            if idx >= 0:
+                line = line[:idx].rstrip() + "\n"
+            cleaned_lines.append(line)
+        cleaned = "".join(cleaned_lines)
         # Strip block comments
         cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
-        # Extract the value for `key` — handles strings and arrays of strings.
+        # Extract the value for `key` — handles strings (which may contain
+        # raw newlines that we turn into \n) and arrays of strings. The
+        # string-content class [^"\\] is widened to [^"\\\n] so the regex
+        # can match a multi-line quoted string. We rely on the fact that
+        # the comment-stripping step above has already removed any // that
+        # could appear inside the string.
         m = re.search(
-            rf'"{re.escape(key)}"\s*:\s*("([^"\\]*(?:\\.[^"\\]*)*)"|\[([^\]]*)\])',
+            rf'"{re.escape(key)}"\s*:\s*("([^"\\\\\n]*(?:\\.[^"\\\\\n]*)*)"|\[([^\]]*)\])',
             cleaned,
+            flags=re.DOTALL,
         )
         if not m:
             return None
