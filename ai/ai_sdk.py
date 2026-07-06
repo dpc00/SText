@@ -210,7 +210,15 @@ class _Bridge:
         self.start()
 
     def is_alive(self):
-        return self._proc is not None and self._proc.poll() is None
+        # Two checks: (1) our local subprocess reference is alive, or
+        # (2) the bridge port is reachable. After a plugin reload, our
+        # subprocess reference may be the freshly-spawned one that died
+        # on port-in-use, but the *real* bridge (the older subprocess
+        # that survived) is still on the port. The second check catches
+        # that case.
+        if self._proc is not None and self._proc.poll() is None:
+            return True
+        return _port_in_use(_BRIDGE_PORT)
 
     def send(self, prompt, on_event):
         threading.Thread(
@@ -288,24 +296,84 @@ def plugin_loaded():
 
 
 def plugin_unloaded():
-    global _server, _bridge
-    if _server:
-        _server.stop()
-        _server = None
-    if _bridge:
-        _bridge.stop()
-        _bridge = None
+    # Deliberately do NOT stop the bridge or socket server on unload.
+    # They hold the conversation history (`messages` list) and the MCP
+    # session state. Killing them on every plugin reload (which can
+    # happen often in development) wipes all context and forces the
+    # user to re-establish the conversation from scratch.
+    # The processes are owned by this ST instance and will be cleaned
+    # up when ST itself exits.
+    pass
 
 
 def _ensure_bridge():
-    """Start server + bridge if not already running."""
+    """Start server + bridge if not already running.
+
+    Reuses an existing bridge on the port if one is reachable, even if our
+    local subprocess reference is dead. This handles the case where the
+    bridge survived a plugin reload (we deliberately don't kill it in
+    plugin_unloaded, to preserve conversation history) but our wrapper
+    object was reset.
+    """
     global _server, _bridge
     if _server is None:
         _server = _SdkSocketServer()
         _server.start()
-    if _bridge is None or not _bridge.is_alive():
-        _bridge = _Bridge(_bridge_cwd)
-        _bridge.start()
+
+    # If our local bridge is alive, nothing to do.
+    if _bridge is not None and _bridge.is_alive():
+        return
+
+    # Probe the bridge port: something may already be listening (an older
+    # bridge subprocess that survived a plugin reload). If so, create a
+    # bridge wrapper that just connects to it without spawning a new
+    # subprocess. This avoids the port-in-use problem on Windows where
+    # asyncio.start_server doesn't set SO_REUSEADDR.
+    if _port_in_use(_BRIDGE_PORT):
+        # Try to talk to it: send a no-op request, see if it responds.
+        if _bridge_responds():
+            if _bridge is None:
+                _bridge = _Bridge(_bridge_cwd)
+            return
+
+    # Port is free (or the existing listener is dead) — start a new bridge.
+    _bridge = _Bridge(_bridge_cwd)
+    _bridge.start()
+
+
+def _port_in_use(port):
+    """True if something is already listening on localhost:port."""
+    import socket as _s
+    s = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    s.settimeout(0.5)
+    try:
+        s.connect(("127.0.0.1", port))
+        s.close()
+        return True
+    except Exception:
+        return False
+
+
+def _bridge_responds():
+    """True if a bridge-like responder is on the port (replies to list_models)."""
+    import socket as _s
+    try:
+        s = _s.create_connection(("127.0.0.1", _BRIDGE_PORT), timeout=2)
+        s.sendall((json.dumps({"id": 1, "type": "list_models"}) + "\n").encode())
+        s.settimeout(2)
+        data = b""
+        while b"\n" not in data:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        s.close()
+        if not data:
+            return False
+        resp = json.loads(data.decode().split("\n", 1)[0])
+        return resp.get("type") == "model_list"
+    except Exception:
+        return False
 
 
 # ─── View helpers ─────────────────────────────────────────────────────────────

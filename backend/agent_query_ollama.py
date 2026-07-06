@@ -291,8 +291,105 @@ async def main_bridge(port: int):
         flush=True,
     )
 
-    # Conversation history (persists across queries in this bridge session)
-    messages = [{"role": "system", "content": _build_system_prompt()}]
+    # Conversation history (persists across queries in this bridge session).
+    # Auto-loaded from disk on startup and auto-saved after every change so
+    # the conversation survives bridge restarts, plugin reloads, and ST
+    # itself restarting. File path: $cwd/.cache/ai_sdk_history.json (falls
+    # back to the user's home dir if cwd isn't writable).
+    def _history_path():
+        for d in (os.getcwd(), os.path.expanduser("~")):
+            try:
+                p = os.path.join(d, ".cache", "ai_sdk_history.json")
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                return p
+            except OSError:
+                continue
+        return None
+
+    def _save_history():
+        p = _history_path()
+        if not p:
+            return
+        try:
+            # Filter to ollama-compatible fields and drop tool_calls/tool
+            # results (those reference runtime tool_call_ids that don't
+            # round-trip cleanly across bridge restarts).
+            slim = [
+                {"role": m.get("role"), "content": m.get("content", "")}
+                for m in messages
+                if m.get("role") in ("system", "user", "assistant")
+                and isinstance(m.get("content"), str)
+            ]
+            tmp = p + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(slim, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, p)
+        except Exception as e:
+            print(f"[agent_query_ollama] history save failed: {e}", file=sys.stderr)
+
+    def _load_history():
+        p = _history_path()
+        if not p or not os.path.exists(p):
+            return []
+        try:
+            with open(p, encoding="utf-8") as f:
+                loaded = json.load(f)
+            if not isinstance(loaded, list):
+                return []
+            # Drop the auto-injected system prompt from the saved history so
+            # we don't double-stack it; we re-prepend the fresh one.
+            return [m for m in loaded if m.get("role") != "system"]
+        except Exception as e:
+            print(f"[agent_query_ollama] history load failed: {e}", file=sys.stderr)
+            return []
+
+    _loaded = _load_history()
+
+    class _History:
+        """list-like wrapper that auto-saves to disk after every append.
+
+        Persists the conversation across bridge restarts, plugin reloads,
+        and ST itself restarting. Reads return a fresh list snapshot so
+        callers can iterate safely; writes go through append().
+        """
+
+        def __init__(self, initial):
+            self._list = list(initial)
+
+        def append(self, item):
+            self._list.append(item)
+            _save_history()
+
+        def extend(self, items):
+            self._list.extend(items)
+            _save_history()
+
+        def __iter__(self):
+            return iter(self._list)
+
+        def __len__(self):
+            return len(self._list)
+
+        def __getitem__(self, idx):
+            return self._list[idx]
+
+        def __setitem__(self, idx, val):
+            self._list[idx] = val
+            _save_history()
+
+        def clear(self):
+            self._list.clear()
+            _save_history()
+
+        def snapshot(self):
+            return list(self._list)
+
+    messages = _History([{"role": "system", "content": _build_system_prompt()}] + _loaded)
+    if _loaded:
+        print(
+            f"[agent_query_ollama] loaded {len(_loaded)} prior messages from history",
+            flush=True,
+        )
     # Tool names the user has muted via /tools off — filtered out before the
     # Ollama call. Persisted across queries like messages.
     disabled = set()
