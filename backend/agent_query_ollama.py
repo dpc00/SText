@@ -15,6 +15,7 @@ loaded from ~/.claude.json mcpServers (the same source Claude Code uses).
 import asyncio
 import json
 import os
+import re
 import sys
 import subprocess
 import threading
@@ -28,6 +29,105 @@ except AttributeError:
 _OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "glm-5.2:cloud")
 _OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 _PYTHON = r"C:\Users\donal\AppData\Local\Programs\Python\Python312\python.exe"
+
+# Settings file paths to probe for `spawn_env.OLLAMA_MODEL`. Live Packages
+# location first (what Sublime actually loaded), then the SText repo copy.
+# Reading the file directly is the only way for a subprocess to honor
+# ai_terminal.sublime-settings — ST's settings API isn't available here.
+_AI_TERMINAL_SETTINGS_PATHS = [
+    os.path.expanduser(
+        r"~\AppData\Roaming\Sublime Text\Packages\User\ai_terminal.sublime-settings"
+    ),
+    r"C:\Users\donal\projects\SText\ai_terminal.sublime-settings",
+]
+
+
+def _read_ollama_model_from_settings():
+    """Parse ai_terminal.sublime-settings for spawn_env.OLLAMA_MODEL.
+
+    Returns the value as a string, or None if not found / parse failed.
+    Minimal JSON-like parser: tolerates a few leading comment lines and
+    extracts the `spawn_env` block substring, then a quick `"OLLAMA_MODEL":`
+    scan inside it. Avoids needing the json module to handle trailing commas
+    / comments that a hand-edited settings file may have.
+    """
+    for path in _AI_TERMINAL_SETTINGS_PATHS:
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+        except OSError:
+            continue
+
+        # Strip line comments and block comments
+        cleaned = []
+        for line in text.splitlines():
+            stripped = line.lstrip()
+            if stripped.startswith("//"):
+                continue
+            cleaned.append(line)
+        cleaned = "\n".join(cleaned)
+
+        # Find the "spawn_env" object
+        idx = cleaned.find('"spawn_env"')
+        if idx < 0:
+            continue
+        brace = cleaned.find("{", idx)
+        if brace < 0:
+            continue
+        depth = 0
+        end = brace
+        for j in range(brace, len(cleaned)):
+            ch = cleaned[j]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = j
+                    break
+        block = cleaned[brace : end + 1]
+
+        # Inside the block, find "OLLAMA_MODEL": "value"
+        m = re.search(
+            r'"OLLAMA_MODEL"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', block
+        )
+        if m:
+            # Unescape \\ -> \ and \" -> "
+            return m.group(1).replace("\\\\", "\x00").replace('\\"', '"').replace("\x00", "\\")
+    return None
+
+
+# If the env var wasn't set in ST's process env, fall back to the settings
+# file (ai_terminal.sublime-settings -> spawn_env.OLLAMA_MODEL). This makes
+# the settings file the single source of truth.
+if "OLLAMA_MODEL" not in os.environ:
+    _settings_model = _read_ollama_model_from_settings()
+    if _settings_model:
+        _OLLAMA_MODEL = _settings_model
+
+# Max tool-call iterations per query before the loop gives up. Mutable at
+# runtime via the /loop-limit slash command (set_loop_limit bridge request).
+_LOOP_LIMIT = 15
+
+# Toggle thinking mode for models that support it (deepseek-r1, qwen3, gpt-oss,
+# etc.). When True, ollama.chat is called with think=True and the model's
+# reasoning is sent as a `thinking` event before the answer text.
+_THINK = False
+
+# Human-in-the-Loop: when True, each tool call is gated on an explicit
+# approval from the ST side (tool_approval_request -> tool_approval). The
+# query waits on an asyncio.Event that the socket watcher sets on receipt of
+# the approval. Escapable: an interrupt cancels the query, which raises
+# CancelledError out of the awaited event and falls through to "stopped".
+_HIL = False
+
+
+def _wrap_sync_iter(it):
+    """Convert a sync iterator into an async one (yields on the caller's loop)."""
+    async def _agen():
+        for item in it:
+            yield item
+    return _agen()
 
 # MCP tool layer (lifted from jonigl/mcp-client-for-ollama, see mcpclient/)
 from mcpclient.connector import ServerConnector
@@ -140,6 +240,10 @@ class ToolManager:
         self._configs = server_configs or {}
         self.connector = ServerConnector()
         self.tools = []
+        # Retired connectors are kept referenced (never closed/GC'd) because
+        # closing MCP transports fires an anyio cancel scope that cascades into
+        # the bridge's serve_forever(). Leaks the old MCP subprocesses per reload.
+        self._retired = []
 
     async def start(self):
         await self.connector.connect(self._configs)
@@ -157,6 +261,16 @@ class ToolManager:
         if bi is not None:
             return await asyncio.to_thread(bi["_impl"], **arguments)
         return await self.connector.call_tool(full_name, arguments)
+
+    async def reload(self):
+        """Reconnect to MCP servers (in-process). The old connector is retired
+        (kept referenced, not closed) to avoid the anyio cancel-scope cascade
+        that kills serve_forever() when MCP transports are closed."""
+        self._retired.append(self.connector)
+        self.connector = ServerConnector()
+        await self.connector.connect(self._configs)
+        self.tools = list(_BUILTIN_DEFS) + self.connector.tools
+        return len(self.connector.tools), len(self.tools)
 
     async def stop(self):
         await self.connector.aclose()
@@ -179,6 +293,9 @@ async def main_bridge(port: int):
 
     # Conversation history (persists across queries in this bridge session)
     messages = [{"role": "system", "content": _build_system_prompt()}]
+    # Tool names the user has muted via /tools off — filtered out before the
+    # Ollama call. Persisted across queries like messages.
+    disabled = set()
     query_lock = asyncio.Lock()
 
     async def send(writer, obj):
@@ -186,6 +303,7 @@ async def main_bridge(port: int):
         await writer.drain()
 
     async def handle_client(reader, writer):
+        global _OLLAMA_MODEL, _LOOP_LIMIT, _THINK, _HIL
         try:
             line = await asyncio.wait_for(reader.readline(), timeout=30.0)
             if not line:
@@ -270,18 +388,271 @@ async def main_bridge(port: int):
                 )
                 return
 
+            if req.get("type") == "export_history":
+                path = os.path.expanduser(req.get("path", ""))
+                try:
+                    parent = os.path.dirname(path)
+                    if parent:
+                        os.makedirs(parent, exist_ok=True)
+                    with open(path, "w", encoding="utf-8") as f:
+                        json.dump(messages, f, ensure_ascii=False, indent=2)
+                    await send(
+                        writer, {"id": qid, "type": "history_exported", "path": path}
+                    )
+                except Exception as e:
+                    await send(writer, {"id": qid, "type": "error", "error": str(e)})
+                return
+
+            if req.get("type") == "import_history":
+                path = os.path.expanduser(req.get("path", ""))
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        loaded = json.load(f)
+                    if not isinstance(loaded, list):
+                        raise ValueError("history file is not a list of messages")
+                    turns = sum(1 for m in loaded if m.get("role") in ("user", "assistant"))
+                    messages.clear()
+                    messages.extend(loaded)
+                    await send(
+                        writer,
+                        {
+                            "id": qid,
+                            "type": "history_imported",
+                            "path": path,
+                            "turns": turns,
+                        },
+                    )
+                except Exception as e:
+                    await send(writer, {"id": qid, "type": "error", "error": str(e)})
+                return
+
+            if req.get("type") == "clear_history":
+                # In-place reset: drop conversation but keep the system prompt
+                # and the running bridge (no subprocess restart, no MCP
+                # reconnect). Cheaper and faster than /restart.
+                messages.clear()
+                messages.append(
+                    {"role": "system", "content": _build_system_prompt()}
+                )
+                await send(writer, {"id": qid, "type": "history_cleared"})
+                return
+
+            if req.get("type") == "set_loop_limit":
+                n = req.get("limit", 0)
+                if not isinstance(n, int) or n < 1:
+                    await send(
+                        writer,
+                        {
+                            "id": qid,
+                            "type": "error",
+                            "error": "limit must be a positive integer",
+                        },
+                    )
+                    return
+                _LOOP_LIMIT = n
+                await send(writer, {"id": qid, "type": "loop_limit_set", "limit": n})
+                return
+
+            if req.get("type") == "list_models":
+                try:
+                    def _list():
+                        return [x.model for x in ollama.list().models]
+
+                    names = await asyncio.to_thread(_list)
+                except Exception as e:
+                    await send(writer, {"id": qid, "type": "error", "error": str(e)})
+                    return
+                await send(
+                    writer,
+                    {
+                        "id": qid,
+                        "type": "model_list",
+                        "current": _OLLAMA_MODEL,
+                        "models": names,
+                    },
+                )
+                return
+
+            if req.get("type") == "set_model":
+                m = req.get("model", "")
+                if not m:
+                    await send(
+                        writer, {"id": qid, "type": "error", "error": "no model name"}
+                    )
+                    return
+                _OLLAMA_MODEL = m
+                await send(writer, {"id": qid, "type": "model_set", "model": m})
+                return
+
+            if req.get("type") == "reload_model_from_settings":
+                # Re-read ai_terminal.sublime-settings and pick up
+                # spawn_env.OLLAMA_MODEL if present. Use this when the
+                # settings file changed but the bridge was already running.
+                new_model = _read_ollama_model_from_settings()
+                if new_model and new_model != _OLLAMA_MODEL:
+                    _OLLAMA_MODEL = new_model
+                await send(
+                    writer,
+                    {
+                        "id": qid,
+                        "type": "model_reloaded",
+                        "model": _OLLAMA_MODEL,
+                        "source": "settings" if new_model else "unchanged",
+                    },
+                )
+                return
+
+            if req.get("type") == "set_thinking":
+                enabled = bool(req.get("enabled", False))
+                _THINK = enabled
+                await send(
+                    writer, {"id": qid, "type": "thinking_set", "enabled": enabled}
+                )
+                return
+
+            if req.get("type") == "set_hil":
+                enabled = bool(req.get("enabled", False))
+                _HIL = enabled
+                await send(writer, {"id": qid, "type": "hil_set", "enabled": enabled})
+                return
+
+            if req.get("type") == "list_prompts":
+                await send(
+                    writer,
+                    {"id": qid, "type": "prompts_list",
+                     "prompts": tm.connector.all_prompts()},
+                )
+                return
+
+            if req.get("type") == "get_prompt":
+                server = req.get("server", "")
+                pname = req.get("name", "")
+                arguments = req.get("arguments", {}) or {}
+                try:
+                    msgs = await tm.connector.get_prompt(server, pname, arguments)
+                    if msgs is None:
+                        await send(writer, {
+                            "id": qid, "type": "error",
+                            "error": f"no such server: {server}",
+                        })
+                        return
+                    await send(writer, {
+                        "id": qid, "type": "prompt_result", "messages": msgs,
+                    })
+                except Exception as e:
+                    await send(writer, {"id": qid, "type": "error", "error": str(e)})
+                return
+
+            if req.get("type") == "list_resources":
+                await send(
+                    writer,
+                    {"id": qid, "type": "resources_list",
+                     "resources": tm.connector.all_resources()},
+                )
+                return
+
+            if req.get("type") == "read_resource":
+                uri = req.get("uri", "")
+                try:
+                    text = await tm.connector.read_resource(uri)
+                    if text is None:
+                        await send(writer, {
+                            "id": qid, "type": "error",
+                            "error": f"resource not found: {uri}",
+                        })
+                        return
+                    await send(writer, {
+                        "id": qid, "type": "resource_read", "text": text,
+                    })
+                except Exception as e:
+                    await send(writer, {"id": qid, "type": "error", "error": str(e)})
+                return
+
+            if req.get("type") == "reload_servers":
+                try:
+                    mcp_count, total = await tm.reload()
+                except Exception as e:
+                    await send(writer, {"id": qid, "type": "error", "error": str(e)})
+                    return
+                await send(
+                    writer,
+                    {
+                        "id": qid,
+                        "type": "servers_reloaded",
+                        "mcp_tools": mcp_count,
+                        "total_tools": total,
+                    },
+                )
+                return
+
+            if req.get("type") == "list_tools":
+                tools_info = [
+                    {
+                        "name": t["function"]["name"],
+                        "description": t["function"].get("description", ""),
+                        "client": t.get("_client", ""),
+                        "enabled": t["function"]["name"] not in disabled,
+                    }
+                    for t in tm.tools
+                ]
+                await send(
+                    writer, {"id": qid, "type": "tools_list", "tools": tools_info}
+                )
+                return
+
+            if req.get("type") == "set_tool":
+                name = req.get("name", "")
+                enabled = req.get("enabled", True)
+                if not name:
+                    await send(
+                        writer, {"id": qid, "type": "error", "error": "no tool name"}
+                    )
+                    return
+                if enabled:
+                    disabled.discard(name)
+                else:
+                    disabled.add(name)
+                await send(
+                    writer,
+                    {"id": qid, "type": "tool_set", "name": name, "enabled": enabled},
+                )
+                return
+
             prompt = req.get("prompt", "")
+
+            # HIL: tool_id -> {"event": asyncio.Event, "approve": bool|None}.
+            # Populated by run_query when it gates on a tool call; drained by
+            # the socket watcher when the ST side sends tool_approval.
+            pending_approvals = {}
 
             async def run_query():
                 async with query_lock:
                     messages.append({"role": "user", "content": prompt})
+                    t0 = time.time()
 
                     # Tool-call loop: keep going until the model stops calling tools
-                    max_turns = 15
+                    max_turns = _LOOP_LIMIT
+                    total_in = 0
+                    total_out = 0
                     for turn in range(max_turns):
-                        # Call Ollama with tools
-                        def _do_chat():
-                            r = ollama.chat(
+                        active_tools = [
+                            t for t in tm.tools if t["function"]["name"] not in disabled
+                        ]
+
+                        # Stream the model response chunk by chunk. Text and
+                        # thinking tokens are forwarded to the client as
+                        # they're produced (text_delta / thinking_delta
+                        # events). Tool calls are accumulated by index —
+                        # Ollama emits a fresh, more-complete tool_calls
+                        # array on later chunks, so we keep the latest
+                        # version of each index.
+                        accumulated_content = ""
+                        accumulated_thinking = ""
+                        # list of tool-call dicts keyed by index; last write wins
+                        tool_calls_by_index = {}
+
+                        def _chat_call():
+                            return ollama.chat(
                                 model=_OLLAMA_MODEL,
                                 messages=messages,
                                 tools=[
@@ -293,35 +664,96 @@ async def main_bridge(port: int):
                                             "parameters": t["function"]["parameters"],
                                         },
                                     }
-                                    for t in tm.tools
+                                    for t in active_tools
                                 ],
-                                stream=False,
+                                stream=True,
+                                think=_THINK,
                             )
-                            # Normalize Pydantic response to dict
-                            msg = r.message
-                            return {
-                                "content": msg.content or "",
-                                "tool_calls": [
-                                    {
-                                        "id": f"call_{i}",
-                                        "function": {
-                                            "name": tc.function.name,
-                                            "arguments": tc.function.arguments,
+
+                        stream = await asyncio.to_thread(_chat_call)
+                        try:
+                            # ollama Python lib: stream=True returns a sync
+                            # ChatResponse iterator, not async. Wrap it.
+                            if hasattr(stream, "__aiter__"):
+                                aiter = stream
+                            else:
+                                aiter = _wrap_sync_iter(stream)
+                            async for chunk in aiter:
+                                # Metrics (Ollama attaches them to the final chunk)
+                                chunk_in = getattr(chunk, "prompt_eval_count", 0) or 0
+                                chunk_out = getattr(chunk, "eval_count", 0) or 0
+                                if chunk_in or chunk_out:
+                                    # final chunk will accumulate below
+                                    pass
+
+                                msg = getattr(chunk, "message", None)
+                                if msg is None:
+                                    continue
+
+                                # Stream thinking tokens incrementally
+                                thinking_chunk = getattr(msg, "thinking", None) or ""
+                                if thinking_chunk:
+                                    accumulated_thinking += thinking_chunk
+                                    await send(
+                                        writer,
+                                        {
+                                            "id": qid,
+                                            "type": "thinking_delta",
+                                            "text": thinking_chunk,
                                         },
-                                    }
-                                    for i, tc in enumerate(msg.tool_calls or [])
-                                ],
-                            }
+                                    )
 
-                        resp = await asyncio.to_thread(_do_chat)
-                        content = resp["content"]
-                        tool_calls = resp["tool_calls"] if resp["tool_calls"] else None
+                                # Stream text tokens incrementally
+                                content_chunk = msg.content or ""
+                                if content_chunk:
+                                    accumulated_content += content_chunk
+                                    await send(
+                                        writer,
+                                        {
+                                            "id": qid,
+                                            "type": "text_delta",
+                                            "text": content_chunk,
+                                        },
+                                    )
 
-                        # Send text to client
-                        if content:
-                            await send(
-                                writer, {"id": qid, "type": "text", "text": content}
+                                # Accumulate tool calls (replace by index —
+                                # later chunks have the more-complete version)
+                                if msg.tool_calls:
+                                    for i, tc in enumerate(msg.tool_calls):
+                                        tool_calls_by_index[i] = {
+                                            "id": f"call_{i}",
+                                            "function": {
+                                                "name": tc.function.name,
+                                                "arguments": tc.function.arguments,
+                                            },
+                                        }
+
+                                # Final chunk carries the metric counts
+                                if chunk_in or chunk_out:
+                                    total_in += chunk_in
+                                    total_out += chunk_out
+                        except Exception as exc:
+                            print(
+                                f"[aqo] stream error: {type(exc).__name__}: {exc}",
+                                file=sys.stderr, flush=True,
                             )
+                            pass
+
+                        content = accumulated_content
+                        thinking = accumulated_thinking
+                        tool_calls = (
+                            [tool_calls_by_index[i] for i in sorted(tool_calls_by_index)]
+                            if tool_calls_by_index
+                            else None
+                        )
+
+                        # Send reasoning first (if the model produced any) — this
+                        # is the legacy 'thinking' event for the @done footer
+                        # path; the live stream already sent thinking_delta.
+                        # (No-op for non-thinking models.)
+
+                        # (Text was already streamed as text_delta events;
+                        # no need to re-send the full content here.)
 
                         # Add assistant message to history
                         asst_msg = {"role": "assistant", "content": content or ""}
@@ -347,14 +779,17 @@ async def main_bridge(port: int):
                                     "id": qid,
                                     "type": "done",
                                     "session_id": "",
-                                    "duration_ms": 0,
+                                    "duration_ms": int((time.time() - t0) * 1000),
                                     "cost": 0.0,
                                     "num_turns": turn + 1,
                                     "stop_reason": "end_turn",
                                     "model": _OLLAMA_MODEL,
                                     "context_window": {
-                                        "used_percentage": 0,
-                                        "total_input_tokens": 0,
+                                        "used_percentage": min(
+                                            100, int(100 * total_in / 1000000)
+                                        ),
+                                        "total_input_tokens": total_in,
+                                        "total_output_tokens": total_out,
                                         "context_window_size": 1000000,
                                     },
                                 },
@@ -371,16 +806,54 @@ async def main_bridge(port: int):
                                 except Exception:
                                     pass
 
+                            tid = tc.get("id", "call_0")
                             await send(
                                 writer,
                                 {
                                     "id": qid,
                                     "type": "tool_use",
-                                    "tool_id": tc.get("id", "call_0"),
+                                    "tool_id": tid,
                                     "name": fn_name,
                                     "input": fn_args,
                                 },
                             )
+
+                            # HIL gate: wait for the ST side to approve before
+                            # executing. Escapable via interrupt (cancels the
+                            # query -> CancelledError out of ev.wait()).
+                            if _HIL:
+                                ev = asyncio.Event()
+                                pending_approvals[tid] = {"event": ev, "approve": None}
+                                await send(
+                                    writer,
+                                    {
+                                        "id": qid,
+                                        "type": "tool_approval_request",
+                                        "tool_id": tid,
+                                        "name": fn_name,
+                                        "input": fn_args,
+                                    },
+                                )
+                                await ev.wait()
+                                entry = pending_approvals.pop(tid, {})
+                                if not entry.get("approve"):
+                                    await send(
+                                        writer,
+                                        {
+                                            "id": qid,
+                                            "type": "tool_result",
+                                            "tool_id": tid,
+                                            "is_error": True,
+                                            "rejected": True,
+                                        },
+                                    )
+                                    messages.append(
+                                        {
+                                            "role": "tool",
+                                            "content": "Tool call rejected by the user.",
+                                        }
+                                    )
+                                    continue
 
                             # Execute the tool (async via the mcp SDK)
                             result = await tm.call(fn_name, fn_args)
@@ -390,7 +863,7 @@ async def main_bridge(port: int):
                                 {
                                     "id": qid,
                                     "type": "tool_result",
-                                    "tool_id": tc.get("id", "call_0"),
+                                    "tool_id": tid,
                                     "is_error": False,
                                 },
                             )
@@ -416,8 +889,11 @@ async def main_bridge(port: int):
                             "stop_reason": "max_turns",
                             "model": _OLLAMA_MODEL,
                             "context_window": {
-                                "used_percentage": 0,
-                                "total_input_tokens": 0,
+                                "used_percentage": min(
+                                    100, int(100 * total_in / 1000000)
+                                ),
+                                "total_input_tokens": total_in,
+                                "total_output_tokens": total_out,
                                 "context_window_size": 1000000,
                             },
                         },
@@ -439,12 +915,15 @@ async def main_bridge(port: int):
                                 continue
                             try:
                                 msg = json.loads(line)
-                                if (
-                                    msg.get("type") == "interrupt"
-                                    and not query_task.done()
-                                ):
+                                mtype = msg.get("type")
+                                if mtype == "interrupt" and not query_task.done():
                                     query_task.cancel()
                                     return
+                                if mtype == "tool_approval":
+                                    entry = pending_approvals.get(msg.get("tool_id"))
+                                    if entry is not None:
+                                        entry["approve"] = bool(msg.get("approve"))
+                                        entry["event"].set()
                             except Exception:
                                 pass
                 except Exception:
