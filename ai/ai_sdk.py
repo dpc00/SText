@@ -625,13 +625,47 @@ def _render_prompt(view, prompt):
     sublime.set_timeout(_do, 0)
 
 
-def _render_tool_start(view, name, tool_id):
-    """Append a pending tool line and record the ⚙ position."""
+def _summarize_input(name, input_dict):
+    """Render a tool's input args as a short one-line summary.
 
-    def _do(n=name, tid=tool_id):
+    Used by _render_tool_start to give the user immediate context about
+    what the model just invoked. No per-tool formatter — this works for
+    all 237+ tools across every MCP server. If the dict is empty, returns
+    just the tool name. If a string field is unusually long, it's
+    truncated with an ellipsis.
+    """
+    if not input_dict:
+        return name
+    bits = []
+    for k, v in input_dict.items():
+        if isinstance(v, str):
+            s = v if len(v) <= 80 else v[:77] + "…"
+            bits.append(f"{k}={s!r}")
+        elif isinstance(v, (int, float, bool)):
+            bits.append(f"{k}={v}")
+        elif isinstance(v, list):
+            bits.append(f"{k}=[{len(v)} items]")
+        elif isinstance(v, dict):
+            bits.append(f"{k}={{{len(v)} keys}}")
+        else:
+            bits.append(f"{k}=…")
+    return f"{name}  " + "  ".join(bits)
+
+
+def _render_tool_start(view, name, tool_id, input_dict=None):
+    """Append a pending tool line (⚙ + args) and record the ⚙ position.
+
+    Prints the tool name plus a one-line summary of its input args so the
+    user can see what the model invoked. No per-tool formatter needed —
+    the summary is generated generically from the input dict.
+    """
+
+    def _do(n=name, tid=tool_id, inp=input_dict):
         view.set_read_only(False)
         pos = view.size()
-        view.run_command("append", {"characters": f"  ⚙ {n}\n", "scroll_to_end": True})
+        summary = _summarize_input(n, inp)
+        line = f"  ⚙ {summary}\n"
+        view.run_command("append", {"characters": line, "scroll_to_end": True})
         # Track position of ⚙ (offset 2 past pos, 1 character wide)
         view.add_regions(
             f"ai_sdk_tool_{tid}",
@@ -643,12 +677,20 @@ def _render_tool_start(view, name, tool_id):
     sublime.set_timeout(_do, 0)
 
 
-def _render_tool_result(view, tool_id, is_error):
-    """Flip ⚙ → ✔ or ✘ for the completed tool."""
+def _render_tool_result(view, tool_id, is_error, result_text=None):
+    """Flip ⚙ → ✔ or ✘ for the completed tool, then dump the result.
 
-    def _do(tid=tool_id, err=is_error):
+    The result is printed on indented lines below the icon so the user
+    can see what came back without expanding anything. If the result is
+    long it gets truncated in the bridge before being sent. This is the
+    ST-side equivalent of sublime-claude's per-tool formatters, but
+    generic — works for all 237+ tools without a registry.
+    """
+
+    def _do(tid=tool_id, err=is_error, txt=result_text):
         key = f"ai_sdk_tool_{tid}"
         regions = view.get_regions(key)
+        view.set_read_only(False)
         if regions:
             symbol = "✘" if err else "✔"
             view.run_command(
@@ -660,6 +702,18 @@ def _render_tool_result(view, tool_id, is_error):
                 },
             )
             view.erase_regions(key)
+        if txt:
+            # Indent each line of the result for readability. Result
+            # already has ellipsis truncation from the bridge if long.
+            for line in txt.splitlines() or [txt]:
+                view.run_command(
+                    "append",
+                    {
+                        "characters": f"      {line}\n",
+                        "scroll_to_end": True,
+                    },
+                )
+        view.set_read_only(True)
 
     sublime.set_timeout(_do, 0)
 
@@ -791,7 +845,12 @@ def _on_event(view, window, event):
             _thinking_started.add(view.id())
             _vwrite(view, f"  💭 {event.get('text', '')}")
     elif t == "tool_use":
-        _render_tool_start(view, event.get("name", "?"), event.get("tool_id", ""))
+        _render_tool_start(
+            view,
+            event.get("name", "?"),
+            event.get("tool_id", ""),
+            event.get("input", {}),
+        )
     elif t == "tool_approval_request":
         _prompt_approval(
             window,
@@ -801,7 +860,10 @@ def _on_event(view, window, event):
         )
     elif t == "tool_result":
         _render_tool_result(
-            view, event.get("tool_id", ""), event.get("is_error", False)
+            view,
+            event.get("tool_id", ""),
+            event.get("is_error", False),
+            event.get("result"),
         )
         if event.get("rejected"):
             _vwrite(view, "  [rejected]\n")

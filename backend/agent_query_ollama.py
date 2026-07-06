@@ -1057,6 +1057,15 @@ async def main_bridge(port: int):
                             # Execute the tool (async via the mcp SDK)
                             result = await tm.call(fn_name, fn_args)
 
+                            # Truncate the displayed result so a giant blob
+                            # (e.g. an entire Excel sheet) doesn't blow up
+                            # the view. The full result still goes into
+                            # history (the model needs it); the ST side just
+                            # shows the first chunk.
+                            result_str = str(result)
+                            if len(result_str) > 4000:
+                                result_str = result_str[:4000] + "\n…[truncated]"
+
                             await send(
                                 writer,
                                 {
@@ -1064,6 +1073,7 @@ async def main_bridge(port: int):
                                     "type": "tool_result",
                                     "tool_id": tid,
                                     "is_error": False,
+                                    "result": result_str,
                                 },
                             )
 
