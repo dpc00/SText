@@ -50,5 +50,26 @@
         "OLLAMA_MODEL":"minimax-m3:cloud",
         "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
         "CLAUDE_CODE_AI_TERMINAL_SENTINEL": "propagated"
-    }
+    },
+
+    // Files whose content is appended to the system prompt on every bridge
+    // startup. Each file is read and prepended with its basename as a
+    // markdown header, then joined with '---'. This is how the AI gets its
+    // working context: agents.md (the lobby), router.md (project map), and
+    // the project's CLAUDE.md (project-specific rules). Edit this list to
+    // add or remove context. Restart the bridge to pick up changes
+    // (Ctrl+Alt+X in the SDK tab).
+    "context_files": [
+        "C:\\Users\\donal\\agents.md",
+        "C:\\Users\\donal\\router.md",
+        "C:\\Users\\donal\\projects\\SText\\CLAUDE.md"
+    ],
+
+    // The wrapper text prepended to the system prompt. The file contents
+    // from `context_files` are appended below this. Edit to change how the
+    // AI introduces itself or what top-level rules it operates under.
+    "system_prompt_wrapper":
+        "You are an AI coding assistant running inside Sublime Text via the ai_sdk plugin.\n" +
+        "You have access to MCP tools for Sublime Text (sublime-mcp), screenshots, web scraping (firecrawl), and more.\n" +
+        "Use tools when they help. Be concise and direct."
 }

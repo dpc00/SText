@@ -136,27 +136,75 @@ from mcpclient.config import load_mcp_servers
 
 # ─── Context files ───────────────────────────────────────────────────────────
 
-_CONTEXT_FILES = [
-    r"C:\Users\donal\agents.md",
-    r"C:\Users\donal\router.md",
-    r"C:\Users\donal\projects\SText\CLAUDE.md",
-]
+# Context files (governed by ai_terminal.sublime-settings) — see the
+# `context_files` and `system_prompt_wrapper` keys in that file. Moved
+# out of the bridge so the user can edit context without editing code.
+
+
+def _read_setting_from_json(key):
+    """Read a string-or-list value from the live Packages copy of
+    ai_terminal.sublime-settings. Returns None if the key is missing or the
+    file can't be parsed. Falls back to the SText repo copy.
+    """
+    for path in _AI_TERMINAL_SETTINGS_PATHS:
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+        except OSError:
+            continue
+        # Strip JS-style line comments (// ...) — the settings file uses them.
+        cleaned = "\n".join(
+            line for line in text.splitlines()
+            if not line.lstrip().startswith("//")
+        )
+        # Strip block comments
+        cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
+        # Extract the value for `key` — handles strings and arrays of strings.
+        m = re.search(
+            rf'"{re.escape(key)}"\s*:\s*("([^"\\]*(?:\\.[^"\\]*)*)"|\[([^\]]*)\])',
+            cleaned,
+        )
+        if not m:
+            return None
+        if m.group(1):  # string value
+            raw = m.group(2)
+            return (
+                raw.replace("\\\\", "\x00")
+                .replace('\\"', '"')
+                .replace("\\n", "\n")
+                .replace("\\t", "\t")
+                .replace("\x00", "\\")
+            )
+        # array value — extract each quoted string
+        items = re.findall(r'"((?:[^"\\]|\\.)*)"', m.group(3) or "")
+        return [
+            s.replace("\\\\", "\x00").replace('\\"', '"').replace("\x00", "\\")
+            for s in items
+        ]
+    return None
 
 
 def _build_system_prompt():
+    files = _read_setting_from_json("context_files") or [
+        r"C:\Users\donal\agents.md",
+        r"C:\Users\donal\router.md",
+        r"C:\Users\donal\projects\SText\CLAUDE.md",
+    ]
     parts = []
-    for path in _CONTEXT_FILES:
+    for path in files:
         try:
             with open(path, encoding="utf-8", errors="replace") as f:
                 parts.append(f"# {os.path.basename(path)}\n{f.read()}")
         except OSError:
             pass
     context = "\n\n---\n\n".join(parts)
-    return f"""You are an AI coding assistant running inside Sublime Text via the ai_sdk plugin.
-You have access to MCP tools for Sublime Text (sublime-mcp), screenshots, web scraping (firecrawl), and more.
-Use tools when they help. Be concise and direct.
-
-{context}"""
+    wrapper = _read_setting_from_json("system_prompt_wrapper") or (
+        "You are an AI coding assistant running inside Sublime Text via the "
+        "ai_sdk plugin.\nYou have access to MCP tools for Sublime Text "
+        "(sublime-mcp), screenshots, web scraping (firecrawl), and more.\n"
+        "Use tools when they help. Be concise and direct."
+    )
+    return f"{wrapper}\n\n{context}"
 
 
 # ─── Built-in tools (implemented locally, not via MCP) ─────────────────────────
