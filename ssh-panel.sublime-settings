@@ -6,13 +6,13 @@
 			"username": "u0_a552",
 			"private_key": [
 				"Ed25519Key",
-				"~/.ssh/id_ed25519"
+				"C:\\Users\\donal/.ssh/id_ed25519"
 			],
 			"need_passphrase": false,
 			"remote_path": [
 				"/data/data/com.termux/files"
 			],
-			"local_path": "~/SFTP-Local/{auto_generate}",
+			"local_path": "C:\\Users\\donal\\SFTP-Local\\c990c5ccb0b805afb404a9b3d5f76aba",
 		},
 		"Phone-CenturyLink": {
 			"hostname": "192.168.0.11",
