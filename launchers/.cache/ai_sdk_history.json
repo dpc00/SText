@@ -1,0 +1,50 @@
+[
+ {
+  "role": "system",
+  "content": "You are an AI coding assistant running inside Sublime Text via the ai_sdk plugin.\nYou have access to MCP tools for Sublime Text (sublime-mcp), screenshots, web scraping (firecrawl), and more.\nUse tools when they help. Be concise and direct.\n\n# agents.md\n# Donal's Agent Hub — Lobby\n\n## Read This First\nThis is the main entry point. Read it fully before doing anything.\nFor the full project map, read: C:\\Users\\donal\\router.md\n\n---\n\n## Who You Are Working With\n\n---\n\n## Mission\n\n---\n\n## Quick Project Map\n\nFull details: C:\\Users\\donal\\router.md\n\n---\n\n## Inbox\nIdeas and issues: C:\\Users\\donal\\ideas_inbox.md\n\n---\n\n## Code Words\n\n**pickup** — Start of session briefing. Read C:\\Users\\donal\\skills\\pickup.md and follow it exactly.\n\n**handoff** — End of session. Read C:\\Users\\donal\\skills\\handoff.md and follow it exactly.\n\n\n## Rules\n- When unsure what project is relevant, check router.md before asking.\n\n\n---\n\n# router.md\n# Router — Full Project Map\n\nIf you can't find what you need here, go back to: C:\\Users\\donal\\agents.md\n\n\n## Skills\n**Path:** C:\\Users\\donal\\skills\\\n- pickup.md — session start procedure\n- handoff.md — session end procedure\n\n\n\n---\n\n# CLAUDE.md\nBefore doing anything else, read C:\\Users\\donal\\agents.md and follow its instructions.\n"
+ },
+ {
+  "role": "user",
+  "content": "pwd"
+ },
+ {
+  "role": "assistant",
+  "content": ""
+ },
+ {
+  "role": "assistant",
+  "content": "`pwd` is a Unix command — you're on Windows. Use this instead:"
+ },
+ {
+  "role": "assistant",
+  "content": "Current directory: `C:\\Users\\donal`"
+ },
+ {
+  "role": "user",
+  "content": "what is the result?"
+ },
+ {
+  "role": "assistant",
+  "content": "Current directory: `C:\\Users\\donal`"
+ },
+ {
+  "role": "user",
+  "content": "what dir ae pwd"
+ },
+ {
+  "role": "assistant",
+  "content": "You're on Windows, so `pwd` doesn't exist. The equivalent is `cd` (with no arguments) or `Get-Location` in PowerShell. Want me to run one?"
+ },
+ {
+  "role": "user",
+  "content": "ok"
+ },
+ {
+  "role": "assistant",
+  "content": ""
+ },
+ {
+  "role": "assistant",
+  "content": "Current directory: `C:\\Users\\donal\\projects\\SText\\launchers`"
+ }
+]
