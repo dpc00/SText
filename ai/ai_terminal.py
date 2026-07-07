@@ -897,6 +897,18 @@ class _Parser:
             s.erase_display(p[0] if p else 0)
         elif final == "K":
             s.erase_line(p[0] if p else 0)
+        elif final == "X":  # ECH -- erase Ps chars from cursor (cursor does not move)
+            # ConPTY leans on ECH heavily to blank cells mid-row when a TUI frame
+            # shrinks a line; dropping it (the old "consumed-and-dropped" fallback)
+            # left stale cells visible -- e.g. the /slash-menu mash where the
+            # statusline and old menu items bled into the new filtered list.
+            n = max(0, p[0] if p else 1)
+            row = s.grid[s.y]
+            arow = s.attrs[s.y]
+            for c in range(s.x, min(s.x + n, s.cols)):
+                row[c] = _BLANK
+                arow[c] = 0
+            s.dirty = True
         elif final == "G":  # CHA -- cursor horizontal absolute
             s.move_abs(s.y, (p[0] if p and p[0] else 1) - 1)
         elif final == "d":  # VPA -- vertical position absolute
