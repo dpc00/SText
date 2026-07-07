@@ -1766,5 +1766,10 @@ def plugin_unloaded():
 
 
 class StConfigOpenCommand(sublime_plugin.WindowCommand):
+    """Start the local ST config HTTP server and open its web UI.
+
+    Command palette: "Sublime Config"
+    """
+
     def run(self):
         threading.Thread(target=_open, daemon=True).start()

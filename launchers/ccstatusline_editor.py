@@ -9,6 +9,12 @@ _si.wShowWindow = subprocess.SW_HIDE
 
 
 class CcstatuslineEditorOpenCommand(sublime_plugin.WindowCommand):
+    """Launch the ccstatusline-editor server and open its web UI in a browser.
+
+    Key binding: ctrl+alt+l
+    Command palette: "CC Statusline Editor"
+    """
+
     def run(self):
         cmd = ["ccstatusline-editor"]
         config_path = sublime.load_settings("Preferences.sublime-settings").get("ccstatusline_config_path", "")

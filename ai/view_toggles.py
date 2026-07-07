@@ -20,18 +20,27 @@ def _toggle_bool_setting(view, key):
 
 
 class AiToggleGutterCommand(sublime_plugin.TextCommand):
-    """View: Toggle Gutter -- show/hide the gutter on the active view."""
+    """Show or hide the gutter on the active view.
+
+    Command palette (ai/view_toggles.sublime-commands): "View: Toggle Gutter"
+    """
     def run(self, edit):
         _toggle_bool_setting(self.view, "gutter")
 
 
 class AiToggleLineNumbersCommand(sublime_plugin.TextCommand):
-    """View: Toggle Line Numbers -- show/hide line numbers on the active view."""
+    """Show or hide line numbers on the active view.
+
+    Command palette (ai/view_toggles.sublime-commands): "View: Toggle Line Numbers"
+    """
     def run(self, edit):
         _toggle_bool_setting(self.view, "line_numbers")
 
 
 class AiToggleFoldButtonsCommand(sublime_plugin.TextCommand):
-    """View: Toggle Fold Buttons -- show/hide fold +/- markers on the active view."""
+    """Show or hide fold buttons on the active view.
+
+    Command palette (ai/view_toggles.sublime-commands): "View: Toggle Fold Buttons"
+    """
     def run(self, edit):
         _toggle_bool_setting(self.view, "fold_buttons")

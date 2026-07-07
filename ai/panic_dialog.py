@@ -231,7 +231,11 @@ def _do_send(window):
 
 
 class PanicOpenCommand(sublime_plugin.WindowCommand):
-    """Open the Quote-and-Reply panel."""
+    """Open the Quote-and-Reply panel showing the last Claude response and a reply editor.
+
+    Key binding: ctrl+alt+p
+    Command palette: "Panic: Quote & Reply"
+    """
 
     def run(self, response_text=None):
         if response_text is None:
@@ -274,7 +278,11 @@ class PanicOpenCommand(sublime_plugin.WindowCommand):
 
 
 class PanicSendCommand(sublime_plugin.WindowCommand):
-    """Send the panic reply (Ctrl+Enter in the reply view)."""
+    """Send the panic reply from the reply view back to the Claude session.
+
+    Key binding: ctrl+enter (context: setting.panic_reply_view == true)
+    No menu/palette entry.
+    """
 
     def run(self):
         _do_send(self.window)
@@ -285,14 +293,21 @@ class PanicSendCommand(sublime_plugin.WindowCommand):
 
 
 class PanicCancelCommand(sublime_plugin.WindowCommand):
-    """Cancel the panic dialog."""
+    """Close the panic dialog and restore the saved window layout.
+
+    Key binding: escape (context: setting.panic_reply_view == true)
+    No menu/palette entry.
+    """
 
     def run(self):
         _close_panic()
 
 
 class PanicAppendCommand(sublime_plugin.WindowCommand):
-    """Append text to the Response tab (subsequent assistant messages in same turn)."""
+    """Append text to the Response tab (subsequent assistant messages in same turn).
+
+    No key/menu/palette binding; invoked programmatically.
+    """
 
     def run(self, text=""):
         if not text:
@@ -313,7 +328,10 @@ class PanicAppendCommand(sublime_plugin.WindowCommand):
 
 
 class PanicRefreshCommand(sublime_plugin.WindowCommand):
-    """Refresh the Response tab. Pass response_text directly, or fall back to JSONL."""
+    """Refresh the Response tab. Pass response_text directly, or fall back to JSONL.
+
+    No key/menu/palette binding; invoked programmatically.
+    """
 
     def run(self, response_text=None):
         text = response_text or _last_claude_response()

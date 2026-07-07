@@ -15,7 +15,10 @@ import sublime_plugin
 
 
 class SshPanelAutoConnectCommand(sublime_plugin.WindowCommand):
-    """Pick the first reachable Phone-* SSH-Panel server and connect."""
+    """Probe each configured Phone-* SSH-Panel server in the background and connect to the first that answers.
+
+    Command palette: "SSH-Panel: Auto Connect Phone"
+    """
 
     GROUP_PREFIX = "Phone-"
     PROBE_TIMEOUT = 3  # seconds per candidate

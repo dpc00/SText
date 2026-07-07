@@ -4,7 +4,7 @@ import sublime_plugin
 
 
 class ClaudeCodeHereCommand(sublime_plugin.WindowCommand):
-    """Launch Claude Code with cwd pinned to the clicked location.
+    """Launch Claude Code with cwd pinned to the clicked or active location.
 
     Models the "Open Terminus here..." items. Resolves "here" from:
       1. the side-bar selection (`paths`, dir as-is / file -> its dir), else
@@ -12,6 +12,8 @@ class ClaudeCodeHereCommand(sublime_plugin.WindowCommand):
       3. the window's first project folder, else the home dir.
     Then defers to the plugin's own `claude_code_terminal` (model picker and
     all), so this stays a thin shim over the real launcher.
+
+    Command palette: "Claude Code: Open Here"
     """
 
     def run(self, paths=None):

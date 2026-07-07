@@ -15,6 +15,12 @@
 	{"keys": ["escape"], "command": "ai_sdk_stop", "context": [{"key": "setting.ai_sdk_view", "operator": "equal", "operand": true}, {"key": "setting.ai_sdk_input_mode", "operator": "equal", "operand": false}]},
 	{"keys": ["escape"], "command": "panic_cancel", "context": [{"key": "setting.panic_reply_view", "operator": "equal", "operand": true}]},
 
+	// ── Ai Utilities: orphaned user-facing commands (also under Tools → Ai Utilities) ──
+	{"keys": ["ctrl+alt+t"], "command": "ai_trim_now"},
+	{"keys": ["ctrl+alt+e"], "command": "ai_dump_buffer"},
+	{"keys": ["ctrl+alt+k"], "command": "ai_terminal_nuke", "context": [{"key": "setting.ai_terminal_view", "operator": "equal", "operand": true}]},
+	{"keys": ["ctrl+alt+s"], "command": "ai_capture_scroll_position"},
+
 	// ── ai_terminal: forward physical keys to the Claude TUI PTY ──
 	// ST does not fire on_text_command for unbound printable keys, so every
 	// printable/special key is bound here to ai_terminal_keypress, gated by

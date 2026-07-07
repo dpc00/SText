@@ -726,7 +726,12 @@ def _tick():
 
 
 class AiCaptureScrollPositionCommand(sublime_plugin.TextCommand):
-    """Screenshot ST at the current scroll position (manual trigger)."""
+    """Capture a screenshot of the active view at the current scroll position and save it to the screenshot directory.
+
+    Key binding: ctrl+alt+s.
+    Menu: Main.sublime-menu → Tools → Ai Utilities — "Screenshot at Scroll".
+    Command palette: "Ai: Screenshot at Scroll".
+    """
 
     def run(self, edit):
         try:

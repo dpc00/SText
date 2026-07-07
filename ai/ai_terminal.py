@@ -1563,7 +1563,11 @@ def _spawn(window, path):
 
 
 class AiTerminalOpenHereCommand(sublime_plugin.WindowCommand):
-    """Sidebar: open a Claude TUI terminal in the chosen directory."""
+    """Open a Claude TUI terminal in the chosen directory.
+
+    Menu: Side Bar.sublime-menu — "Open Ai Terminal here..."
+    Command palette: "Ai: Open Terminal Here"
+    """
 
     def run(self, paths=None):
         path = _resolve_here_path(self.window, paths or [])
@@ -1577,7 +1581,11 @@ class AiTerminalOpenHereCommand(sublime_plugin.WindowCommand):
 
 
 class AiTerminalOpenInEditorCommand(sublime_plugin.TextCommand):
-    """Palette / tab menu: open a Claude TUI terminal in this file's directory."""
+    """Open a Claude TUI terminal in this file's directory.
+
+    Menu: Context.sublime-menu / Tab Context.sublime-menu — "Open Ai Terminal here..."
+    Command palette: "Ai: Open Terminal in Editor"
+    """
 
     def run(self, edit):
         path = _resolve_editor_path(self.view)
@@ -1590,7 +1598,10 @@ class AiTerminalOpenInEditorCommand(sublime_plugin.TextCommand):
 
 
 class AiTerminalSendStringCommand(sublime_plugin.TextCommand):
-    """Send an arbitrary string to the PTY (terminus_send_string equivalent)."""
+    """Send an arbitrary string to the PTY (terminus_send_string equivalent).
+
+    No key/menu/palette binding; invoked programmatically.
+    """
 
     def run(self, edit, string=""):
         term = _Terminal.from_id(self.view.id())
@@ -1746,10 +1757,17 @@ def _scroll_to_bottom(view):
 
 
 class AiTerminalKeypressCommand(sublime_plugin.TextCommand):
-    """Forward a physical key (bound in Default.sublime-keymap) to the PTY.
+    """Forward a physical key to the PTY as the terminal byte sequence it expects.
 
     ST routes unbound printable keys through a direct text-input path that
-    bypasses on_text_command, so the keymap binds them to this command instead.
+    bypasses on_text_command, so the keymap binds them to this command
+    instead. Every printable/special key is bound in Default.sublime-keymap
+    (letters, digits, punctuation, arrows, enter, tab, space, backspace,
+    insert/delete, pageup/pagedown, home/end, escape, and ctrl/alt/shift
+    combinations of same), all gated by context setting.ai_terminal_view ==
+    true; args carry the key name and modifier flags.
+
+    No menu/palette entry.
     """
 
     def run(self, edit, key="", ctrl=False, alt=False, shift=False):
@@ -1774,7 +1792,10 @@ class AiTerminalKeypressCommand(sublime_plugin.TextCommand):
 
 
 class AiTerminalRenderCommand(sublime_plugin.TextCommand):
-    """Replace the whole view with the current screen snapshot (main-thread)."""
+    """Replace the whole view with the current screen snapshot on the main thread.
+
+    No key/menu/palette binding; invoked programmatically.
+    """
 
     def run(self, edit, text="", cursor=None, regions=None):
         view = self.view
@@ -1847,7 +1868,17 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
 
 
 class AiTerminalNukeCommand(sublime_plugin.TextCommand):
-    """Clear the view (terminus_nuke equivalent)."""
+    """Clear the view and reset the terminal screen (terminus_nuke equivalent).
+
+    Key binding: ctrl+alt+k (context: setting.ai_terminal_view == true).
+    Menu: Main.sublime-menu → Tools → Ai Utilities — "Nuke Ai Terminal".
+    Command palette: "Ai: Nuke Ai Terminal".
+    """
+
+    def is_enabled(self):
+        # Gate so the menu item greys out outside an ai_terminal view —
+        # run() would otherwise blank any active file view.
+        return bool(self.view.settings().get("ai_terminal_view"))
 
     def run(self, edit):
         view = self.view
@@ -1860,12 +1891,20 @@ class AiTerminalNukeCommand(sublime_plugin.TextCommand):
 
 
 class AiTerminalNoopCommand(sublime_plugin.TextCommand):
+    """Do nothing (placeholder no-op command).
+
+    No key/menu/palette binding; invoked programmatically.
+    """
+
     def run(self, edit):
         pass
 
 
 class AiTerminalDumpScreenCommand(sublime_plugin.TextCommand):
-    """Dev: print the current screen grid + cursor to the ST console."""
+    """Print the current screen grid and cursor to the ST console for debugging.
+
+    No key/menu/palette binding; invoked programmatically (debug).
+    """
 
     def run(self, edit):
         term = _Terminal.from_id(self.view.id())

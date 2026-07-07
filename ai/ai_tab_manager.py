@@ -145,7 +145,12 @@ def _ai_view():
 # -- core commands ------------------------------------------------------------
 
 class AiTrimNowCommand(sublime_plugin.TextCommand):
-    """Manually trim buffer to scrollback_history_size, logging content first."""
+    """Trim the Ai view buffer down to scrollback_history_size, logging removed content first.
+
+    Key binding: ctrl+alt+t.
+    Menu: Main.sublime-menu → Tools → Ai Utilities — "Trim Ai Buffer Now".
+    Command palette: "Ai: Trim Buffer Now".
+    """
 
     def run(self, edit):
         try:
@@ -188,7 +193,12 @@ class AiTrimNowCommand(sublime_plugin.TextCommand):
 
 
 class AiDumpBufferCommand(sublime_plugin.TextCommand):
-    """Export the entire current Ai buffer to a file for inspection/archival."""
+    """Dump the entire current Ai buffer to a timestamped file under ~/.cache/claude-buffer-exports.
+
+    Key binding: ctrl+alt+e.
+    Menu: Main.sublime-menu → Tools → Ai Utilities — "Export Ai Buffer...".
+    Command palette: "Ai: Export Buffer...".
+    """
 
     def run(self, edit):
         v = self.view
@@ -289,7 +299,10 @@ def _decode_project(folder_name):
 
 
 class AiListSessionsCommand(sublime_plugin.WindowCommand):
-    """Show recent Ai sessions across all projects."""
+    """List recent Claude Code sessions across all projects in a scratch view.
+
+    Command palette: "Ai: List Recent Sessions"
+    """
 
     def run(self, count=40):
         projects_dir = Path.home() / ".claude" / "projects"
@@ -351,7 +364,10 @@ class AiListSessionsCommand(sublime_plugin.WindowCommand):
 
 
 class AiSearchConversationsCommand(sublime_plugin.WindowCommand):
-    """Launch the Ai conversation search Flask app in a browser."""
+    """Launch the Ai conversation search Flask app on port 5758, or open it in a browser if already running.
+
+    Command palette: "Ai: Search Conversations"
+    """
 
     def run(self):
         import socket
@@ -387,7 +403,10 @@ _FLASK_APPS = [
 
 
 class AiQuitFlaskAppsCommand(sublime_plugin.WindowCommand):
-    """Quit all running Flask apps. Command palette: Ai: Quit Flask Apps"""
+    """Send each known Flask app's shutdown endpoint to stop them.
+
+    Command palette: "Ai: Quit Flask Apps"
+    """
 
     def run(self):
         import urllib.request

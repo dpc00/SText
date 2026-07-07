@@ -30,7 +30,7 @@ def _terminal_for(view):
 
 
 class ClearBufferCommand(sublime_plugin.TextCommand):
-    """Send cls then scrub the Terminus screen buffer down to the prompt line.
+    """Send cls then scrub the Terminus pyte screen buffer down to the prompt line.
 
     Two-phase approach:
       1. 'cls\\n' redraws the prompt so screen.cursor.y points at the prompt row.
@@ -40,6 +40,9 @@ class ClearBufferCommand(sublime_plugin.TextCommand):
          ST view from the now-clean buffer.
 
     Requires Terminus; silently does nothing on non-terminal views.
+
+    Key binding: ctrl+shift+k
+    Command palette: "Ai: Clear Buffer"
     """
 
     def run(self, edit):

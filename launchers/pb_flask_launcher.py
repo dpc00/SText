@@ -3,6 +3,12 @@ import sublime_plugin
 
 
 class PbFlaskLauncherCommand(sublime_plugin.WindowCommand):
+    """Open a Terminus tab that starts the PyBackup Flask app and launches its browser UI.
+
+    Menu: Main.sublime-menu → Tools — "PyBackup Flask App"
+    Command palette: "PyBackup: Flask App"
+    """
+
     def run(self):
         self.window.run_command(
             "terminus_open",

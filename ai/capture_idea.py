@@ -35,7 +35,11 @@ def _append_item(text):
 
 
 class CaptureIdeaCommand(sublime_plugin.WindowCommand):
-    """Prompt for a one-line idea/pain and append it to the inbox (silent)."""
+    """Prompt for a one-line idea or pain and append it to the global idea inbox.
+
+    Key binding: ctrl+alt+i
+    Command palette: "Ai: Capture Idea"
+    """
 
     def run(self):
         self.window.show_input_panel(
@@ -48,7 +52,11 @@ class CaptureIdeaCommand(sublime_plugin.WindowCommand):
 
 
 class OpenIdeaInboxCommand(sublime_plugin.WindowCommand):
-    """Open the idea inbox for review / check-off."""
+    """Open the global idea inbox markdown file for review and check-off.
+
+    Key binding: ctrl+alt+o
+    Command palette: "Ai: Open Idea Inbox"
+    """
 
     def run(self):
         _ensure_inbox()

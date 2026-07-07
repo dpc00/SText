@@ -8,6 +8,12 @@ _si.wShowWindow = subprocess.SW_HIDE
 
 
 class PbFlaskSilentCommand(sublime_plugin.WindowCommand):
+    """Start the PyBackup Flask app headlessly (no console window) and open its browser UI.
+
+    Menu: Main.sublime-menu → Tools — "PyBackup Flask App (Silent)"
+    Command palette: "PyBackup: Flask App (silent)"
+    """
+
     def run(self):
         subprocess.Popen(
             ["python", r"C:/Users/donal/projects/pybackup/ui/app.py"],

@@ -1025,7 +1025,10 @@ class AiSdkViewListener(sublime_plugin.ViewEventListener):
 
 
 class AiSdkReplaceCommand(sublime_plugin.TextCommand):
-    """Replace a region in the view (handles read-only toggle)."""
+    """Replace a region in the view, toggling read-only off and back on around the edit.
+
+    No key/menu/palette binding; invoked programmatically.
+    """
 
     def run(self, edit, start, end, text):
         self.view.set_read_only(False)
@@ -1037,7 +1040,11 @@ class AiSdkReplaceCommand(sublime_plugin.TextCommand):
 
 
 class AiSdkFocusCommand(sublime_plugin.WindowCommand):
-    """Ctrl+Alt+A — open / focus the Ai (SDK) conversation view."""
+    """Open or focus the AI (SDK) conversation view and ensure input mode is on.
+
+    Key binding: ctrl+alt+a
+    Command palette: "AI (SDK): Open"
+    """
 
     def run(self):
         _ensure_bridge()
@@ -1049,7 +1056,11 @@ class AiSdkFocusCommand(sublime_plugin.WindowCommand):
 
 
 class AiSdkSubmitCommand(sublime_plugin.TextCommand):
-    """Enter — submit the typed prompt to Claude."""
+    """Submit the typed prompt from the input region to Claude.
+
+    Key binding: enter (context: setting.ai_sdk_input_mode == true)
+    No menu/palette entry.
+    """
 
     def run(self, edit):
         view = self.view
@@ -1065,12 +1076,21 @@ class AiSdkSubmitCommand(sublime_plugin.TextCommand):
 
 
 class AiSdkNoopCommand(sublime_plugin.TextCommand):
+    """Do nothing; used as a no-op command target.
+
+    No key/menu/palette binding; invoked programmatically.
+    """
+
     def run(self, edit):
         pass
 
 
 class AiSdkStopCommand(sublime_plugin.WindowCommand):
-    """Stop the running Claude query."""
+    """Stop the currently running Claude query in the bridge.
+
+    Key binding: escape (context: setting.ai_sdk_view == true and setting.ai_sdk_input_mode == false)
+    Command palette: "AI (SDK): Stop"
+    """
 
     def run(self):
         global _bridge
@@ -1648,7 +1668,11 @@ def _do_submit(view, window, prompt):
 
 
 class AiSdkClearCommand(sublime_plugin.WindowCommand):
-    """Ctrl+Alt+X — restart bridge (clears conversation history)."""
+    """Restart the bridge subprocess, clearing the conversation history.
+
+    Key binding: ctrl+alt+x
+    Command palette: "AI (SDK): Clear"
+    """
 
     def run(self):
         global _bridge
@@ -1663,13 +1687,16 @@ class AiSdkClearCommand(sublime_plugin.WindowCommand):
 
 
 class AiSdkOpenHereCommand(sublime_plugin.WindowCommand):
-    """Sidebar: open AI(SDK) panel with cwd set to the chosen directory.
+    """Open the AI (SDK) panel with cwd set to the chosen directory, restarting the bridge so its cwd matches.
 
-    Always restarts the bridge subprocess so its os.getcwd() matches
-    the chosen folder. If we didn't restart, the bridge would keep
-    whatever cwd it was originally spawned with (often ST's own cwd
-    = the user's home) and 'pwd' inside run_shell would disagree
-    with the cwd shown in the view header.
+    Always restarts the bridge subprocess so its os.getcwd() matches the
+    chosen folder. If we didn't restart, the bridge would keep whatever cwd
+    it was originally spawned with (often ST's own cwd = the user's home) and
+    'pwd' inside run_shell would disagree with the cwd shown in the view
+    header.
+
+    Menu: Context.sublime-menu / Side Bar.sublime-menu — "Open AI(SDK) here..."
+    Command palette: "AI (SDK): Open Here"
     """
 
     def run(self, paths=None):
@@ -1741,7 +1768,11 @@ class AiSdkOpenHereCommand(sublime_plugin.WindowCommand):
 
 
 class AiSdkOpenInEditorCommand(sublime_plugin.TextCommand):
-    """Context/tab menu: open AI(SDK) panel with cwd set to current file's directory."""
+    """Open the AI (SDK) panel with cwd set to the current file's directory.
+
+    Menu: Tab Context.sublime-menu — "Open AI(SDK) here..."
+    Command palette: "AI (SDK): Open in Editor"
+    """
 
     def run(self, edit):
         import os as _os

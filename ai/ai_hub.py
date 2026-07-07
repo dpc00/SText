@@ -259,7 +259,11 @@ def _render(view):
 
 
 class AiHubOpenCommand(sublime_plugin.WindowCommand):
-    """Open (or refresh) the AI Hub panel. Ctrl+Alt+H."""
+    """Open the AI Hub dashboard panel in a right-column scratch view, or refresh it if already open.
+
+    Key binding: ctrl+alt+h
+    Command palette: "AI Hub: Open"
+    """
 
     def run(self):
         # Find existing hub view by name (survives module reloads)
@@ -306,7 +310,10 @@ class AiHubOpenCommand(sublime_plugin.WindowCommand):
 
 
 class AiHubRefreshCommand(sublime_plugin.WindowCommand):
-    """Refresh the hub phantom."""
+    """Re-render the AI Hub phantom in the existing hub view.
+
+    Command palette: "AI Hub: Refresh"
+    """
 
     def run(self):
         v = _HubState.view

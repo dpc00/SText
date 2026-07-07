@@ -1222,6 +1222,11 @@ def _serve():
 
 
 class SettingsEditorOpenCommand(sublime_plugin.WindowCommand):
+    """Start the local settings-editor HTTP server (if not running) and open its web UI.
+
+    Command palette: "Sublime Settings Editor"
+    """
+
     def run(self):
         if _SERVER[0] is None:
             t = threading.Thread(target=_serve, daemon=True)

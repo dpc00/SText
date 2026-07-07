@@ -63,7 +63,10 @@ def _resolve_here_path(window, paths):
 
 
 class OpenAiHereCommand(sublime_plugin.WindowCommand):
-    """Sidebar: open a new external console running Ai in the chosen dir."""
+    """Open a new external console running Ai in the sidebar-selected directory.
+
+    Command palette: "Ai: Open Here"
+    """
 
     def run(self, paths=None):
         path = _resolve_here_path(self.window, paths or [])
@@ -75,7 +78,10 @@ class OpenAiHereCommand(sublime_plugin.WindowCommand):
 
 
 class OpenAiInEditorCommand(sublime_plugin.TextCommand):
-    """Palette/keybinding: open a new external console running Ai."""
+    """Open a new external console running Ai in the active view's directory.
+
+    Command palette: "Ai: Open in Editor"
+    """
 
     def run(self, edit):
         path = _resolve_editor_path(self.view)
@@ -84,7 +90,11 @@ class OpenAiInEditorCommand(sublime_plugin.TextCommand):
 
 
 class OpenAiTerminusInEditorCommand(sublime_plugin.TextCommand):
-    """Palette/keybinding: open a Terminus tab running Ai."""
+    """Open a Terminus tab running Ai in the active view's directory.
+
+    Menu: Main.sublime-menu → Tools → Ai Utilities — "Open Terminus+Ai in Editor".
+    Command palette: "Ai: Open Terminus in Editor".
+    """
 
     def run(self, edit):
         path = _resolve_editor_path(self.view)
@@ -102,7 +112,11 @@ class OpenAiTerminusInEditorCommand(sublime_plugin.TextCommand):
 
 
 class OpenAiTerminusHereCommand(sublime_plugin.WindowCommand):
-    """Sidebar: open a Terminus tab running Ai in the chosen dir."""
+    """Open a Terminus tab running Ai in the sidebar-selected directory.
+
+    Menu: Main.sublime-menu → Tools → Ai Utilities — "Open Terminus+Ai Here".
+    Command palette: "Ai: Open Terminus Here".
+    """
 
     def run(self, paths=None):
         path = _resolve_here_path(self.window, paths or [])
@@ -163,7 +177,11 @@ def _last_claude_response():
 
 
 class ClaudeGrabResponseCommand(sublime_plugin.WindowCommand):
-    """Grab Claude's last response from the transcript and open it in the Claude Response tab."""
+    """Grab Claude's last response from the JSONL transcript into the Claude Response tab.
+
+    Key binding: ctrl+alt+g
+    Command palette: "Claude: Grab Last Response"
+    """
 
     def run(self):
         text = _last_claude_response()
@@ -186,7 +204,11 @@ class ClaudeGrabResponseCommand(sublime_plugin.WindowCommand):
 
 
 class ClaudeSendTabCommand(sublime_plugin.WindowCommand):
-    """Send the Claude Response tab contents back to the Ai terminal."""
+    """Send the Claude Response tab contents back to the Ai terminal as a reply.
+
+    Key binding: ctrl+alt+r
+    Command palette: "Claude: Send Tab as Reply"
+    """
 
     def run(self):
         ai_view = None
