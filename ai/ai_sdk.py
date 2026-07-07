@@ -366,8 +366,13 @@ def _ensure_bridge():
         _server = _SdkSocketServer()
         _server.start()
 
-    # If our local bridge is alive, nothing to do.
+    # If our local bridge is alive and its cwd matches the module's
+    # _bridge_cwd, nothing to do. If the wrapper has no cwd set but
+    # _bridge_cwd is, apply it (the wrapper is fresh from a reload and
+    # didn't pick up the cwd that was set before).
     if _bridge is not None and _bridge.is_alive():
+        if _bridge_cwd and _bridge._cwd != _bridge_cwd:
+            _bridge._cwd = _bridge_cwd
         return
 
     # Probe the bridge port: something may already be listening (an older
@@ -1658,10 +1663,18 @@ class AiSdkClearCommand(sublime_plugin.WindowCommand):
 
 
 class AiSdkOpenHereCommand(sublime_plugin.WindowCommand):
-    """Sidebar: open AI(SDK) panel with cwd set to the chosen directory."""
+    """Sidebar: open AI(SDK) panel with cwd set to the chosen directory.
+
+    Always restarts the bridge subprocess so its os.getcwd() matches
+    the chosen folder. If we didn't restart, the bridge would keep
+    whatever cwd it was originally spawned with (often ST's own cwd
+    = the user's home) and 'pwd' inside run_shell would disagree
+    with the cwd shown in the view header.
+    """
 
     def run(self, paths=None):
         import os as _os
+        import subprocess as _subprocess
 
         global _bridge, _bridge_cwd
         paths = paths or []
@@ -1673,6 +1686,31 @@ class AiSdkOpenHereCommand(sublime_plugin.WindowCommand):
             path = folders[0] if folders else None
         if not path:
             return
+        # Kill any existing bridge on port 9504 BEFORE starting a new
+        # one with the chosen cwd. Without this, the new subprocess
+        # would fail to bind (Windows doesn't set SO_REUSEADDR on
+        # asyncio.start_server) and the user would be left with the
+        # old bridge — running on whatever cwd it had at first start.
+        # The user explicitly invoked "Open here..." with the intent
+        # of changing the bridge's working directory; honour that.
+        _subprocess.run(
+            [
+                "powershell", "-Command",
+                f"Get-NetTCPConnection -LocalPort {_BRIDGE_PORT} "
+                f"-State Listen -ErrorAction SilentlyContinue | "
+                f"ForEach-Object {{ Stop-Process -Id $_.OwningProcess "
+                f"-Force -ErrorAction SilentlyContinue }}",
+            ],
+            capture_output=True,
+        )
+        # Brief pause so the OS releases the port before the new
+        # subprocess tries to bind. 500ms is conservative; usually
+        # 100ms is enough.
+        import time as _time
+        _time.sleep(0.5)
+        # Drop our wrapper so _ensure_bridge spawns a fresh subprocess
+        # with the new cwd, not reuses the old (port-in-use) listener.
+        _bridge = None
         _bridge_cwd = path
         _ensure_bridge()
         view = _sdk_view(self.window)
@@ -1680,9 +1718,6 @@ class AiSdkOpenHereCommand(sublime_plugin.WindowCommand):
         if view.settings().get("ai_sdk_input_mode", False):
             _exit_input_mode(view)
         _vwrite(view, f"\n─── cwd: {path} ───\n")
-        if _bridge:
-            _bridge._cwd = path
-            threading.Thread(target=_bridge.restart, daemon=True).start()
         sublime.set_timeout(lambda: _enter_input_mode(view, self.window), 500)
 
     def is_visible(self, paths=None):
