@@ -1,6 +1,0 @@
-diag_run_file CALLED paths=['C:\\Users\\donal\\projects\\SText\\launchers']
-  window.folders()=['C:\\Users\\donal\\projects', 'C:\\Users\\donal', 'C:\\Users\\donal\\.cache', 'C:\\Users\\donal\\.claude']
-  paths[0] isdir=True exists=True
-  after: _bridge_cwd='C:\\Users\\donal\\projects\\SText\\launchers'
-  after: bridge._cwd='C:\\Users\\donal\\projects\\SText\\launchers' alive=True
-  after: pid=27124
