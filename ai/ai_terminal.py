@@ -27,8 +27,10 @@ as a fallback for any key-bound commands that still dispatch as insert/move.
 
 import codecs
 import collections
+import json
 import os
 import threading
+import time
 
 import sublime
 import sublime_plugin
@@ -957,6 +959,16 @@ class _Terminal:
         # sticking at the top showing the banner.
         self._auto_follow = True
         self._last_vp_y = 0.0
+        # Asciicast v3 recording (recording patch). When recording is on,
+        # start() opens a per-session .cast file and writes the v3 header;
+        # _on_data / send_string / resize / kill append timed events. Off
+        # (file is None) => all _cast() calls are no-ops. One file per session
+        # (timestamped filename), not per day, so a resume's replay is a
+        # separate recording rather than appended duplicates.
+        self._cast_file = None
+        self._cast_lock = threading.Lock()
+        self._cast_t0 = 0.0       # session start (epoch seconds)
+        self._cast_last = 0.0     # timestamp of the previous event
 
     @classmethod
     def from_id(cls, view_id):
@@ -964,8 +976,68 @@ class _Terminal:
             return _TERMINALS.get(view_id)
 
     def start(self):
+        # Recording patch: asciicast v3. Recording is on if
+        # AI_TERMINAL_LOG_LINES is set in the spawn_env setting OR in ST's
+        # process environment (_LOG_LINES). Checked per-spawn so a settings
+        # edit takes effect on the next Open Ai here... without a restart.
+        # When on, open a per-session .cast file (timestamped filename so
+        # each session is its own recording -- a resume's replay is a NEW
+        # .cast, not appended duplicates) and write the v3 header. Events
+        # are appended by _cast() from _on_data / send_string / resize / kill.
+        log_on = _LOG_LINES
+        if not log_on:
+            try:
+                log_on = bool(_spawn_env().get("AI_TERMINAL_LOG_LINES"))
+            except Exception:
+                pass
+        if log_on:
+            try:
+                os.makedirs(_CAST_DIR, exist_ok=True)
+                self._cast_t0 = time.time()
+                self._cast_last = self._cast_t0
+                fname = f"ai_{time.strftime('%Y-%m-%d_%H%M%S')}.cast"
+                path = os.path.join(_CAST_DIR, fname)
+                self._cast_file = open(path, "w", encoding="utf-8", newline="")
+                header = {
+                    "version": 3,
+                    "term": {
+                        "cols": int(self.screen.cols),
+                        "rows": int(self.screen.rows),
+                        "type": "xterm-256color",
+                    },
+                    "timestamp": int(self._cast_t0),
+                    "title": "ai_terminal",
+                    "command": " ".join(self.pty.argv) if hasattr(self.pty, "argv") else "",
+                }
+                self._cast_file.write(json.dumps(header) + "\n")
+                self._cast_file.flush()
+            except Exception as e:
+                print(f"[ai_terminal] cast open failed: {e}")
+                self._cast_file = None
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
+
+    def _cast(self, code, data):
+        """Asciicast v3 event: [delta, code, data]. delta is seconds since the
+        previous event (relative timing -- v3 change from v2's absolute
+        timestamps). One write per event under _cast_lock; flush so a crash
+        doesn't truncate the file. No-op when recording is off. Caller
+        passes `data` already as the right Python type: str for "o"/"i"/"x",
+        "{cols}x{rows}" for "r"."""
+        if self._cast_file is None:
+            return
+        now = time.time()
+        delta = now - self._cast_last
+        self._cast_last = now
+        # Round to ms (v3 spec recommends error-diffusion for drift; simple
+        # rounding is fine for sessions of realistic length).
+        line = json.dumps([round(delta, 3), code, data])
+        with self._cast_lock:
+            try:
+                self._cast_file.write(line + "\n")
+                self._cast_file.flush()
+            except Exception:
+                pass
 
     def _read_loop(self):
         try:
@@ -981,9 +1053,21 @@ class _Terminal:
         text = self._decoder.decode(data)
         with self._lock:
             self.parser.feed(text)
+        # Recording patch: emit an asciicast v3 "o" (output) event for the
+        # raw chunk. Logged once, here, at the stream layer -- not at
+        # scroll-off -- so it is faithful to what Claude emitted and does NOT
+        # duplicate on resume (a resume is a new session = new .cast file).
+        # The decoder is incremental; log the decoded text so the .cast is
+        # valid UTF-8 JSON (v3 wants str data, not bytes). Written outside
+        # self._lock so the renderer isn't blocked on file I/O; _cast_lock
+        # serializes against send_string/resize/kill writes.
+        self._cast("o", text)
         _schedule_render(self)
 
     def send_string(self, s):
+        # Recording patch: emit an "i" (input) event for what the user typed.
+        # Most useful event for replay -- shows exactly what was entered.
+        self._cast("i", s)
         self.pty.write(s.encode("utf-8", errors="replace"))
 
     def resize(self, cols, rows):
@@ -993,6 +1077,9 @@ class _Terminal:
         with self._lock:
             self.screen.resize(cols, rows)
         self.pty.resize(cols, rows)
+        # Recording patch: emit an "r" (resize) event so the .cast records
+        # geometry changes for accurate replay.
+        self._cast("r", f"{int(cols)}x{int(rows)}")
         # Re-render so the view text matches the new (narrower) grid right
         # away. Without this, the view keeps stale wider text until Claude
         # next emits output, and the stale wider lines show a horizontal
@@ -1008,6 +1095,19 @@ class _Terminal:
         return "\n".join("".join(ch for ch, _ in row) for row in rows)
 
     def kill(self):
+        # Recording patch: emit an "x" (exit) event and close the .cast
+        # file so the recording ends cleanly. The stream-layer "o" events
+        # already captured everything Claude emitted, so there's no need
+        # for a [final screen] dump -- the visible grid's content is in
+        # the stream.
+        if self._cast_file is not None:
+            self._cast("x", "0")
+            with self._cast_lock:
+                try:
+                    self._cast_file.close()
+                except Exception:
+                    pass
+            self._cast_file = None
         try:
             self.pty.kill()
         except Exception as e:
@@ -1271,6 +1371,16 @@ def _apply_color_regions(view, regs):
 _DEBUG = bool(os.environ.get("AI_TERMINAL_DEBUG"))
 _DEBUG_PATH = os.path.expanduser("~/.cache/ai_terminal")
 _debug_lock = threading.Lock()
+# Asciicast v3 recording (recording patch): env-gated like _DEBUG. When on
+# (AI_TERMINAL_LOG_LINES set in spawn_env OR in ST's process env), each
+# _Terminal.start() opens a per-session .cast file under ~/.cache/ai_terminal/
+# casts/ and writes the v3 header; _on_data/send_string/resize/kill append
+# timed events. Recording at the stream layer (not scroll-off) means it is
+# faithful to what Claude emitted and does NOT duplicate on resume (a resume
+# is a new session = new .cast). Per stext-settings-json-strict the toggle is
+# NOT a top-level setting key; it lives in spawn_env where the user put it.
+_LOG_LINES = bool(os.environ.get("AI_TERMINAL_LOG_LINES"))
+_CAST_DIR = os.path.expanduser("~/.cache/ai_terminal/casts")
 
 
 def _debug_log(data):
