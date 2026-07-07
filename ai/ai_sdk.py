@@ -1703,11 +1703,27 @@ class AiSdkOpenHereCommand(sublime_plugin.WindowCommand):
             ],
             capture_output=True,
         )
-        # Brief pause so the OS releases the port before the new
-        # subprocess tries to bind. 500ms is conservative; usually
-        # 100ms is enough.
+        # Wait for the OS to release the port. On Windows this can
+        # take a couple of seconds — poll until the port is actually
+        # free, with a hard cap of 8s.
         import time as _time
-        _time.sleep(0.5)
+        import socket as _socket
+        deadline = _time.time() + 8.0
+        while _time.time() < deadline:
+            _time.sleep(0.3)
+            probe = _socket.socket()
+            probe.settimeout(0.2)
+            try:
+                probe.connect(("127.0.0.1", _BRIDGE_PORT))
+                probe.close()
+                # port still listening — keep waiting
+                continue
+            except Exception:
+                # port is free
+                break
+            finally:
+                try: probe.close()
+                except Exception: pass
         # Drop our wrapper so _ensure_bridge spawns a fresh subprocess
         # with the new cwd, not reuses the old (port-in-use) listener.
         _bridge = None

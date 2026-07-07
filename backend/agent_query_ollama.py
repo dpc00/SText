@@ -268,7 +268,13 @@ def _build_system_prompt():
 
 
 def _bi_run_shell(command, timeout=30, **_):
-    """Run a shell command (cmd.exe on Windows) and return stdout/stderr/exit_code."""
+    """Run a shell command (cmd.exe on Windows) and return stdout/stderr/exit_code.
+
+    The shell inherits the bridge's cwd (set when the bridge subprocess was
+    spawned via 'Open AI(SDK) here...' on a folder). Hardcoding ~ would
+    make 'pwd' and similar commands return the user's home dir regardless
+    of which folder the user opened the panel in.
+    """
     try:
         proc = subprocess.run(
             command,
@@ -278,7 +284,7 @@ def _bi_run_shell(command, timeout=30, **_):
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
-            cwd=os.path.expanduser("~"),
+            cwd=os.getcwd(),
         )
         return {
             "stdout": proc.stdout[-4000:],
