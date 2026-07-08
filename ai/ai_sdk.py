@@ -1229,7 +1229,7 @@ _SLASH_COMMANDS = {
     "tools": "List tools with on/off state, or /tools on|off <name>",
     "reload-servers": "Reconnect MCP servers without clearing conversation history",
     "compact": "Summarize conversation context (forwarded to SDK)",
-    "export-history": "Save conversation to JSON (default ~/.cache/ai_sdk/history_<ts>.json)",
+    "export-history": "Save conversation to JSON (default ~/data/ai_sdk/history_<ts>.json)",
     "import-history": "Load conversation from JSON: /import-history <path>",
     "loop-limit": "Set max tool-loop iterations (default 15): /loop-limit <n>",
     "model": "Switch Ollama model: /model [name] — no arg lists available models",
@@ -1366,7 +1366,7 @@ def _handle_slash(view, window, prompt):
 
         path = args.strip()
         if not path:
-            _dir = os.path.expanduser("~/.cache/ai_sdk")
+            _dir = os.path.expanduser("~/data/ai_sdk")
             os.makedirs(_dir, exist_ok=True)
             path = os.path.join(
                 _dir, f"history_{_time.strftime('%Y%m%d_%H%M%S')}.json"

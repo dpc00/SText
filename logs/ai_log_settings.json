@@ -1,0 +1,13 @@
+{
+  "hooks": {
+    "UserPromptSubmit":     [{"hooks": [{"type": "http", "url": "http://127.0.0.1:9511/event", "timeout": 5}]}],
+    "PreToolUse":           [{"matcher": ".*", "hooks": [{"type": "http", "url": "http://127.0.0.1:9511/event", "timeout": 5}]}],
+    "PostToolUse":          [{"matcher": ".*", "hooks": [{"type": "http", "url": "http://127.0.0.1:9511/event", "timeout": 5}]}],
+    "PostToolUseFailure":   [{"matcher": ".*", "hooks": [{"type": "http", "url": "http://127.0.0.1:9511/event", "timeout": 5}]}],
+    "Stop":                 [{"hooks": [{"type": "http", "url": "http://127.0.0.1:9511/event", "timeout": 5}]}],
+    "SubagentStart":        [{"hooks": [{"type": "http", "url": "http://127.0.0.1:9511/event", "timeout": 5}]}],
+    "SubagentStop":         [{"hooks": [{"type": "http", "url": "http://127.0.0.1:9511/event", "timeout": 5}]}],
+    "Notification":         [{"hooks": [{"type": "http", "url": "http://127.0.0.1:9511/event", "timeout": 5}]}],
+    "SessionEnd":           [{"hooks": [{"type": "http", "url": "http://127.0.0.1:9511/event", "timeout": 5}]}]
+  }
+}

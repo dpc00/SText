@@ -27,10 +27,10 @@ import sublime_plugin  # type: ignore
 
 # -- constants ----------------------------------------------------------------
 
-_LOG_DIR = str(Path.home() / ".cache" / "claude-logs")
-_STATE_FILE = str(Path.home() / ".cache" / "ai_logger_state.json")
-_SCREENSHOT_DIR = str(Path.home() / ".cache" / "claude-screenshots")
-_DIAGNOSTICS_FILE = str(Path.home() / ".cache" / "ai_diagnostics.log")
+_LOG_DIR = str(Path.home() / "data" / "logs" / "ai")
+_STATE_FILE = str(Path.home() / "data" / "state" / "ai_logger_state.json")
+_SCREENSHOT_DIR = str(Path.home() / "data" / "screenshots")
+_DIAGNOSTICS_FILE = str(Path.home() / "data" / "logs" / "ai" / "ai_diagnostics.log")
 _PROJECTS_DIR = str(Path.home() / ".claude" / "projects")
 _CHECK_MS = 500
 _SCREENSHOT_INTERVAL = 60

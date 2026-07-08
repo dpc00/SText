@@ -24,8 +24,8 @@ import sublime_plugin  # type: ignore
 
 # -- minimal log helpers (duplicated from ai_logger.py for independence) ------
 
-_LOG_DIR = str(Path.home() / ".cache" / "claude-logs")
-_DIAGNOSTICS_FILE = str(Path.home() / ".cache" / "ai_diagnostics.log")
+_LOG_DIR = str(Path.home() / "data" / "logs" / "ai")
+_DIAGNOSTICS_FILE = str(Path.home() / "data" / "logs" / "ai" / "ai_diagnostics.log")
 
 
 def _diagnostic_log(message: str) -> None:
@@ -193,7 +193,7 @@ class AiTrimNowCommand(sublime_plugin.TextCommand):
 
 
 class AiDumpBufferCommand(sublime_plugin.TextCommand):
-    """Dump the entire current Ai buffer to a timestamped file under ~/.cache/claude-buffer-exports.
+    """Dump the entire current Ai buffer to a timestamped file under ~/data/buffer-exports.
 
     Key binding: ctrl+alt+e.
     Menu: Main.sublime-menu → Tools → Ai Utilities — "Export Ai Buffer...".
@@ -210,7 +210,7 @@ class AiDumpBufferCommand(sublime_plugin.TextCommand):
             entire_content = v.substr(sublime.Region(0, v.size()))
 
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            export_dir = Path.home() / ".cache" / "claude-buffer-exports"
+            export_dir = Path.home() / "data" / "buffer-exports"
             export_dir.mkdir(parents=True, exist_ok=True)
             export_file = export_dir / f"ai_buffer_dump_{timestamp}.txt"
 

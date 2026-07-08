@@ -8,7 +8,7 @@ Usage:
 Reads every *.jsonl under ~/.claude/projects/*/
 Keeps only records whose UTC timestamp falls on the target date (local time).
 Sorts chronologically, deduplicates by UUID, writes a clean log.
-Output goes to ~/.cache/claude-logs/ai_DATE.log  (overwrites existing; skips if no records).
+Output goes to ~/data/logs/ai/ai_DATE.log  (overwrites existing; skips if no records).
 """
 
 import datetime
@@ -23,7 +23,7 @@ from pathlib import Path
 # --------------------------------------------------------------------------- #
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
-LOG_DIR = Path.home() / ".cache" / "claude-logs"
+LOG_DIR = Path.home() / "data" / "logs" / "ai"
 
 
 # --------------------------------------------------------------------------- #
