@@ -31,6 +31,7 @@ import json
 import os
 import threading
 import time
+from functools import lru_cache
 
 import sublime
 import sublime_plugin
@@ -335,8 +336,15 @@ def _xterm256_rgb(n):
 _XTERM256_RGB = [_xterm256_rgb(i) for i in range(256)]
 
 
+@lru_cache(maxsize=10000)
 def _quantize256(r, g, b):
-    """Nearest of the xterm 256 palette by squared distance -> 0..255."""
+    """Nearest of the xterm 256 palette by squared distance -> 0..255.
+
+    Cached: the 256-step scan runs once per distinct colour, then it's an
+    O(1) lookup. Matches Terminus's @lru_cache on get_closest_color. This is
+    what keeps _scope_for's faint-dim path cheap -- without it the faint
+    thinking text cost a _quantize256 call per cell per frame (the 2s/keystroke
+    bug)."""
     best, best_d = 0, 1 << 30
     for i, (pr, pg, pb) in enumerate(_XTERM256_RGB):
         d = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2
@@ -355,6 +363,11 @@ _ATTR_FG_MASK = 0x1FF
 _ATTR_BG_MASK = 0x1FF << _BG_SHIFT
 _BOLD = 1 << 18
 _REVERSE = 1 << 19
+# faint (SGR 2) is rendered by dimming the fg toward black at scope-map time --
+# Claude's "thinking" reasoning text is emitted as default-fg + \x1b[2m, so a
+# real terminal shows it gray; without this it falls back to default white.
+# Safe because _quantize256 is @lru_cache'd: the dim lookup is O(1) per colour.
+_FAINT = 1 << 20
 
 
 def _attr(fg=0, bg=0, flags=0):
@@ -373,6 +386,12 @@ def _scope_for(attr):
     bg = (attr & _ATTR_BG_MASK) >> _BG_SHIFT
     if attr & _REVERSE:
         fg, bg = bg, fg
+    if attr & _FAINT:
+        # Dim the fg toward black (real-terminal faint). default fg is white,
+        # so dimmed = gray -- matches how a DOS console shows \x1b[2m text.
+        # _quantize256 is cached, so this is O(1) per distinct colour.
+        r, g, b = _XTERM256_RGB[fg - 1] if fg else (255, 255, 255)
+        fg = _quantize256(r // 2, g // 2, b // 2) + 1
     if fg == 0 and bg == 0:
         return None
     return f"ai.fb.{fg}.{bg}"
@@ -843,12 +862,17 @@ class _Parser:
                 self._flags |= _BOLD
             elif c == 7:
                 self._flags |= _REVERSE
-            elif c in (21, 22):
+            elif c == 2:
+                self._flags |= _FAINT
+            elif c == 22:
+                # normal intensity: clears both bold and faint
+                self._flags &= ~(_BOLD | _FAINT)
+            elif c == 21:
                 self._flags &= ~_BOLD
             elif c == 27:
                 self._flags &= ~_REVERSE
-            elif 2 <= c <= 6 or c == 8 or c == 9 or c in (23, 24, 28, 29):
-                pass  # faint/italic/underline/blink/conceal/strike + clears: parsed, not rendered
+            elif 3 <= c <= 6 or c == 8 or c == 9 or c in (23, 24, 28, 29):
+                pass  # italic/underline/blink/conceal/strike + clears: parsed, not rendered
             elif 30 <= c <= 37:
                 self._fg = c - 30 + 1
             elif c == 38 and i + 1 < n:
@@ -1160,9 +1184,26 @@ def _trigger_resize_for(vid):
         print(f"[ai_terminal] on_change resize error: {e}")
 
 
+def _next_ai_name(window):
+    """Return a unique Ai tab name for the window: 'Ai', then 'Ai 2', 'Ai 3', ...
+    Distinct view.name() per tab so send_to_view (and other name-based tools) can
+    target a specific Ai tab instead of hitting the ambiguous 'Ai' every tab had
+    when _VIEW_NAME was hardcoded."""
+    used = set()
+    for v in window.views():
+        if v.settings().get(_VIEW_SETTING, False):
+            used.add(v.name())
+    if _VIEW_NAME not in used:
+        return _VIEW_NAME
+    n = 2
+    while f"{_VIEW_NAME} {n}" in used:
+        n += 1
+    return f"{_VIEW_NAME} {n}"
+
+
 def _terminal_view(window):
     v = window.new_file()
-    v.set_name(_VIEW_NAME)
+    v.set_name(_next_ai_name(window))
     v.set_scratch(True)
     v.settings().set("word_wrap", False)
     v.settings().set("gutter", True)
@@ -1458,6 +1499,47 @@ class AiTerminalViewListener(sublime_plugin.ViewEventListener):
                 term.send_string("\x1b[B" if fwd else "\x1b[A")
                 return ("ai_terminal_noop", {})
         return None
+
+    def on_modified(self):
+        # Catch programmatic inserts that bypass on_text_command (e.g.
+        # send_to_view's run_command("insert") from another plugin, IME/unicode
+        # input, paste). on_text_command does NOT fire for these, so without
+        # this handler they'd land in the buffer and get wiped on the next
+        # render without ever reaching the PTY -- which is why send_to_view
+        # worked on Terminus tabs but not here. Mirrors Terminus's
+        # event_listeners.on_modified: read command_history(0), forward "insert"
+        # chars to the PTY, skip own commands. Unlike Terminus we do NOT
+        # soft_undo others -- the full-view replace in ai_terminal_render wipes
+        # stray text within a frame, and soft_undo risks recursion / clobbering
+        # other plugins' writes to this view. ViewEventListener.on_modified
+        # takes only self (view is self.view), unlike Terminus's plain
+        # EventListener which takes a view arg.
+        view = self.view
+        term = _Terminal.from_id(view.id())
+        if term is None or not term.pty.is_alive():
+            return
+        try:
+            command, args, _ = view.command_history(0)
+        except Exception:
+            return
+        if not command:
+            return
+        # skip our own commands (ai_terminal_render replaces the whole view;
+        # ai_terminal_send_string/keypress already wrote to the PTY) and the
+        # "[process exited]" append marker, plus undo machinery to avoid loops
+        if (command.startswith("ai_terminal")
+                or command in ("append", "soft_undo", "undo", "redo")):
+            return
+        if command == "insert" and isinstance(args, dict) and "characters" in args:
+            chars = args["characters"]
+            if chars and len(view.sel()) == 1 and view.sel()[0].empty():
+                term._auto_follow = True
+                _scroll_to_bottom(view)
+                term._last_vp_y = view.viewport_position()[1]
+                # Forward raw. \n submits in Claude Code's TUI (a pasted multi-line
+                # block becomes multi-prompt, one submit per line); converting a
+                # lone \n to \r would NOT submit (verified) -- so send \n as-is.
+                term.send_string(chars)
 
     def on_close(self):
         term = _Terminal.from_id(self.view.id())

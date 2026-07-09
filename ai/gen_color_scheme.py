@@ -84,20 +84,24 @@ def rule(scope, **kw):
     rules.append(dict(scope=scope, **kw))
 
 
-# Scope names: ai.fb.<fg>.<bg>  (fg, bg in 0..256; 0 = default)
-# EVERY rule sets background=#000001 (off-by-one from global #000000 so ST
-# doesn't collapse it to None). When fg != 0, also set foreground=<text colour>.
-# With both keys present, add_regions uses foreground for the text and
-# background (#000001, invisible) for the fill. When fg == 0 (default), only
-# background is set: text falls back to the global foreground (#FFFFFF),
-# still on the invisible #000001 fill.
+# Scope names: ai.fb.<fg>  (fg in 0..256; 0 = default). The parser still EMITS
+# ai.fb.<fg>.<bg> scopes, but the <bg> index is vestigial for rendering: every
+# rule's background is the same off-by-one #000001 invisible fill (the parser
+# swaps fg/bg for reverse BEFORE emitting the scope, so bg never changes the
+# rendered text colour). So instead of a 257x257 = 66049-rule matrix, we emit
+# just 257 rules -- one per fg -- and rely on ST's scope-selector prefix match:
+# a rule scoped "ai.fb.5" matches the parser's "ai.fb.5.0", "ai.fb.5.7",
+# "ai.fb.5.200" etc. (verified via style_for_scope on a scratch view: every
+# bg variant resolves to the ai.fb.<fg> rule's foreground). This shrinks the
+# scheme ~450x (8.98MB -> ~20KB) with zero parser change and zero fidelity
+# loss -- still full 256-colour truecolor. If a future change ever needs bg to
+# affect rendering (e.g. real reverse-video fill), restore the inner bg loop.
 for fg in range(257):
     fh = _HEX[fg]
-    for bg in range(257):
-        kw = {"background": "#000001"}
-        if fh:
-            kw["foreground"] = fh
-        rule(f"ai.fb.{fg}.{bg}", **kw)
+    kw = {"background": "#000001"}
+    if fh:
+        kw["foreground"] = fh
+    rule(f"ai.fb.{fg}", **kw)
 
 scheme = {
     "name": "AI Terminal",
