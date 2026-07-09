@@ -25,7 +25,7 @@
     //   ["cmd", "/c", "opencode"]            -- OpenCode instead of Claude Code
     //   ["cmd", "/c", "claude"]              -- Claude Code on Windows (native cmd shim)
     // Applied on the next _spawn: close and reopen the ai_terminal tab to pick up.
-    "launch_command": ["cmd", "/c", "ollama", "launch", "claude"],
+    "launch_command": ["cmd", "/c", "claude", "--model", "gemini-2.5-pro"],
 
     // Env vars applied to the spawned terminal process (merged on top of
     // os.environ). Swap or add agent-specific vars here without editing the
@@ -47,10 +47,15 @@
     // spawn_env dict reaches the child process. Harmless; drop it if you
     // don't need the test.
     "spawn_env": {
-        "OLLAMA_MODEL":"minimax-m3:cloud",
-        "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
+        "AI_TERMINAL_LOG_LINES": "1",
+        "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "80",
         "CLAUDE_CODE_AI_TERMINAL_SENTINEL": "propagated",
-        "AI_TERMINAL_LOG_LINES": "1"
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "800000",
+        "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1000000",
+        "GEMINI_API_KEY": "AIzaSyArnCqsjTHt9xevD_qA3aheEVDmZ4WkfB8",
+
+        // "OLLAMA_MODEL":"glm-5.2:cloud"
     },
 
     // Files whose content is appended to the system prompt on every bridge
