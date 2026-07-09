@@ -27,6 +27,8 @@
     // Applied on the next _spawn: close and reopen the ai_terminal tab to pick up.
     "launch_command": ["cmd", "/c", "claude", "--model", "gemini-2.5-pro"],
 
+    // claude --model gemini-2.5-pro
+
     // Env vars applied to the spawned terminal process (merged on top of
     // os.environ). Swap or add agent-specific vars here without editing the
     // plugin. Applied on the next _spawn: close and reopen the ai_terminal
@@ -53,7 +55,7 @@
         "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "800000",
         "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
         "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1000000",
-        "GEMINI_API_KEY": "AIzaSyArnCqsjTHt9xevD_qA3aheEVDmZ4WkfB8",
+        "GEMINI_API_KEY": "",
 
         // "OLLAMA_MODEL":"glm-5.2:cloud"
     },
