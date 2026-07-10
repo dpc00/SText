@@ -16,6 +16,16 @@
 //
 // No server-side change needed: ai_log_server.py keys on `hook_event_name`
 // and a handful of payload fields, which this plugin fills in.
+//
+// Reproducing Claude's readable .md answer block:
+// Claude's `Stop` hook carries `last_assistant_message` with the full reply,
+// and ai_log_server._flush_turn renders that verbatim under the `### Claude`
+// header. opencode never emits that field, so without intervention the
+// assistant's answer text is entirely absent from the .md (its text only
+// arrives via `MessageDisplay.delta`, which the server truncates to 100
+// chars as an ambient one-liner). To match Claude's log we ACCUMULATE the
+// assistant's finalized `message.part.updated` text parts for the turn and
+// post them as `last_assistant_message` on the `Stop` event.
 
 const PORT = 9511;
 const RAW_DIR = "C:\\Users\\donal\\data\\logs\\ai";
@@ -24,6 +34,13 @@ let _session = null;  // best-effort current session id
 // messageID -> role ("user" | "assistant" | ...), filled from message.updated
 // so message.part.updated text parts know which side of the turn they belong to.
 const _roleById = new Map();
+// Per-session turn accumulator for assistant answer text.
+// sid -> { text: string, seenParts: Set<string> }
+// `text`    : concatenated finalized assistant text parts for the live turn.
+// `seenParts`: part ids already folded in, so a part that fires twice
+//             (empty marker + final) or is re-broadcast is not duplicated.
+// Cleared on Stop (turn end) and on a new user prompt.
+const _turnText = new Map();
 
 function _date() {
   const d = new Date();
@@ -67,6 +84,19 @@ function _sid(event) {
   return _session || "opencode";
 }
 
+function _turnBucket(sid) {
+  let b = _turnText.get(sid);
+  if (!b) {
+    b = { text: "", seenParts: new Set() };
+    _turnText.set(sid, b);
+  }
+  return b;
+}
+
+function _resetTurn(sid) {
+  _turnText.set(sid, { text: "", seenParts: new Set() });
+}
+
 export const AiLogPlugin = async (ctx) => {
   return {
     // Tool events give us structured input/args — map to PreToolUse / PostToolUse.
@@ -104,12 +134,24 @@ export const AiLogPlugin = async (ctx) => {
 
       if (type === "session.created") {
         _session = _sid(event);
+        _resetTurn(_session);
         await _post({ hook_event_name: "SessionStart", session_id: _sid(event) });
         return;
       }
       if (type === "session.idle") {
-        // opencode's turn-end signal → Stop
-        await _post({ hook_event_name: "Stop", session_id: _sid(event) });
+        // opencode's turn-end signal → Stop. Ship the accumulated assistant
+        // text as `last_assistant_message` so ai_log_server._flush_turn
+        // renders the full answer block under the `### Claude` header —
+        // exactly the field Claude's own Stop hook provides.
+        const sid = _sid(event);
+        const bucket = _turnText.get(sid);
+        const lastAssistantMessage = (bucket && bucket.text) ? bucket.text : "";
+        _resetTurn(sid);
+        await _post({
+          hook_event_name: "Stop",
+          session_id: sid,
+          last_assistant_message: lastAssistantMessage,
+        });
         return;
       }
       if (type === "session.compacted") {
@@ -145,21 +187,29 @@ export const AiLogPlugin = async (ctx) => {
         const sid = _sid(event);
         const role = _roleById.get(part.messageID) ?? "assistant";
         if (role === "user") {
-          // The user's prompt: feed it to the server as UserPromptSubmit so
-          // it renders under the "▸ You" turn header instead of as a stray
-          // ambient 💬 line.
+          // A new user prompt begins a fresh turn: clear any assistant text
+          // carried over from the previous turn before recording this prompt.
+          _resetTurn(sid);
           await _post({
             hook_event_name: "UserPromptSubmit",
             session_id: sid,
             prompt: part.text,
           });
         } else {
-          await _post({
-            hook_event_name: "MessageDisplay",
-            session_id: sid,
-            delta: part.text,
-            final: true,
-          });
+          // Assistant answer text: accumulate for the Stop event. Dedupe by
+          // part id so the empty-marker+final double-fire, or any re-broadcast,
+          // never duplicates the text. We intentionally do NOT emit a
+          // MessageDisplay event here: the server truncates that ambient line
+          // to 100 chars, and the full text now renders via Stop's
+          // last_assistant_message (matching Claude's log).
+          const bucket = _turnBucket(sid);
+          const partId = part.id ?? `${part.messageID}:${part.type}`;
+          if (!bucket.seenParts.has(partId)) {
+            bucket.seenParts.add(partId);
+            bucket.text = bucket.text
+              ? `${bucket.text}\n\n${part.text}`
+              : part.text;
+          }
         }
         return;
       }

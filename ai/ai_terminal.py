@@ -2134,11 +2134,9 @@ def plugin_unloaded():
         except Exception:
             pass
         _clamp_token = None
-    with _REG_LOCK:
-        items = list(_TERMINALS.items())
-        _TERMINALS.clear()
-    for vid, term in items:
-        try:
-            term.kill()
-        except Exception:
-            pass
+    # Deliberately do NOT kill ConPTY children on unload.  The terminal
+    # process may be opencode itself (or another long-running CLI agent);
+    # killing it here means a plugin reload triggered by the agent's own
+    # file deployment will murder the agent mid-session — an unrecoverable
+    # crash with no error log.  The children are owned by this ST instance
+    # and will be cleaned up when ST itself exits.

@@ -21,7 +21,8 @@ class PbFlaskSilentCommand(sublime_plugin.WindowCommand):
 
     def run(self):
         kill_existing(PORT)
-        subprocess.Popen(
+        from User.winutil._job import assign_pid
+        proc = subprocess.Popen(
             ["python", r"C:/Users/donal/projects/pybackup/ui/app.py"],
             creationflags=subprocess.CREATE_NO_WINDOW,
             startupinfo=_si,
@@ -29,4 +30,8 @@ class PbFlaskSilentCommand(sublime_plugin.WindowCommand):
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
         )
+        try:
+            assign_pid(proc.pid)
+        except Exception:
+            pass
         os.startfile("http://127.0.0.1:%d" % PORT)

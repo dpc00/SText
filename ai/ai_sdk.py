@@ -188,6 +188,11 @@ class _Bridge:
             env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             cwd=self._cwd,
         )
+        from User.winutil._job import assign_pid
+        try:
+            assign_pid(self._proc.pid)
+        except Exception:
+            pass
         threading.Thread(target=self._monitor, daemon=True).start()
         print(f"[ai_sdk] bridge starting (port {_BRIDGE_PORT})")
 

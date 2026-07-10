@@ -7,6 +7,8 @@ command/listener class from the subfolder modules into its own namespace, where 
 finds them. Standalone subprocess scripts (ai_search_app, ai_logger_watcher, dedup_logs)
 are not imported here -- they are launched as separate processes by the modules above.
 """
+import sys
+
 from User.ai.ai_sdk import (
     AiSdkViewListener,
     AiSdkKeyInterceptor,
@@ -78,6 +80,66 @@ from User.config.settings_editor import SettingsEditorOpenCommand
 # so background work started there (e.g. ai_logger's 60s screenshot capture) must
 # be started here by delegation.
 
+def _find_system_python():
+    import os
+    import shutil
+    for name in ("python", "python3", "py"):
+        path = shutil.which(name)
+        if path and os.path.isfile(path):
+            return path
+    return None
+
+
+def _start_ai_log_server():
+    import os
+    import shutil
+    import socket
+    import subprocess
+
+    port = 9511
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(0.25)
+    try:
+        sock.bind(("127.0.0.1", port))
+        sock.close()
+    except OSError:
+        return
+
+    script = os.path.join(
+        os.path.dirname(__file__), "logs", "ai_log_server.py"
+    )
+    if not os.path.exists(script):
+        print(f"PluginLoader: ai_log_server.py not found at {script}")
+        return
+
+    python_exe = _find_system_python()
+    if not python_exe:
+        print("PluginLoader: no system python found; ai_log_server not started")
+        return
+
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = subprocess.SW_HIDE
+    try:
+        from User.winutil._job import assign_pid
+    except Exception:
+        assign_pid = None
+    proc = subprocess.Popen(
+        [python_exe, script],
+        creationflags=subprocess.CREATE_NO_WINDOW,
+        startupinfo=si,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+    )
+    if assign_pid:
+        try:
+            assign_pid(proc.pid)
+        except Exception:
+            pass
+    print(f"PluginLoader: ai_log_server started (pid={proc.pid})")
+
+
 def plugin_loaded():
     # ST only calls plugin_loaded() on the TOP-LEVEL plugin module (this file).
     # Subfolder modules' own lifecycle hooks never fire after the reorg, so every
@@ -88,6 +150,7 @@ def plugin_loaded():
             importlib.import_module(mod_name).plugin_loaded()
         except Exception as e:
             print(f"PluginLoader: {mod_name}.plugin_loaded failed: {e}")
+    _start_ai_log_server()
 
 
 def plugin_unloaded():

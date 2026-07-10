@@ -384,10 +384,15 @@ class AiSearchConversationsCommand(sublime_plugin.WindowCommand):
 
         if _port_free(5758):
             script = str(Path(__file__).parent / "ai_search_app.py")
-            subprocess.Popen(
+            from User.winutil._job import assign_pid
+            proc = subprocess.Popen(
                 ["python", script],
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
+            try:
+                assign_pid(proc.pid)
+            except Exception:
+                pass
         else:
             webbrowser.open(url)
 
