@@ -19,13 +19,18 @@
     "min_columns": 20,
     "max_columns": null,
 
+    // Ignore the TUI's alt-screen (DECSET 1049) toggle so our renderer keeps
+    // real ST scrollback. Default true = scrollback on. Set false to let a
+    // TUI take over the view with a fixed fullscreen matrix (loses scrollback).
+    "force_main_screen": true,
+
     // argv list used to spawn the terminal program. Default runs Claude Code
     // via the Ollama local proxy (127.0.0.1:11434, glm-5.2:cloud). Swap to e.g.
     //   ["claude"]                          -- Claude Code direct against Anthropic API
     //   ["cmd", "/c", "opencode"]            -- OpenCode instead of Claude Code
     //   ["cmd", "/c", "claude"]              -- Claude Code on Windows (native cmd shim)
     // Applied on the next _spawn: close and reopen the ai_terminal tab to pick up.
-    "launch_command": ["cmd", "/c", "claude", "--model", "gemini-2.5-pro"],
+    "launch_command": ["cmd", "/c", "opencode"],
 
     // claude --model gemini-2.5-pro
 
@@ -50,14 +55,25 @@
     // don't need the test.
     "spawn_env": {
         "AI_TERMINAL_LOG_LINES": "1",
-        "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "80",
-        "CLAUDE_CODE_AI_TERMINAL_SENTINEL": "propagated",
-        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1600000",
-        "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
-        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "2000000",
-        // "GEMINI_API_KEY": "",
-
+        // "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "80",
+        // "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "80",
+        // "CLAUDE_CODE_AI_TERMINAL_SENTINEL": "propagated",
+        // "CLAUDE_CODE_AI_TERMINAL_SENTINEL": "propagated",
+        // "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1600000",
+        // "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1600000",
+        // "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
+        // "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
+        // "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "2000000",
+        // "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "2000000",
         // "OLLAMA_MODEL":"glm-5.2:cloud"
+        // "ANTHROPIC_MODEL": "claude-sonnet-5",
+        // "ANTHROPIC_VERTEX_PROJECT_ID": "project-67efc385-8bb5-493f-a81",
+        // "CLAUDE_CODE_USE_VERTEX": "1",
+        // "CLOUD_ML_REGION": "global",
+        // "GEMINI_API_KEY": "",
+        // "GOOGLE_CLOUD_LOCATION":"global",
+        // "GOOGLE_CLOUD_PROJECT":"project-67efc385-8bb5-493f-a81",
+        // "GOOGLE_PROJECT_NUMBER":"782908338549",
     },
 
     // Files whose content is appended to the system prompt on every bridge

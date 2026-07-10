@@ -25,14 +25,29 @@ work in this ST build (style_for_scope strips the alpha), so the fill must be
 a solid ``#000000``.
 
 So EVERY rule here sets BOTH keys: ``foreground`` = the text colour (when
-fg != 0), ``background`` = ``#000001`` (off-by-one from the view's #000000
-global background -- ST collapses a rule background that EQUALS the global
-background to None, which re-triggers the swap; #000001 is preserved by
-style_for_scope while being visually indistinguishable from pure black, so
-the fill is invisible). The parser still tracks bg and honours reverse
-(swapping fg/bg before mapping), but Claude's bg intent is dropped on
-purpose per the user's directive -- "where there is text, there should just
-be text on a black background, no deviating from that."
+fg != 0), ``background`` = the cell's bg colour when that bg is visibly
+brighter than the pure-black chat backdrop, otherwise ``#000001`` (off-by-one
+from the view's #000000 global background -- ST collapses a rule background
+that EQUALS the global background to None, which re-triggers the swap;
+#000001 is preserved by style_for_scope while being visually
+indistinguishable from pure black, so the fill is invisible for near-black
+bgs).
+
+Why the bg is now selectively honoured (reversing a prior decision): the
+chat/output area paints its backdrop with near-black fields
+(truecolor 4;4;4 / 20;20;20 / 12;12;12 ...) which quantize to xterm hexes
+at or near #000000 -- those still get the invisible #000001 fill, so the
+chat area stays pure black per the user's directive ("where there is text,
+there should just be text on a black background, no deviating from that").
+Genuine UI highlights -- e.g. the ctrl-p / command-palette selected row at
+truecolor (250,178,131) quantizing to xterm peach -- get a real coloured
+fill, so their dark-on-light fg stops rendering black-on-black (the bug
+where the selected item was invisible). The luminance threshold gates
+which bgs "count" as a highlight vs. a black-ish backdrop; tune
+``_BG_LUMA_THRESHOLD`` if a future highlight falls below it and renders
+invisible. The parser still tracks bg and honours reverse (swapping
+fg/bg before mapping) so reverse video of explicit colours now also
+renders correctly.
 
 This is a scheme-only change: the parser's ``ai.fb.<fg>.<bg>`` scope format is
 unchanged, so no plugin reload is required for palette iteration -- reloading
@@ -84,24 +99,40 @@ def rule(scope, **kw):
     rules.append(dict(scope=scope, **kw))
 
 
-# Scope names: ai.fb.<fg>  (fg in 0..256; 0 = default). The parser still EMITS
-# ai.fb.<fg>.<bg> scopes, but the <bg> index is vestigial for rendering: every
-# rule's background is the same off-by-one #000001 invisible fill (the parser
-# swaps fg/bg for reverse BEFORE emitting the scope, so bg never changes the
-# rendered text colour). So instead of a 257x257 = 66049-rule matrix, we emit
-# just 257 rules -- one per fg -- and rely on ST's scope-selector prefix match:
-# a rule scoped "ai.fb.5" matches the parser's "ai.fb.5.0", "ai.fb.5.7",
-# "ai.fb.5.200" etc. (verified via style_for_scope on a scratch view: every
-# bg variant resolves to the ai.fb.<fg> rule's foreground). This shrinks the
-# scheme ~450x (8.98MB -> ~20KB) with zero parser change and zero fidelity
-# loss -- still full 256-colour truecolor. If a future change ever needs bg to
-# affect rendering (e.g. real reverse-video fill), restore the inner bg loop.
-for fg in range(257):
-    fh = _HEX[fg]
-    kw = {"background": "#000001"}
-    if fh:
-        kw["foreground"] = fh
-    rule(f"ai.fb.{fg}", **kw)
+# Scope names: ai.fb.<fg>.<bg>  (fg, bg in 0..256; 0 = default). The parser
+# emits the combined ``ai.fb.<fg>.<bg>`` scope per cell and this generator
+# emits the full 257x257 = 66049-rule matrix so every cell has an exact
+# matching rule. Background is HONOURED selectively: bgs bright enough to
+# look visibly distinct from the pure-black chat backdrop (luminance sum
+# >= _BG_LUMA_THRESHOLD) get a real coloured fill so TUI highlights
+# (selection bars, panel borders, ...) render; near-black bgs (the chat
+# backdrop fields 4;4;4 / 20;20;20 / ...) get the invisible #000001 fill
+# so the chat area stays pure black per the user's directive. fg=0 is
+# omitted (inherits the global #FFFFFF); bg=0 maps to the invisible
+# #000001 (no fill requested). The parser still swaps fg/bg for reverse
+# BEFORE emitting the scope, so reverse now renders on the swapped bg.
+
+# Luminance (r+g+b) cutoff on the quantized bg hex. Raising this tightens
+# "what counts as a highlight"; lowering it fills more dark greys. 100
+# catches truecolor >=40;40;40 (#282828, sum 120) and brighter while
+# leaving the chat fields 4;4;4 / 20;20;20 (sum 12 / 60) on the invisible
+# fill. The ctrl-p selection bar (truecolor 250,178,131 -> xterm peach
+# #ffb387, sum 569) is far above this and renders solid.
+_BG_LUMA_THRESHOLD = 100
+
+for bg in range(257):
+    bh = _HEX[bg]
+    if bh is None:
+        bg_fill = "#000001"
+    else:
+        bsum = int(bh[1:3], 16) + int(bh[3:5], 16) + int(bh[5:7], 16)
+        bg_fill = bh if bsum >= _BG_LUMA_THRESHOLD else "#000001"
+    for fg in range(257):
+        fh = _HEX[fg]
+        kw = {"background": bg_fill}
+        if fh:
+            kw["foreground"] = fh
+        rule(f"ai.fb.{fg}.{bg}", **kw)
 
 scheme = {
     "name": "AI Terminal",
@@ -121,5 +152,7 @@ scheme = {
 out = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                    "ai_terminal.sublime-color-scheme")
 with open(out, "w", encoding="utf-8") as f:
-    json.dump(scheme, f, indent=0, separators=(",", ":"))
+    # Compact (no indent) -- the matrix is 66049 rules; indented output is
+    # ~5-9MB and only slows scheme load. One line, separators only.
+    json.dump(scheme, f, indent=None, separators=(",", ":"))
 print(f"wrote {out} ({len(rules)} rules)")

@@ -433,6 +433,11 @@ def _scrollback_size():
         return _DEFAULT_SCROLLBACK
 
 
+def _force_main_screen():
+    s = _settings or sublime.load_settings(_SETTINGS_NAME)
+    return bool(s.get("force_main_screen", True))
+
+
 def _cols_bounds():
     s = _settings or sublime.load_settings(_SETTINGS_NAME)
     try:
@@ -943,7 +948,8 @@ class _Parser:
             s.restore_cursor()
         elif final in ("h", "l"):  # set / reset mode (private: 1049/2004/mouse/sync)
             if priv and "1049" in self.params:
-                s.alt_screen = (final == "h")
+                if not _force_main_screen():
+                    s.alt_screen = (final == "h")
             # all others consumed-and-dropped so the stream stays in sync
         # P, @, L, M, S, T, r, and any other finals: consumed-and-dropped.
 
