@@ -55,6 +55,7 @@
     // don't need the test.
     "spawn_env": {
         "AI_TERMINAL_LOG_LINES": "1",
+        "GEMINI_PROMPT_QUEUE": "false"
         // "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "80",
         // "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "80",
         // "CLAUDE_CODE_AI_TERMINAL_SENTINEL": "propagated",

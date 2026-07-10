@@ -1,1 +1,113 @@
 Before doing anything else, read C:\Users\donal\agents.md and follow its instructions.
+
+---
+
+# SText Development & Debugging Guide
+
+## 1. Hot-Reloading Nested Submodules
+Sublime Text only automatically reloads top-level `.py` files in the package root (e.g., `PluginLoader.py`). It does NOT watch or reload files in nested subdirectories (like `ai/` or `logs/`).
+
+To solve this, `PluginLoader.py` has a nested submodule reloader at the very top:
+```python
+# --- Nested Submodule Reloader ---
+for mod_name in list(sys.modules.keys()):
+    if mod_name.startswith("User.") and mod_name != "User.PluginLoader":
+        del sys.modules[mod_name]
+```
+
+### Development Workflow:
+1. Edit any subdirectory `.py` file (e.g., `ai/ai_terminal.py`) and save it.
+2. Save or touch `PluginLoader.py` in the root of the project.
+3. This triggers Sublime Text to reload `PluginLoader.py`, which clears the submodule caches and imports the updated code fresh from disk.
+
+---
+
+## 2. Terminal Session Preservation on Reload
+Normally, reloading `ai_terminal.py` wipes the global `_TERMINALS` registry, making all open terminal tabs completely unresponsive ("crashed") even though the background ConPTY subprocesses are still running.
+
+`ai_terminal.py` contains a preservation block that automatically recovers active terminal sessions on reload and dynamically binds them to the new class definitions:
+```python
+# Preserve existing terminals on module reload so open terminal views don't "crash" (become unresponsive).
+import sys as _sys
+if "User.ai.ai_terminal" in _sys.modules:
+    try:
+        _old_mod = _sys.modules["User.ai.ai_terminal"]
+        _old_terms = getattr(_old_mod, "_TERMINALS", {})
+        for _vid, _term in _old_terms.items():
+            _term.__class__ = _Terminal
+            if hasattr(_term, "process") and _term.process is not None:
+                _term.process.__class__ = _ProcessProxy
+            _TERMINALS[_vid] = _term
+        if _TERMINALS:
+            print(f"[ai_terminal] Successfully recovered {len(_TERMINALS)} active terminal(s) on module reload.")
+    except Exception as _re_err:
+        print(f"[ai_terminal] Failed to recover active terminals on reload: {_re_err}")
+```
+Because of this, you can hot-reload the terminal code seamlessly without losing any active Claude or terminal shells.
+
+---
+
+## 3. Essential Debugging Commands (Tactic 2)
+If you need to investigate SText runtime behavior, open the ST Console (`Ctrl+``) and run:
+*   `sublime.log_commands(True)`: Logs all triggered commands and their arguments to the console.
+*   `sublime.log_input(True)`: Logs all raw keystrokes received by ST (useful for debugging keybinding overlaps).
+
+---
+
+## 4. Automatic Package Reloader (Tactic 3)
+For fully hands-free reloading of nested submodules whenever any file is saved, install the community package **AutomaticPackageReloader**:
+1. Install `AutomaticPackageReloader` via Package Control.
+2. Open the Command Palette and run `Automatic Package Reloader: Toggle Reload On Save`.
+3. Saving any subdirectory `.py` file will now automatically trigger a reload of the entire package (which SText handles safely thanks to the terminal preservation logic).
+
+---
+
+## 5. Remote Debugging & IDE Attachment (Tactic 4)
+Because standard debuggers like `pdb` will freeze the main thread and lock up Sublime Text, you should use a socket-based remote debugger.
+
+### Telnet Debugging with `rpdb`:
+1. Drop `rpdb` in your system python or your `Packages/User` directory.
+2. Insert this breakpoint in SText code:
+   ```python
+   import rpdb
+   rpdb.set_trace()
+   ```
+3. When hit, Sublime's thread will pause. Connect via your system terminal:
+   ```bash
+   telnet 127.0.0.1 4444
+   ```
+4. You can now step through code and inspect variables interactively from your terminal.
+
+### IDE-based Graphical Debugging:
+*   **PyCharm:** Use `pydevd_pycharm`'s remote debugging server and add `pydevd_pycharm.settrace('localhost', port=...)` inside `PluginLoader.py`.
+*   **VS Code / Python Debugger:** Use `debugpy` to configure and attach to Sublime Text's `plugin_host.exe` process.
+
+---
+
+## 6. Live REPL & Dynamic State Exploration (The Agility Loop)
+While step-by-step graphical debuggers can pause execution, they are often too slow and clunky for multi-threaded, asynchronous, or event-driven plugin architectures. The most agile alternative is a **live REPL and interactive patching loop** via the Sublime Text Python console (`Ctrl+``).
+
+### Tactic 1: Dynamic State Inspection
+Since Sublime's console is a live Python REPL running inside the editor's process, you can directly inspect global variables and registries on the fly:
+*   **Inspect active terminal instances:**
+    ```python
+    >>> import sys; sys.modules["User.ai.ai_terminal"]._TERMINALS
+    ```
+*   **Query active view details:**
+    ```python
+    >>> v = window.active_view(); v.size(); v.viewport_extent()
+    ```
+
+### Tactic 2: Live Logic Testing
+Isolate and test core internal functions by invoking them directly from the console with mocked or live objects:
+```python
+>>> import sys
+>>> ai_term = sys.modules["User.ai.ai_terminal"]
+>>> ai_term._measure(window.active_view())
+```
+
+### Tactic 3: Event-Driven Log Tracing
+Rather than manually stepping through code, place high-level structured logs (such as the JSONL logging in `logs/` or `data/logs/`) to track the exact sequence of asynchronous events. This lets you trace thread transitions, PTY input/output, and lifecycle events concurrently in real-time.
+
+
+

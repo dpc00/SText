@@ -31,6 +31,7 @@ import json
 import os
 import threading
 import time
+import traceback
 from functools import lru_cache
 
 import sublime
@@ -401,7 +402,162 @@ def _xterm_hex(i):
 
 _HEX = [None] + [_xterm_hex(i) for i in range(256)]
 
-_ALLOWED_BGS = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 181, 174, 148}
+_SCHEME_LOCK = threading.Lock()
+_REGISTERED_SCOPES = set()
+_SCHEME_PATH = None
+_BASE_SCHEME = {
+    "name": "AI Terminal",
+    "variables": {},
+    "globals": {
+        "background": "#000000",
+        "foreground": "#FFFFFF",
+        "caret": "#FFFFFF",
+        "selection": "#444444",
+        "line_highlight": "#0a0a0a",
+        "gutter": "#000000",
+        "gutter_foreground": "#808080",
+    },
+    "rules": []
+}
+_PENDING_RULES = []
+_WRITE_PENDING = False
+
+
+def _color_scheme_log(message):
+    try:
+        path = os.path.expanduser("~/data/logs/ai_terminal/color_scheme.log")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            t_name = threading.current_thread().name
+            f.write(f"[{ts}] [{t_name}] {message}\n")
+    except Exception:
+        pass
+
+
+def _init_dynamic_color_scheme():
+    global _SCHEME_PATH, _REGISTERED_SCOPES
+    try:
+        _SCHEME_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ai_terminal.sublime-color-scheme")
+        if os.path.exists(_SCHEME_PATH):
+            size = os.path.getsize(_SCHEME_PATH)
+            # If the file size is very large (e.g. the old precompiled 8.9MB static matrix), shrink it to the base scheme.
+            # 2MB is a safe threshold to distinguish a dynamic scheme from the old static matrix.
+            if size > 2000000:
+                msg = f"[init] Existing color scheme is very large ({size} bytes). Overwriting with clean base scheme."
+                print(f"[ai_terminal] {msg}")
+                _color_scheme_log(msg)
+                _save_color_scheme(_BASE_SCHEME)
+            else:
+                with open(_SCHEME_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    rules = data.get("rules", [])
+                    for r in rules:
+                        if "scope" in r:
+                            _REGISTERED_SCOPES.add(r["scope"])
+            msg = f"[init] Initialized. Loaded {len(_REGISTERED_SCOPES)} registered scope rules from disk ({size} bytes)."
+            print(f"[ai_terminal] {msg}")
+            _color_scheme_log(msg)
+        else:
+            _save_color_scheme(_BASE_SCHEME)
+            msg = "[init] Created fresh dynamic color scheme file."
+            print(f"[ai_terminal] {msg}")
+            _color_scheme_log(msg)
+    except Exception as e:
+        msg = f"[init] ERROR: Failed to initialize dynamic color scheme: {e}"
+        print(f"[ai_terminal] {msg}")
+        _color_scheme_log(msg)
+
+
+def _save_color_scheme(scheme_data):
+    # We want to write to both the workspace path and the Packages/User path
+    paths = []
+    if _SCHEME_PATH:
+        paths.append(_SCHEME_PATH)
+    try:
+        user_path = os.path.join(sublime.packages_path(), "User", "ai_terminal.sublime-color-scheme")
+        if user_path not in paths:
+            paths.append(user_path)
+    except Exception:
+        pass
+
+    for p in paths:
+        try:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            temp_path = p + ".tmp"
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(scheme_data, f, indent=None, separators=(",", ":"))
+            os.replace(temp_path, p)
+        except Exception as e:
+            print(f"[ai_terminal] Error writing color scheme file to {p}: {e}")
+
+
+def _register_scope_async(fg, bg):
+    global _WRITE_PENDING
+    scope = f"ai.fb.{fg}.{bg}"
+    
+    with _SCHEME_LOCK:
+        if scope in _REGISTERED_SCOPES:
+            return
+        _REGISTERED_SCOPES.add(scope)
+        _color_scheme_log(f"[register] Encountered new scope: {scope} (Memory registered count: {len(_REGISTERED_SCOPES)})")
+        
+        # Calculate colors
+        fh = _HEX[fg] if fg < len(_HEX) else None
+        bh = _HEX[bg] if bg < len(_HEX) else None
+        
+        # Decide background color
+        if bh is None:
+            bg_fill = "#000001"
+        else:
+            bsum = int(bh[1:3], 16) + int(bh[3:5], 16) + int(bh[5:7], 16)
+            bg_fill = bh if bsum >= _BG_LUMA_THRESHOLD else "#000001"
+            
+        # Define both foreground and background to fully avoid the ST foreground-swap bug
+        kw = {"scope": scope, "background": bg_fill, "foreground": fh or "#FFFFFF"}
+            
+        _PENDING_RULES.append(kw)
+        
+        if _WRITE_PENDING:
+            return
+        _WRITE_PENDING = True
+        
+    # Throttled / debounced to avoid write storms and ST hot-reload crashes
+    sublime.set_timeout_async(_flush_pending_rules, 1000)
+
+
+def _flush_pending_rules():
+    global _WRITE_PENDING, _PENDING_RULES
+    with _SCHEME_LOCK:
+        _WRITE_PENDING = False
+        if not _PENDING_RULES:
+            return
+        rules_to_add = list(_PENDING_RULES)
+        _PENDING_RULES.clear()
+
+    # Read the existing scheme from disk (or use BASE if we can't read it)
+    scheme_data = None
+    if _SCHEME_PATH and os.path.exists(_SCHEME_PATH):
+        try:
+            with open(_SCHEME_PATH, "r", encoding="utf-8") as f:
+                scheme_data = json.load(f)
+        except Exception as e:
+            msg = f"[flush] ERROR: Reading color scheme for flush failed: {e}"
+            print(f"[ai_terminal] {msg}")
+            _color_scheme_log(msg)
+
+    if not scheme_data:
+        scheme_data = dict(_BASE_SCHEME)
+        scheme_data["rules"] = []
+
+    # Append new rules
+    scheme_data.setdefault("rules", []).extend(rules_to_add)
+
+    # Save to disk
+    _save_color_scheme(scheme_data)
+    msg = f"[flush] SUCCESS: Flushed {len(rules_to_add)} dynamic rules to disk. Total rules: {len(scheme_data.get('rules', []))}"
+    print(f"[ai_terminal] {msg}")
+    _color_scheme_log(msg)
 
 
 def _scope_for(attr):
@@ -416,13 +572,14 @@ def _scope_for(attr):
         r, g, b = _XTERM256_RGB[fg - 1] if fg else (255, 255, 255)
         fg = _quantize256(r // 2, g // 2, b // 2) + 1
 
-    if bg not in _ALLOWED_BGS:
-        bg = 0
-
     if fg == 0 and bg == 0:
         return None
 
-    return f"ai.fb.{fg}.{bg}"
+    scope = f"ai.fb.{fg}.{bg}"
+    if scope not in _REGISTERED_SCOPES:
+        _register_scope_async(fg, bg)
+
+    return scope
 
 
 def _rstrip_cells(cells):
@@ -510,18 +667,49 @@ def _spawn_env():
     return dict(ev)
 
 
+def _settings_debug_log(message):
+    try:
+        path = os.path.expanduser("~/data/logs/ai_terminal/settings_debug.log")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            ts = time.strftime('%Y-%m-%d %H:%M:%S')
+            t_name = threading.current_thread().name
+            f.write(f"[{ts}] [{t_name}] {message}\n")
+    except Exception:
+        pass
+
+
 def _on_settings_change():
     """Live-apply a settings edit: swap each live terminal's history deque to
     the new cap. Column bounds are picked up by the resize poller's next
     _measure (~750ms), so nothing to do here for cols."""
-    cap = _scrollback_size()
+    _settings_debug_log(">>> _on_settings_change CALLED")
+    try:
+        cap = _scrollback_size()
+        _settings_debug_log(f"Parsed new scrollback_history_size cap: {cap}")
+    except Exception as e:
+        _settings_debug_log(f"ERROR: _scrollback_size failed: {e}\n{traceback.format_exc()}")
+        return
+
     with _REG_LOCK:
         terms = list(_TERMINALS.values())
+    _settings_debug_log(f"Found {len(terms)} active terminal(s)")
+
     for t in terms:
         try:
-            t.screen.set_history_cap(cap)
+            view_id = t.view.id() if t.view else "unknown"
+            view_name = t.view.name() if t.view else "unnamed"
+            _settings_debug_log(f"Processing terminal for view {view_id} ({view_name})")
+            _settings_debug_log(f"Acquiring t._lock for view {view_id}...")
+            with t._lock:
+                _settings_debug_log(f"Acquired t._lock for view {view_id}. Calling t.screen.set_history_cap({cap})")
+                t.screen.set_history_cap(cap)
+                _settings_debug_log(f"Successfully returned from set_history_cap for view {view_id}")
         except Exception as e:
-            print(f"[ai_terminal] set_history_cap failed: {e}")
+            msg = f"ERROR: _on_settings_change failed on terminal {t}: {e}\n{traceback.format_exc()}"
+            print(f"[ai_terminal] {msg}")
+            _settings_debug_log(msg)
+    _settings_debug_log("<<< _on_settings_change FINISHED")
 
 
 # ─── _Screen: cursor-aware grid ──────────────────────────────────────────────
@@ -599,14 +787,28 @@ class _Screen:
         when the user edits scrollback_history_size -- NOT from resize, so a
         window shrink does not silently drop history (the bug that got
         auto-sizing reverted)."""
-        cap = max(0, int(cap))
-        if cap == self.history.maxlen:
-            return
-        self.history = collections.deque(self.history, maxlen=cap)
+        _settings_debug_log(f"    [set_history_cap] ENTER: cap={cap}, current_maxlen={self.history.maxlen}, current_len={len(self.history)}")
+        try:
+            cap = max(0, int(cap))
+            if cap == self.history.maxlen:
+                _settings_debug_log("    [set_history_cap] RETURN: cap matches current maxlen, returning early.")
+                return
+            _settings_debug_log(f"    [set_history_cap] Swapping deque to new maxlen={cap}...")
+            self.history = collections.deque(self.history, maxlen=cap)
+            _settings_debug_log(f"    [set_history_cap] Swapped. New len={len(self.history)}, maxlen={self.history.maxlen}")
+        except Exception as e:
+            _settings_debug_log(f"    [set_history_cap] ERROR: {e}\n{traceback.format_exc()}")
+            raise
 
     def _scroll_up(self):
         popped = [(self.grid[0][c], self.attrs[0][c]) for c in range(self.cols)]
-        self.history.append(_rstrip_cells(popped))
+        _settings_debug_log(f"    [_scroll_up] ENTER: len(history) before append={len(self.history)}")
+        try:
+            self.history.append(_rstrip_cells(popped))
+            _settings_debug_log(f"    [_scroll_up] SUCCESS: len(history) after append={len(self.history)}")
+        except Exception as e:
+            _settings_debug_log(f"    [_scroll_up] ERROR during append: {e}\n{traceback.format_exc()}")
+            raise
         self.grid.pop(0)
         self.attrs.pop(0)
         self.grid.append([_BLANK] * self.cols)
@@ -756,7 +958,13 @@ class _Screen:
                 grid_rows.append(_rstrip_cells(cells))
         if self.alt_screen:
             return grid_rows, cy_in_grid, cx
-        hist = list(self.history)
+        _settings_debug_log(f"    [render_cells] ENTER: listing self.history (len={len(self.history)})...")
+        try:
+            hist = list(self.history)
+            _settings_debug_log(f"    [render_cells] SUCCESS: listed {len(hist)} elements")
+        except Exception as e:
+            _settings_debug_log(f"    [render_cells] ERROR during list(self.history): {e}\n{traceback.format_exc()}")
+            raise
         return hist + grid_rows, len(hist) + cy_in_grid, cx
 
 
@@ -1182,6 +1390,33 @@ class _Terminal:
             self.pty.kill()
         except Exception as e:
             print(f"[ai_terminal] kill error: {e}")
+
+
+# Preserve existing terminals on module reload so open terminal views don't "crash" (become unresponsive).
+import sys as _sys
+_old_mod = None
+if hasattr(_sys, "_stext_old_modules") and "User.ai.ai_terminal" in _sys._stext_old_modules:
+    _old_mod = _sys._stext_old_modules["User.ai.ai_terminal"]
+
+if _old_mod is not None:
+    try:
+        _old_terms = getattr(_old_mod, "_TERMINALS", {})
+        for _vid, _term in _old_terms.items():
+            # Update the instance class dynamically to point to the new classes in this reloaded module
+            _term.__class__ = _Terminal
+            if hasattr(_term, "pty") and _term.pty is not None:
+                _term.pty.__class__ = _Pty
+            if hasattr(_term, "screen") and _term.screen is not None:
+                _term.screen.__class__ = _Screen
+            if hasattr(_term, "parser") and _term.parser is not None:
+                _term.parser.__class__ = _Parser
+            if hasattr(_term, "process") and _term.process is not None:
+                _term.process.__class__ = _ProcessProxy
+            _TERMINALS[_vid] = _term
+        if _TERMINALS:
+            print(f"[ai_terminal] Successfully recovered {len(_TERMINALS)} active terminal(s) on module reload.")
+    except Exception as _re_err:
+        print(f"[ai_terminal] Failed to recover active terminals on reload: {_re_err}")
 
 
 # ─── view helpers ─────────────────────────────────────────────────────────────
@@ -2132,6 +2367,7 @@ def plugin_loaded():
         print("[ai_terminal] ConPTY unavailable; commands will report the error.")
     _ensure_poller()
     global _clamp_token, _settings
+    _init_dynamic_color_scheme()
     # Bind the settings object and live-apply edits (the callback fires on the
     # main thread right after a settings file write).
     _settings = sublime.load_settings(_SETTINGS_NAME)
