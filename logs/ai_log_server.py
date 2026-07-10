@@ -62,14 +62,85 @@ def _md_header_if_new():
             f.write(f"# AI log — {_date()}\n\n")
 
 
-def _summarize_input(inp):
+def _map_tool_name(name):
+    # Exact Claude Code matches
+    mapping = {
+        "run_shell_command": "Bash",
+        "read_file": "Read",
+        "replace": "Edit",
+        "write_file": "Write",
+        "glob": "Glob",
+        "grep_search": "Grep",
+        "web_fetch": "WebFetch",
+        "google_web_search": "WebSearch",
+        "bash": "Bash",
+        "read": "Read",
+        "edit": "Edit",
+        "write": "Write",
+    }
+    if name in mapping:
+        return mapping[name]
+    
+    # Clean up other MCP tool names
+    clean = name
+    if clean.startswith("mcp_"):
+        clean = clean[4:]
+    if clean.startswith("sublime-mcp_"):
+        clean = clean[12:]
+    elif clean.startswith("computer-use-mcp_"):
+        clean = clean[17:]
+    elif clean.startswith("firecrawl_"):
+        clean = clean[10:]
+    elif clean.startswith("github_"):
+        clean = clean[7:]
+        
+    # Convert to a nice CamelCase or clean capitalization
+    parts = clean.replace("-", "_").split("_")
+    return "".join(p.capitalize() for p in parts if p)
+
+
+def _summarize_tool_input(name, inp):
     if not isinstance(inp, dict) or not inp:
         return ""
+    
+    mapped_name = _map_tool_name(name)
+    
+    # 2. Extract primary scalar fields based on tool style
+    if mapped_name == "Bash":
+        cmd = (inp.get("command") or inp.get("shell_cmd") or "").strip().replace("\n", "; ")
+        return f"command={cmd[:120]!r}" if len(cmd) > 120 else f"command={cmd!r}"
+        
+    if mapped_name in ("Read", "Edit", "Write"):
+        path = inp.get("file_path") or inp.get("filePath") or inp.get("path") or ""
+        return f"file_path={path!r}" if path else ""
+        
+    if mapped_name in ("Glob", "Grep"):
+        pat = inp.get("pattern") or ""
+        path = inp.get("path") or inp.get("dir_path") or ""
+        out = f"pattern={pat!r}"
+        if path:
+            out += f"  path={path!r}"
+        return out
+        
+    if mapped_name == "WebSearch":
+        q = inp.get("query") or ""
+        return f"query={q!r}" if q else ""
+        
+    if mapped_name == "WebFetch":
+        url = inp.get("url") or inp.get("prompt") or ""
+        return f"url={url!r}" if url else ""
+
+    # Generic fallback: print all key-values excluding huge ones
     bits = []
-    for k, v in inp.items():
+    # prioritize common diagnostic keys
+    keys = sorted(inp.keys(), key=lambda k: 0 if k in ("path", "filePath", "file_path", "pattern", "code", "command", "text", "query", "url") else 1)
+    for k in keys:
+        v = inp[k]
         if isinstance(v, str):
-            v = v if len(v) <= 80 else v[:77] + "…"
-            bits.append(f"{k}={v!r}")
+            v_clean = v.replace("\n", "; ")
+            if len(v_clean) > 80:
+                v_clean = v_clean[:77] + "…"
+            bits.append(f"{k}={v_clean!r}")
         elif isinstance(v, (int, float, bool)):
             bits.append(f"{k}={v}")
         elif isinstance(v, list):
@@ -122,6 +193,8 @@ def _short(s, n=100):
 
 def _summarize_event(name, ev):
     """One-line summary of an ambient event's payload, or None to skip the .md line."""
+    if name in ("BeforeModel", "AfterModel", "BeforeToolSelection", "PreCompress"):
+        return None
     if name == "MessageDisplay":
         # skip streaming chunks; render only the final per-message delta
         if not ev.get("final"):
@@ -144,16 +217,93 @@ def _summarize_event(name, ev):
     return ""
 
 
-def _md_ambient_standalone(ts, glyph, name, text):
-    _md_header_if_new()
+def _md_ambient_standalone(ts, glyph, name, text, path=None):
+    if not path:
+        _md_header_if_new()
+        path = _md_path()
     line = f"### {ts.strftime('%H:%M:%S')}  ◦ {glyph} {name}"
     if text:
         line += f"   {text}"
-    with open(_md_path(), "a", encoding="utf-8") as f:
+    with open(path, "a", encoding="utf-8") as f:
         f.write(line + "\n")
 
 
-def _flush_turn(sid):
+def _format_tool_response(resp):
+    if not resp:
+        return ""
+    if isinstance(resp, str):
+        text = resp
+    elif not isinstance(resp, dict):
+        text = str(resp)
+    else:
+        # Check for direct stdout / output keys (which are clean strings)
+        found_str = None
+        for k in ("stdout", "output", "stderr"):
+            val = resp.get(k)
+            if val and isinstance(val, str):
+                found_str = val
+                break
+        if found_str is not None:
+            text = found_str
+        else:
+            # Check llmContent blocks (contains clean text sent to LLM)
+            content = resp.get("llmContent")
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                text_parts = []
+                for block in content:
+                    if isinstance(block, dict) and "text" in block:
+                        text_parts.append(block.get("text", ""))
+                    elif isinstance(block, str):
+                        text_parts.append(block)
+                text = "\n".join(text_parts) if text_parts else ""
+            else:
+                # Check returnDisplay (contains raw text cells shown on screen)
+                ret = resp.get("returnDisplay")
+                if isinstance(ret, str):
+                    text = ret
+                elif isinstance(ret, list):
+                    # returnDisplay is list of lists of dicts, or list of dicts
+                    text_parts = []
+                    for row in ret:
+                        if isinstance(row, list):
+                            row_text = ""
+                            for cell in row:
+                                if isinstance(cell, dict) and "text" in cell:
+                                    row_text += cell.get("text", "")
+                                elif isinstance(cell, str):
+                                    row_text += cell
+                            text_parts.append(row_text)
+                        elif isinstance(row, dict) and "text" in row:
+                            text_parts.append(row.get("text", ""))
+                        elif isinstance(row, str):
+                            text_parts.append(row)
+                    text = "\n".join(text_parts) if text_parts else ""
+                else:
+                    # If it's a small dictionary (no huge lists), we can format it as inline JSON
+                    has_huge_lists = False
+                    for val in resp.values():
+                        if isinstance(val, list) and len(val) > 10:
+                            has_huge_lists = True
+                            break
+                    if not has_huge_lists:
+                        try:
+                            text = json.dumps(resp, ensure_ascii=False)
+                        except Exception:
+                            text = ""
+                    else:
+                        text = ""
+
+    # Simple clean up of untrusted_context wrapper tags if present
+    text = text.replace("<untrusted_context>\n", "").replace("\n</untrusted_context>", "")
+    text = text.replace("<untrusted_context>", "").replace("</untrusted_context>", "")
+    text = text.replace("&lt;untrusted_context&gt;\n", "").replace("\n&lt;/untrusted_context&gt;", "")
+    text = text.replace("&lt;untrusted_context&gt;", "").replace("&lt;/untrusted_context&gt;", "")
+    return text.strip()
+
+
+def _flush_turn(sid, path=None):
     sess = _sessions.pop(sid, None)
     if not sess:
         return
@@ -178,18 +328,22 @@ def _flush_turn(sid):
     items.sort(key=lambda x: x[0])
     for _, kind, it in items:
         if kind == "tool":
-            head = f"  ⚙ {it['name']}"
-            s = _summarize_input(it.get("input"))
+            tname = _map_tool_name(it['name'])
+            head = f"  ⚙ {tname}"
+            s = _summarize_tool_input(it['name'], it.get("input"))
             if s:
                 head += f"   {s}"
             pre, post = it.get("pre"), it.get("post")
             if pre and post:
                 head += f"   +{(post - pre).total_seconds() * 1000:.0f}ms"
             out.append(head)
+            
+            # No tool response/output is printed in the daily markdown log to keep it pristine and compact
+                    
             if post:
-                out.append(f"  {'✘' if it.get('err') else '✔'} {it['name']}")
+                out.append(f"  {'✘' if it.get('err') else '✔'} {tname}")
             else:
-                out.append(f"  ⊘ {it['name']}   (denied / not run)")
+                out.append(f"  ⊘ {tname}   (denied / not run)")
         else:
             out.append(f"  {it['glyph']} {it['name']}" + (f"   {it['text']}" if it.get("text") else "").rstrip())
     if sess.get("stop_msg"):
@@ -205,27 +359,34 @@ def _flush_turn(sid):
     if foot:
         out.append("  — " + "  ·  ".join(foot))
         out.append("")
-    _md_header_if_new()
-    with open(_md_path(), "a", encoding="utf-8") as f:
+    if not path:
+        _md_header_if_new()
+        path = _md_path()
+    with open(path, "a", encoding="utf-8") as f:
         f.write("\n".join(out) + "\n")
 
 
-def _mark_tool_done(sid, tool_use_id, name, err):
+def _mark_tool_done(sid, tool_use_id, name, err, ts=None, response=None):
     s = _sessions.get(sid)
     if not s:
         return
+    done_ts = ts or _ts()
     # pair by tool_use_id (exact; parallel-safe)
     if tool_use_id:
         for t in s["tools"]:
             if t.get("id") == tool_use_id and not t.get("post"):
-                t["post"] = _ts()
+                t["post"] = done_ts
                 t["err"] = err
+                if response:
+                    t["response"] = response
                 return
     # fall back to earliest unmatched same-name tool
     for t in s["tools"]:
         if t["name"] == name and not t.get("post"):
-            t["post"] = _ts()
+            t["post"] = done_ts
             t["err"] = err
+            if response:
+                t["response"] = response
             return
 
 
@@ -246,6 +407,8 @@ class H(http.server.BaseHTTPRequestHandler):
         sid = ev.get("session_id", "_")
         with _lock:
             if name == "UserPromptSubmit":
+                if sid in _sessions:
+                    _flush_turn(sid)
                 _sessions[sid] = {
                     "prompt": ev.get("prompt", ""),
                     "start": recv,
@@ -262,16 +425,19 @@ class H(http.server.BaseHTTPRequestHandler):
                     "id": ev.get("tool_use_id"),
                 })
             elif name == "PostToolUse":
-                _mark_tool_done(sid, ev.get("tool_use_id"), ev.get("tool_name", "?"), False)
+                _mark_tool_done(sid, ev.get("tool_use_id"), ev.get("tool_name", "?"), False, response=ev.get("tool_response"))
             elif name == "PostToolUseFailure":
-                _mark_tool_done(sid, ev.get("tool_use_id"), ev.get("tool_name", "?"), True)
+                _mark_tool_done(sid, ev.get("tool_use_id"), ev.get("tool_name", "?"), True, response=ev.get("tool_response"))
             elif name == "Stop":
                 s = _sessions.get(sid)
                 if s:
                     s["stop_ts"] = recv
-                    s["stop_msg"] = ev.get("last_assistant_message", "")
+                    msg = ev.get("last_assistant_message") or ev.get("prompt_response") or ev.get("message") or ev.get("response") or ""
+                    if msg or not s.get("stop_msg"):
+                        s["stop_msg"] = msg
                     s["stop_reason"] = ev.get("stop_reason", "")
-                _flush_turn(sid)
+                if s and (s.get("stop_msg") or not s.get("tools")):
+                    _flush_turn(sid)
             elif name == "SessionEnd":
                 _md_ambient_standalone(recv, "⏹", "SessionEnd", _summarize_event("SessionEnd", ev))
                 _sessions.pop(sid, None)
@@ -298,13 +464,287 @@ class H(http.server.BaseHTTPRequestHandler):
         self.wfile.write(b"{}")
 
 
-socketserver.TCPServer.allow_reuse_address = True
-try:
-    with socketserver.ThreadingTCPServer(("127.0.0.1", PORT), H) as s:
-        sys.stdout.write(f"ai_log_server on 127.0.0.1:{PORT} -> {OUT}\n")
-        sys.stdout.flush()
-        s.serve_forever()
-except Exception:
-    import traceback
-    with open(os.path.join(OUT, "server_error.log"), "a", encoding="utf-8") as f:
-        f.write(traceback.format_exc() + "\n")
+def rebuild_from_jsonl(date_str):
+    """
+    Rebuilds <date_str>.md from events_<date_str>.jsonl by grouping events by session_id,
+    reconstructing each session's turns separately, and then merging them chronologically.
+    """
+    import collections
+    jsonl_file = os.path.join(OUT, f"events_{date_str}.jsonl")
+    md_file = os.path.join(OUT, f"{date_str}.md")
+    
+    if not os.path.exists(jsonl_file):
+        print(f"No JSONL file found for {date_str} at {jsonl_file}")
+        return
+        
+    print(f"Rebuilding {md_file} from {jsonl_file} by grouping sessions...")
+    
+    # Read all raw events
+    events = []
+    with open(jsonl_file, "r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                ev = json.loads(line)
+                events.append(ev)
+            except Exception:
+                pass
+                
+    # Sort globally by ts
+    events.sort(key=lambda x: x.get("ts", ""))
+    
+    # Group events by session_id
+    sessions_events = collections.defaultdict(list)
+    for ev in events:
+        sid = ev.get("session_id", "_")
+        sessions_events[sid].append(ev)
+        
+    # We will reconstruct the turns for each session separately
+    all_sessions_markdown = []
+    
+    for sid, sess_evs in sessions_events.items():
+        # Temporary sessions state for this specific sid
+        sess_state = {}
+        sess_turns = []
+        
+        # Track agent names/display dynamically for this session
+        agent_info = {"name": "Claude", "display": "Claude Code"}
+        if sid == "opencode":
+            agent_info = {"name": "OpenCode", "display": "OpenCode CLI"}
+        elif sid == "openclaw":
+            agent_info = {"name": "OpenClaw", "display": "OpenClaw CLI"}
+        elif sid == "qwen":
+            agent_info = {"name": "Qwen", "display": "Qwen CLI"}
+            
+        def flush_sess_turn():
+            if sid not in sess_state:
+                return
+            sess = sess_state.pop(sid)
+            start = sess.get("start")
+            out = []
+            out.append(f"### {start.strftime('%H:%M:%S')}  ▸ You")
+            if sess.get("prompt"):
+                out.append(sess["prompt"])
+            out.append("")
+            
+            ts_cands = []
+            if sess.get("first_tool_ts"):
+                ts_cands.append(sess["first_tool_ts"])
+            for e in sess.get("extras", []):
+                if e.get("ts"):
+                    ts_cands.append(e["ts"])
+            claude_ts = min(ts_cands) if ts_cands else start
+            
+            # Determine agent name based on current session
+            agent_name = agent_info["name"]
+            out.append(f"### {claude_ts.strftime('%H:%M:%S')}  {agent_name}")
+            
+            items = [(t.get("pre") or start, "tool", t) for t in sess.get("tools", [])]
+            items += [(e.get("ts") or start, "extra", e) for e in sess.get("extras", [])]
+            items.sort(key=lambda x: x[0])
+            for _, kind, it in items:
+                if kind == "tool":
+                    tname = _map_tool_name(it['name'])
+                    head = f"  ⚙ {tname}"
+                    s = _summarize_tool_input(it['name'], it.get("input"))
+                    if s:
+                        head += f"   {s}"
+                    pre, post = it.get("pre"), it.get("post")
+                    if pre and post:
+                        head += f"   +{(post - pre).total_seconds() * 1000:.0f}ms"
+                    out.append(head)
+                    
+                    # No tool output/response is printed at all to keep logs clean and compact
+                    
+                    if post:
+                        out.append(f"  {'✘' if it.get('err') else '✔'} {tname}")
+                    else:
+                        out.append(f"  ⊘ {tname}   (denied / not run)")
+                else:
+                    out.append(f"  {it['glyph']} {it['name']}" + (f"   {it['text']}" if it.get("text") else "").rstrip())
+            if sess.get("stop_msg"):
+                out.append("")
+                out.append(sess["stop_msg"])
+            out.append("")
+            foot = []
+            stop_ts = sess.get("stop_ts")
+            if stop_ts and start:
+                foot.append(f"{(stop_ts - start).total_seconds():.1f}s")
+            if sess.get("stop_reason") and sess["stop_reason"] != "end_turn":
+                foot.append(sess["stop_reason"])
+            if foot:
+                out.append("  — " + "  ·  ".join(foot))
+                out.append("")
+            
+            sess_turns.append((start, "\n".join(out)))
+
+        for ev in sess_evs:
+            name = ev.get("hook_event_name", "")
+            
+            # Check transcript_path to dynamically resolve agent identity
+            tpath = ev.get("transcript_path")
+            if tpath and isinstance(tpath, str):
+                if ".gemini" in tpath:
+                    agent_info = {"name": "Gemini", "display": "Gemini CLI"}
+                elif ".claude" in tpath:
+                    agent_info = {"name": "Claude", "display": "Claude Code"}
+                elif ".openclaw" in tpath:
+                    agent_info = {"name": "OpenClaw", "display": "OpenClaw CLI"}
+                elif ".qwen" in tpath:
+                    agent_info = {"name": "Qwen", "display": "Qwen CLI"}
+                elif "opencode" in tpath:
+                    agent_info = {"name": "OpenCode", "display": "OpenCode CLI"}
+            
+            ts_str = ev.get("ts", "")
+            try:
+                h, m, s_part = ts_str.split(":")
+                sec, ms = s_part.split(".")
+                y, mo, d = map(int, date_str.split("-"))
+                recv = datetime.datetime(y, mo, d, int(h), int(m), int(sec), int(ms) * 1000)
+            except Exception:
+                recv = datetime.datetime.now()
+                
+            if name == "UserPromptSubmit":
+                if sid in sess_state:
+                    flush_sess_turn()
+                sess_state[sid] = {
+                    "prompt": ev.get("prompt", ""),
+                    "start": recv,
+                    "tools": [],
+                    "extras": [],
+                }
+            elif name == "PreToolUse":
+                s = sess_state.setdefault(sid, {"prompt": "", "start": recv, "tools": [], "extras": []})
+                s.setdefault("first_tool_ts", recv)
+                s["tools"].append({
+                    "name": ev.get("tool_name", "?"),
+                    "input": ev.get("tool_input"),
+                    "pre": recv,
+                    "id": ev.get("tool_use_id"),
+                })
+            elif name == "PostToolUse":
+                s = sess_state.get(sid)
+                if s:
+                    done_ts = recv
+                    tool_use_id = ev.get("tool_use_id")
+                    tool_name = ev.get("tool_name", "?")
+                    matched = False
+                    if tool_use_id:
+                        for t in s["tools"]:
+                            if t.get("id") == tool_use_id and not t.get("post"):
+                                t["post"] = done_ts
+                                t["err"] = False
+                                matched = True
+                                break
+                    if not matched:
+                        for t in s["tools"]:
+                            if t["name"] == tool_name and not t.get("post"):
+                                t["post"] = done_ts
+                                t["err"] = False
+                                break
+            elif name == "PostToolUseFailure":
+                s = sess_state.get(sid)
+                if s:
+                    done_ts = recv
+                    tool_use_id = ev.get("tool_use_id")
+                    tool_name = ev.get("tool_name", "?")
+                    matched = False
+                    if tool_use_id:
+                        for t in s["tools"]:
+                            if t.get("id") == tool_use_id and not t.get("post"):
+                                t["post"] = done_ts
+                                t["err"] = True
+                                matched = True
+                                break
+                    if not matched:
+                        for t in s["tools"]:
+                            if t["name"] == tool_name and not t.get("post"):
+                                t["post"] = done_ts
+                                t["err"] = True
+                                break
+            elif name == "Stop":
+                s = sess_state.get(sid)
+                if s:
+                    s["stop_ts"] = recv
+                    msg = ev.get("last_assistant_message") or ev.get("prompt_response") or ev.get("message") or ev.get("response") or ""
+                    if msg or not s.get("stop_msg"):
+                        s["stop_msg"] = msg
+                    s["stop_reason"] = ev.get("stop_reason", "")
+                if s and (s.get("stop_msg") or not s.get("tools")):
+                    flush_sess_turn()
+            elif name == "SessionEnd":
+                line = f"### {recv.strftime('%H:%M:%S')}  ◦ ⏹ SessionEnd"
+                text = _summarize_event("SessionEnd", ev)
+                if text:
+                    line += f"   {text}"
+                sess_turns.append((recv, line + "\n"))
+                sess_state.pop(sid, None)
+            else:
+                text = _summarize_event(name, ev)
+                if text is not None:
+                    s = sess_state.get(sid)
+                    if s is not None:
+                        s["extras"].append({
+                            "ts": recv,
+                            "glyph": _GLYPH.get(name, "•"),
+                            "name": name,
+                            "text": text,
+                        })
+                    else:
+                        line = f"### {recv.strftime('%H:%M:%S')}  ◦ {_GLYPH.get(name, '•')} {name}"
+                        if text:
+                            line += f"   {text}"
+                        sess_turns.append((recv, line + "\n"))
+                        
+        if sid in sess_state:
+            flush_sess_turn()
+            
+        if sess_turns:
+            sess_turns.sort(key=lambda x: x[0])
+            session_start_time = sess_turns[0][0]
+            
+            agent_display = agent_info["display"]
+            sess_md = []
+            sess_md.append(f"## ─── Session Start — {agent_display} ({sid}) ───")
+            sess_md.append("")
+            for _, turn_text in sess_turns:
+                sess_md.append(turn_text)
+            sess_md.append(f"## ─── Session End — {agent_display} ───\n")
+            
+            all_sessions_markdown.append((session_start_time, "\n".join(sess_md)))
+            
+    all_sessions_markdown.sort(key=lambda x: x[0])
+    
+    if os.path.exists(md_file):
+        os.remove(md_file)
+        
+    with open(md_file, "w", encoding="utf-8") as f:
+        f.write(f"# AI log — {date_str}\n\n")
+        for _, sess_md_text in all_sessions_markdown:
+            f.write(sess_md_text + "\n")
+            
+    print(f"Rebuild completed successfully for {date_str}! All CLI sessions separated and restored!")
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--rebuild", help="Rebuild markdown log for a specific date (YYYY-MM-DD)")
+    parser.add_argument("--port", type=int, default=PORT, help="Port to listen on")
+    args = parser.parse_args()
+    
+    if args.rebuild:
+        rebuild_from_jsonl(args.rebuild)
+        sys.exit(0)
+        
+    socketserver.TCPServer.allow_reuse_address = True
+    try:
+        with socketserver.ThreadingTCPServer(("127.0.0.1", args.port), H) as s:
+            sys.stdout.write(f"ai_log_server on 127.0.0.1:{args.port} -> {OUT}\n")
+            sys.stdout.flush()
+            s.serve_forever()
+    except Exception:
+        import traceback
+        with open(os.path.join(OUT, "server_error.log"), "a", encoding="utf-8") as f:
+            f.write(traceback.format_exc() + "\n")

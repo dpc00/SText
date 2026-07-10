@@ -120,7 +120,11 @@ def rule(scope, **kw):
 # #ffb387, sum 569) is far above this and renders solid.
 _BG_LUMA_THRESHOLD = 100
 
-for bg in range(257):
+# Map backgrounds selectively. Supports Default (0), ANSI 1-16, and crucial UI highlights:
+# 181 (peach selection), 174 (salmon), 148 (periwinkle).
+_ALLOWED_BGS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 181, 174, 148)
+
+for bg in _ALLOWED_BGS:
     bh = _HEX[bg]
     if bh is None:
         bg_fill = "#000001"
@@ -149,10 +153,17 @@ scheme = {
     "rules": rules,
 }
 
-out = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                   "ai_terminal.sublime-color-scheme")
-with open(out, "w", encoding="utf-8") as f:
-    # Compact (no indent) -- the matrix is 66049 rules; indented output is
-    # ~5-9MB and only slows scheme load. One line, separators only.
-    json.dump(scheme, f, indent=None, separators=(",", ":"))
-print(f"wrote {out} ({len(rules)} rules)")
+out_workspace = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "ai_terminal.sublime-color-scheme")
+out_user = os.path.expandvars(r"%APPDATA%\Sublime Text\Packages\User\ai_terminal.sublime-color-scheme")
+
+for out in (out_workspace, out_user):
+    try:
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "w", encoding="utf-8") as f:
+            # Compact (no indent) -- the matrix is 5140 rules; indented output is
+            # ~500KB and only slows scheme load. One line, separators only.
+            json.dump(scheme, f, indent=None, separators=(",", ":"))
+        print(f"wrote {out} ({len(rules)} rules)")
+    except Exception as e:
+        print(f"Error writing to {out}: {e}")

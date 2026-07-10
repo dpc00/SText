@@ -30,7 +30,7 @@
     //   ["cmd", "/c", "opencode"]            -- OpenCode instead of Claude Code
     //   ["cmd", "/c", "claude"]              -- Claude Code on Windows (native cmd shim)
     // Applied on the next _spawn: close and reopen the ai_terminal tab to pick up.
-    "launch_command": ["cmd", "/c", "opencode"],
+    "launch_command": ["cmd", "/c", "lg.bat"],
 
     // claude --model gemini-2.5-pro
 

@@ -374,12 +374,38 @@ def _attr(fg=0, bg=0, flags=0):
     return (fg << _FG_SHIFT) | (bg << _BG_SHIFT) | flags
 
 
-def _scope_for(attr):
-    """Map a packed cell attr to a color-scheme scope, or None for default.
+_BG_LUMA_THRESHOLD = 100
 
-    Uses the single combined ai.fb.<fg>.<bg> family (257x257 matrix in the
-    view's color scheme). reverse swaps fg/bg; if both end up default the cell
-    needs no region. bold is parsed but not rendered in v2."""
+_ANSI16_HEX = [
+    "#000000", "#FF0000", "#00FF00", "#FFFF00",
+    "#0000FF", "#FF00FF", "#00FFFF", "#FFFFFF",
+    "#808080", "#FF0000", "#00FF00", "#FFFF00",
+    "#0000FF", "#FF00FF", "#00FFFF", "#FFFFFF",
+]
+
+
+def _xterm_hex(i):
+    if i < 16:
+        return _ANSI16_HEX[i]
+    if i >= 232:
+        v = 8 + (i - 232) * 10
+        return "#%02X%02X%02X" % (v, v, v)
+    n = i - 16
+    r, g, b = n // 36, (n // 6) % 6, n % 6
+    return "#%02X%02X%02X" % (
+        0 if r == 0 else 55 + r * 40,
+        0 if g == 0 else 55 + g * 40,
+        0 if b == 0 else 55 + b * 40
+    )
+
+
+_HEX = [None] + [_xterm_hex(i) for i in range(256)]
+
+_ALLOWED_BGS = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 181, 174, 148}
+
+
+def _scope_for(attr):
+    """Map a packed cell attr to a precompiled scope, or None for default."""
     if attr == 0:
         return None
     fg = attr & _ATTR_FG_MASK
@@ -387,13 +413,15 @@ def _scope_for(attr):
     if attr & _REVERSE:
         fg, bg = bg, fg
     if attr & _FAINT:
-        # Dim the fg toward black (real-terminal faint). default fg is white,
-        # so dimmed = gray -- matches how a DOS console shows \x1b[2m text.
-        # _quantize256 is cached, so this is O(1) per distinct colour.
         r, g, b = _XTERM256_RGB[fg - 1] if fg else (255, 255, 255)
         fg = _quantize256(r // 2, g // 2, b // 2) + 1
+
+    if bg not in _ALLOWED_BGS:
+        bg = 0
+
     if fg == 0 and bg == 0:
         return None
+
     return f"ai.fb.{fg}.{bg}"
 
 
@@ -1255,10 +1283,10 @@ def _terminal_view(window):
             v.settings().set("color_scheme", hits[0])
         else:
             v.settings().set("color_scheme",
-                             "Packages/User/ai/ai_terminal.sublime-color-scheme")
+                             "Packages/User/ai_terminal.sublime-color-scheme")
     except Exception:
         v.settings().set("color_scheme",
-                         "Packages/User/ai/ai_terminal.sublime-color-scheme")
+                         "Packages/User/ai_terminal.sublime-color-scheme")
     # NOT read-only: on_text_command swallows insert/left_delete/right_delete/
     # move and forwards them to the PTY. Making the view read-only suppresses
     # keyboard `insert` before the listener fires, so real typing would do
@@ -2027,35 +2055,32 @@ class AiTerminalDumpScreenCommand(sublime_plugin.TextCommand):
 # ─── resize poller + lifecycle ───────────────────────────────────────────────
 
 _POLL_MS = 750
-_poll_event = threading.Event()
-_poll_lock = threading.Lock()
-_poll_started = False
+_poll_token = None
 
 
 def _ensure_poller():
-    global _poll_started
-    with _poll_lock:
-        if _poll_started:
-            return
-        _poll_started = True
-    threading.Thread(target=_poll_loop, daemon=True).start()
+    global _poll_token
+    if _poll_token is not None:
+        return
+    _poll_loop()
 
 
 def _poll_loop():
-    while True:
-        try:
-            with _REG_LOCK:
-                items = list(_TERMINALS.items())
-            for _vid, term in items:
-                view = term.view
-                if not view.is_valid():
-                    continue
-                cols, rows = _measure(view)
-                if (cols, rows) != (term._last_cols, term._last_rows):
-                    term.resize(cols, rows)
-        except Exception as e:
-            print(f"[ai_terminal] poll error: {e}")
-        _poll_event.wait(_POLL_MS / 1000.0)
+    global _poll_token
+    _poll_token = None
+    try:
+        with _REG_LOCK:
+            items = list(_TERMINALS.items())
+        for _vid, term in items:
+            view = term.view
+            if not view.is_valid():
+                continue
+            cols, rows = _measure(view)
+            if (cols, rows) != (term._last_cols, term._last_rows):
+                term.resize(cols, rows)
+    except Exception as e:
+        print(f"[ai_terminal] poll error: {e}")
+    _poll_token = sublime.set_timeout(_poll_loop, _POLL_MS)
 
 
 # ─── viewport clamp ───────────────────────────────────────────────────────────
@@ -2105,7 +2130,6 @@ def _clamp_vp_loop():
 def plugin_loaded():
     if not _PTY_OK:
         print("[ai_terminal] ConPTY unavailable; commands will report the error.")
-    _poll_event.clear()
     _ensure_poller()
     global _clamp_token, _settings
     # Bind the settings object and live-apply edits (the callback fires on the
@@ -2122,7 +2146,7 @@ def plugin_loaded():
 
 
 def plugin_unloaded():
-    global _clamp_token, _settings
+    global _clamp_token, _settings, _poll_token
     if _settings is not None:
         try:
             _settings.clear_on_change("ai_terminal")
@@ -2134,6 +2158,12 @@ def plugin_unloaded():
         except Exception:
             pass
         _clamp_token = None
+    if _poll_token:
+        try:
+            sublime.cancel_timeout(_poll_token)
+        except Exception:
+            pass
+        _poll_token = None
     # Deliberately do NOT kill ConPTY children on unload.  The terminal
     # process may be opencode itself (or another long-running CLI agent);
     # killing it here means a plugin reload triggered by the agent's own
