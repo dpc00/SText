@@ -1,2 +1,54 @@
+# --- Python ---
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# --- Databases ---
+database.db
+database.db-shm
+database.db-wal
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# --- Caches and Local settings ---
+.cache/
+.claude/
+.gemini/
+.idea/
+.vscode/
+**/__pycache__/
+**/.cache/
+**/.claude/
+**/.gemini/
+
+# --- Logs ---
+*.log
+logs/**/*.log
+logs/*.log
+
+# --- OS/System ---
+.DS_Store
+Thumbs.db
+Desktop.ini
