@@ -814,6 +814,12 @@ class _Screen:
         self.grid.append([_BLANK] * self.cols)
         self.attrs.append([0] * self.cols)
 
+    def _scroll_down(self):
+        self.grid.pop()
+        self.attrs.pop()
+        self.grid.insert(0, [_BLANK] * self.cols)
+        self.attrs.insert(0, [0] * self.cols)
+
     def put_char(self, ch, attr=0):
         if self.x >= self.cols:
             self.x = 0
@@ -1187,7 +1193,15 @@ class _Parser:
                 if not _force_main_screen():
                     s.alt_screen = (final == "h")
             # all others consumed-and-dropped so the stream stays in sync
-        # P, @, L, M, S, T, r, and any other finals: consumed-and-dropped.
+        elif final == "S":  # SU -- Scroll Up
+            n = p[0] if p and p[0] else 1
+            for _ in range(n):
+                s._scroll_up()
+        elif final == "T":  # SD -- Scroll Down
+            n = p[0] if p and p[0] else 1
+            for _ in range(n):
+                s._scroll_down()
+        # P, @, L, M, r, and any other finals: consumed-and-dropped.
 
 
 # ─── _Terminal: per-view owner + registry ────────────────────────────────────
@@ -1339,7 +1353,11 @@ class _Terminal:
         # valid UTF-8 JSON (v3 wants str data, not bytes). Written outside
         # self._lock so the renderer isn't blocked on file I/O; _cast_lock
         # serializes against send_string/resize/kill writes.
-        self._cast("o", text)
+        #
+        # Filter out highly repetitive "Executing Hooks" status-bar repaints to
+        # prevent .cast files from ballooning into hundreds of megabytes.
+        if "executing hook" not in text.lower():
+            self._cast("o", text)
         _schedule_render(self)
 
     def send_string(self, s):
@@ -1453,8 +1471,8 @@ def _trigger_resize_for(vid):
         print(f"[ai_terminal] on_change resize error: {e}")
 
 
-def _next_ai_name(window):
-    """Return a unique Ai tab name for the window: 'Ai', then 'Ai 2', 'Ai 3', ...
+def _next_ai_name(window, prefix=None):
+    """Return a unique Ai tab name for the window: 'prefix', then 'prefix 2', ...
     Distinct view.name() per tab so send_to_view (and other name-based tools) can
     target a specific Ai tab instead of hitting the ambiguous 'Ai' every tab had
     when _VIEW_NAME was hardcoded."""
@@ -1462,17 +1480,18 @@ def _next_ai_name(window):
     for v in window.views():
         if v.settings().get(_VIEW_SETTING, False):
             used.add(v.name())
-    if _VIEW_NAME not in used:
-        return _VIEW_NAME
+    pfx = prefix or _VIEW_NAME
+    if pfx not in used:
+        return pfx
     n = 2
-    while f"{_VIEW_NAME} {n}" in used:
+    while f"{pfx} {n}" in used:
         n += 1
-    return f"{_VIEW_NAME} {n}"
+    return f"{pfx} {n}"
 
 
-def _terminal_view(window):
+def _terminal_view(window, name=None):
     v = window.new_file()
-    v.set_name(_next_ai_name(window))
+    v.set_name(name or _next_ai_name(window))
     v.set_scratch(True)
     v.settings().set("word_wrap", False)
     v.settings().set("gutter", True)
@@ -1896,20 +1915,39 @@ def _resolve_here_path(window, paths):
     return folders[0] if folders else None
 
 
-def _spawn(window, path):
+def _spawn(window, path, profile=None):
     if not _PTY_OK:
         sublime.error_message("ai_terminal: Windows ConPTY unavailable (ctypes binding failed).")
         return
-    view = _terminal_view(window)
+
+    s = sublime.load_settings(_SETTINGS_NAME)
+    profiles = s.get("profiles", {})
+    
+    profile_name = profile
+    if not profile_name:
+        profile_name = s.get("default_profile")
+        
+    profile_data = profiles.get(profile_name) if profile_name else None
+    
+    if profile_data and isinstance(profile_data, dict):
+        argv = profile_data.get("launch_command", _DEFAULT_LAUNCH_COMMAND)
+        extra_env = profile_data.get("spawn_env", {})
+    else:
+        # Fallback to legacy single command settings
+        argv = _launch_command()
+        extra_env = _spawn_env()
+        profile_name = "Legacy" if profile_name else None
+
+    # Determine unique tab name
+    tab_name = _next_ai_name(window, prefix=f"Ai ({profile_name})" if profile_name else "Ai")
+
+    view = _terminal_view(window, name=tab_name)
     window.focus_view(view)
     cols, rows = _measure(view)
-    # Agent-specific env (defaults + rationale) live in the `spawn_env` setting
-    # so they can be swapped alongside `launch_command`. See
-    # ai_terminal.sublime-settings for the per-var rationale.
+    
     env = dict(os.environ)
-    env.update(_spawn_env())
+    env.update(extra_env)
 
-    argv = _launch_command()
     pty = _Pty(argv, path, cols, rows, env)
     try:
         pty.start()
@@ -1932,12 +1970,12 @@ class AiTerminalOpenHereCommand(sublime_plugin.WindowCommand):
     Command palette: "Ai: Open Terminal Here"
     """
 
-    def run(self, paths=None):
+    def run(self, paths=None, profile=None):
         path = _resolve_here_path(self.window, paths or [])
         if not path:
             sublime.status_message("Ai terminal: no folder resolved")
             return
-        _spawn(self.window, path)
+        _spawn(self.window, path, profile=profile)
 
     def is_visible(self, paths=None):
         return True
@@ -1950,14 +1988,41 @@ class AiTerminalOpenInEditorCommand(sublime_plugin.TextCommand):
     Command palette: "Ai: Open Terminal in Editor"
     """
 
-    def run(self, edit):
+    def run(self, edit, profile=None):
         path = _resolve_editor_path(self.view)
         if not path:
             sublime.status_message("Ai terminal: no folder resolved")
             return
         window = self.view.window()
         if window:
-            _spawn(window, path)
+            _spawn(window, path, profile=profile)
+
+
+class AiTerminalSelectProfileCommand(sublime_plugin.WindowCommand):
+    """Show a Quick Panel to pick and open a terminal profile.
+
+    Command palette: "Ai: Open Terminal Profile..."
+    """
+
+    def run(self, paths=None):
+        s = sublime.load_settings(_SETTINGS_NAME)
+        profiles = s.get("profiles", {})
+        profile_names = list(profiles.keys())
+
+        if not profile_names:
+            # Fall back to launching default terminal
+            self.window.run_command("ai_terminal_open_here", {"paths": paths})
+            return
+
+        def on_done(idx):
+            if idx == -1:
+                return
+            self.window.run_command("ai_terminal_open_here", {
+                "profile": profile_names[idx],
+                "paths": paths
+            })
+
+        self.window.show_quick_panel(profile_names, on_done)
 
 
 class AiTerminalSendStringCommand(sublime_plugin.TextCommand):

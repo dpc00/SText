@@ -7,6 +7,13 @@
         }
     },
     {
+        "caption": "Open Ai Terminal Profile...",
+        "command": "ai_terminal_select_profile",
+        "args": {
+            "paths": []
+        }
+    },
+    {
         "caption": "Open AI(SDK) here...",
         "command": "ai_sdk_open_here",
         "args": {

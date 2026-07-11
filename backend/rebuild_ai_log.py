@@ -166,13 +166,29 @@ def _summarize_tool_input(name, inp):
 
 
 def _summarize_event(name, ev):
-    if name in ("BeforeModel", "AfterModel", "BeforeToolSelection", "PreCompress"):
-        return None
     if name == "MessageDisplay":
         if not ev.get("final"):
-            return None
+            return (ev.get("delta") or "") + " [chunk]"
         v = ev.get("delta") or ""
         return v if len(v) <= 100 else v[:97] + "…"
+    
+    # Custom summaries for model-level events
+    if name == "BeforeModel":
+        model = ev.get("model") or ev.get("model_name") or ""
+        if model:
+            return f"Model: {model}"
+        return "Preparing model request"
+    if name == "AfterModel":
+        resp = ev.get("llm_response") or {}
+        candidates = resp.get("candidates") or []
+        if candidates:
+            return f"{len(candidates)} candidates generated"
+        return "Model response received"
+    if name == "BeforeToolSelection":
+        return "Evaluating tool selection"
+    if name == "PreCompress":
+        return "Preparing context compression"
+
     for k in ("prompt", "message", "source", "subagent_type", "agent_type"):
         v = ev.get(k)
         if isinstance(v, str) and v:
@@ -415,29 +431,37 @@ def rebuild(target_date_str):
             agent_name = agent_info["name"]
             out.append(f"### {claude_ts.strftime('%H:%M:%S')}  {agent_name}")
             
-            items = [(t.get("pre") or start, "tool", t) for t in sess.get("tools", [])]
-            items += [(e.get("ts") or start, "extra", e) for e in sess.get("extras", [])]
-            items.sort(key=lambda x: x[0])
-            for _, kind, it in items:
-                if kind == "tool":
-                    tname = _map_tool_name(it['name'])
-                    head = f"  ⚙ {tname}"
-                    s = _summarize_tool_input(it['name'], it.get("input"))
-                    if s:
-                        head += f"   {s}"
-                    pre, post = it.get("pre"), it.get("post")
-                    if pre and post:
-                        head += f"   +{(post - pre).total_seconds() * 1000:.0f}ms"
-                    out.append(head)
-                    
-                    # No tool response output is printed to keep logs output-free
-                    
-                    if post:
-                        out.append(f"  {'✘' if it.get('err') else '✔'} {tname}")
-                    else:
-                        out.append(f"  ⊘ {tname}   (denied / not run)")
-                else:
-                    out.append(f"  {it['glyph']} {it['name']}" + (f"   {it['text']}" if it.get("text") else "").rstrip())
+            # merge tool calls and ambient extras by timestamp so the log is chronological
+            tools = sess.get("tools", [])
+            extras = sess.get("extras", [])
+            
+            if tools:
+                from collections import Counter
+                counts = Counter()
+                denied = 0
+                failed = 0
+                for t in tools:
+                    tname = _map_tool_name(t["name"])
+                    if not t.get("post"):
+                        denied += 1
+                    elif t.get("err"):
+                        failed += 1
+                    counts[tname] += 1
+                parts = [f"{count}x {name}" for name, count in sorted(counts.items(), key=lambda x: (-x[1], x[0]))]
+                summary = "  ⚙ Tools: " + ", ".join(parts)
+                extra_info = []
+                if failed:
+                    extra_info.append(f"{failed} failed")
+                if denied:
+                    extra_info.append(f"{denied} denied")
+                if extra_info:
+                    summary += f"  ({'; '.join(extra_info)})"
+                out.append(summary)
+
+            # Chronologically print only extras
+            extras.sort(key=lambda x: x.get("ts") or start)
+            for e in extras:
+                out.append(f"  {e['glyph']} {e['name']}" + (f"   {e['text']}" if e.get("text") else "").rstrip())
             if sess.get("stop_msg"):
                 out.append("")
                 out.append(sess.get("stop_msg"))
@@ -648,7 +672,7 @@ def rebuild(target_date_str):
     if os.path.exists(md_file):
         os.remove(md_file)
         
-    with open(md_file, "w", encoding="utf-8") as f:
+    with open(md_file, "w", encoding="utf-8", errors="replace") as f:
         f.write(f"# AI log — {target_date_str}\n\n")
         for _, sess_md_text in all_sessions_markdown:
             f.write(sess_md_text + "\n")

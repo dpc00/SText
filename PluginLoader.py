@@ -46,6 +46,7 @@ from User.ai.ai_tab_manager import (
 from User.ai.ai_terminal import (
     AiTerminalOpenHereCommand,
     AiTerminalOpenInEditorCommand,
+    AiTerminalSelectProfileCommand,
     AiTerminalSendStringCommand,
     AiTerminalKeypressCommand,
     AiTerminalRenderCommand,

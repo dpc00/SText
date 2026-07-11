@@ -16,9 +16,10 @@ for mod_name in list(sys.modules.keys()):
 ```
 
 ### Development Workflow:
-1. Edit any subdirectory `.py` file (e.g., `ai/ai_terminal.py`) and save it.
-2. Save or touch `PluginLoader.py` in the root of the project.
-3. This triggers Sublime Text to reload `PluginLoader.py`, which clears the submodule caches and imports the updated code fresh from disk.
+1. Edit any subdirectory `.py` file in the Git workspace `C:\Users\donal\projects\SText\` and save it.
+2. Deploy/copy the modified files to the active `Packages\User\` directory (`C:\Users\donal\AppData\Roaming\Sublime Text\Packages\User\`) so Sublime Text sees the changes.
+3. Touch (or copy) `PluginLoader.py` in the active `Packages\User\` directory.
+4. This triggers Sublime Text to reload the active `PluginLoader.py`, which clears the submodule caches and imports the updated code fresh from disk.
 
 ---
 
@@ -58,7 +59,7 @@ If you need to investigate SText runtime behavior, open the ST Console (`Ctrl+``
 For fully hands-free reloading of nested submodules whenever any file is saved, install the community package **AutomaticPackageReloader**:
 1. Install `AutomaticPackageReloader` via Package Control.
 2. Open the Command Palette and run `Automatic Package Reloader: Toggle Reload On Save`.
-3. Saving any subdirectory `.py` file will now automatically trigger a reload of the entire package (which SText handles safely thanks to the terminal preservation logic).
+3. Saving any subdirectory `.py` file **inside the active `Packages\User\` directory** (or copying/deploying the edited file there) will now automatically trigger a reload of the entire package (which SText handles safely thanks to the terminal preservation logic).
 
 ---
 

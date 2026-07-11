@@ -1,5 +1,8 @@
 # ST Config Editor — Design
 
+> 🎯 **Status:** Future Direction & Architecture Target.
+> This document defines the engineering standards and design patterns we are actively conforming to and refactoring toward. It does NOT represent the current implementation on disk.
+
 Status: **v1 Settings tab live (2026-06-29)** — see §9 Q3. Keybindings/Menus/
 Palette tabs remain to build (§9 Q5).
 

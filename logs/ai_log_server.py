@@ -51,14 +51,19 @@ def _md_path():
 
 def _append_jsonl(ev, recv_ts):
     rec = {"ts": recv_ts.strftime("%H:%M:%S.%f")[:-3], **ev}
-    with open(_jsonl_path(), "a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    try:
+        data = json.dumps(rec, ensure_ascii=False) + "\n"
+        data_bytes = data.encode("utf-8", errors="replace")
+    except Exception:
+        data_bytes = (json.dumps(rec, ensure_ascii=True) + "\n").encode("utf-8")
+    with open(_jsonl_path(), "ab") as f:
+        f.write(data_bytes)
 
 
 def _md_header_if_new():
     p = _md_path()
     if not os.path.exists(p):
-        with open(p, "w", encoding="utf-8") as f:
+        with open(p, "w", encoding="utf-8", errors="replace") as f:
             f.write(f"# AI log — {_date()}\n\n")
 
 
@@ -193,12 +198,10 @@ def _short(s, n=100):
 
 def _summarize_event(name, ev):
     """One-line summary of an ambient event's payload, or None to skip the .md line."""
-    if name in ("BeforeModel", "AfterModel", "BeforeToolSelection", "PreCompress"):
-        return None
     if name == "MessageDisplay":
         # skip streaming chunks; render only the final per-message delta
         if not ev.get("final"):
-            return None
+            return _short(ev.get("delta") or "") + " [chunk]"
         return _short(ev.get("delta") or "")
     if name == "PostToolBatch":
         calls = ev.get("tool_calls") or []
@@ -208,6 +211,24 @@ def _summarize_event(name, ev):
         m = _short(ev.get("message") or "")
         nt = ev.get("notification_type") or ""
         return f"{m}  ({nt})" if nt and m else (m or (nt or ""))
+    
+    # Custom summaries for model-level events
+    if name == "BeforeModel":
+        model = ev.get("model") or ev.get("model_name") or ""
+        if model:
+            return f"Model: {model}"
+        return "Preparing model request"
+    if name == "AfterModel":
+        resp = ev.get("llm_response") or {}
+        candidates = resp.get("candidates") or []
+        if candidates:
+            return f"{len(candidates)} candidates generated"
+        return "Model response received"
+    if name == "BeforeToolSelection":
+        return "Evaluating tool selection"
+    if name == "PreCompress":
+        return "Preparing context compression"
+
     # generic: prefer the most informative scalar field present
     for k in ("tool_name", "error", "reason", "cwd", "file", "path",
               "prompt", "message", "source", "subagent_type", "agent_type"):
@@ -224,7 +245,7 @@ def _md_ambient_standalone(ts, glyph, name, text, path=None):
     line = f"### {ts.strftime('%H:%M:%S')}  ◦ {glyph} {name}"
     if text:
         line += f"   {text}"
-    with open(path, "a", encoding="utf-8") as f:
+    with open(path, "a", encoding="utf-8", errors="replace") as f:
         f.write(line + "\n")
 
 
@@ -323,30 +344,45 @@ def _flush_turn(sid, path=None):
     claude_ts = min(ts_cands) if ts_cands else start
     out.append(f"### {claude_ts.strftime('%H:%M:%S')}  Claude")
     # merge tool calls and ambient extras by timestamp so the log is chronological
-    items = [(t.get("pre") or start, "tool", t) for t in sess.get("tools", [])]
-    items += [(e.get("ts") or start, "extra", e) for e in sess.get("extras", [])]
-    items.sort(key=lambda x: x[0])
-    for _, kind, it in items:
-        if kind == "tool":
-            tname = _map_tool_name(it['name'])
-            head = f"  ⚙ {tname}"
-            s = _summarize_tool_input(it['name'], it.get("input"))
-            if s:
-                head += f"   {s}"
-            pre, post = it.get("pre"), it.get("post")
-            if pre and post:
-                head += f"   +{(post - pre).total_seconds() * 1000:.0f}ms"
-            out.append(head)
-            
-            # No tool response/output is printed in the daily markdown log to keep it pristine and compact
-                    
-            if post:
-                out.append(f"  {'✘' if it.get('err') else '✔'} {tname}")
-            else:
-                out.append(f"  ⊘ {tname}   (denied / not run)")
-        else:
-            out.append(f"  {it['glyph']} {it['name']}" + (f"   {it['text']}" if it.get("text") else "").rstrip())
+    tools = sess.get("tools", [])
+    extras = sess.get("extras", [])
+    
+    if tools:
+        from collections import Counter
+        counts = Counter()
+        denied = 0
+        failed = 0
+        for t in tools:
+            tname = _map_tool_name(t["name"])
+            if not t.get("post"):
+                denied += 1
+            elif t.get("err"):
+                failed += 1
+            counts[tname] += 1
+        parts = [f"{count}x {name}" for name, count in sorted(counts.items(), key=lambda x: (-x[1], x[0]))]
+        summary = "  ⚙ Tools: " + ", ".join(parts)
+        extra_info = []
+        if failed:
+            extra_info.append(f"{failed} failed")
+        if denied:
+            extra_info.append(f"{denied} denied")
+        if extra_info:
+            summary += f"  ({'; '.join(extra_info)})"
+        out.append(summary)
+
+    # Chronologically print only extras
+    extras.sort(key=lambda x: x.get("ts") or start)
+    for e in extras:
+        out.append(f"  {e['glyph']} {e['name']}" + (f"   {e['text']}" if e.get("text") else "").rstrip())
     if sess.get("stop_msg"):
+        thinking = sess.get("thinking", [])
+        if thinking:
+            out.append("")
+            out.append("> **Thinking Process:**")
+            for t in thinking:
+                for line in t.split("\n"):
+                    out.append(f"> {line}" if line.strip() else ">")
+            out.append("")
         out.append("")
         out.append(sess["stop_msg"])
     out.append("")
@@ -362,7 +398,7 @@ def _flush_turn(sid, path=None):
     if not path:
         _md_header_if_new()
         path = _md_path()
-    with open(path, "a", encoding="utf-8") as f:
+    with open(path, "a", encoding="utf-8", errors="replace") as f:
         f.write("\n".join(out) + "\n")
 
 
@@ -395,73 +431,153 @@ class H(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
-        n = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(n) if n else b""
         try:
-            ev = json.loads(body)
-        except Exception:
-            ev = {"_raw": body.decode("utf-8", "replace")}
-        recv = _ts()
-        _append_jsonl(ev, recv)
-        name = ev.get("hook_event_name", "")
-        sid = ev.get("session_id", "_")
-        with _lock:
-            if name == "UserPromptSubmit":
-                if sid in _sessions:
-                    _flush_turn(sid)
-                _sessions[sid] = {
-                    "prompt": ev.get("prompt", ""),
-                    "start": recv,
-                    "tools": [],
-                    "extras": [],
-                }
-            elif name == "PreToolUse":
-                s = _sessions.setdefault(sid, {"prompt": "", "start": recv, "tools": [], "extras": []})
-                s.setdefault("first_tool_ts", recv)
-                s["tools"].append({
-                    "name": ev.get("tool_name", "?"),
-                    "input": ev.get("tool_input"),
-                    "pre": recv,
-                    "id": ev.get("tool_use_id"),
-                })
-            elif name == "PostToolUse":
-                _mark_tool_done(sid, ev.get("tool_use_id"), ev.get("tool_name", "?"), False, response=ev.get("tool_response"))
-            elif name == "PostToolUseFailure":
-                _mark_tool_done(sid, ev.get("tool_use_id"), ev.get("tool_name", "?"), True, response=ev.get("tool_response"))
-            elif name == "Stop":
-                s = _sessions.get(sid)
-                if s:
-                    s["stop_ts"] = recv
-                    msg = ev.get("last_assistant_message") or ev.get("prompt_response") or ev.get("message") or ev.get("response") or ""
-                    if msg or not s.get("stop_msg"):
-                        s["stop_msg"] = msg
-                    s["stop_reason"] = ev.get("stop_reason", "")
-                if s and (s.get("stop_msg") or not s.get("tools")):
-                    _flush_turn(sid)
-            elif name == "SessionEnd":
-                _md_ambient_standalone(recv, "⏹", "SessionEnd", _summarize_event("SessionEnd", ev))
-                _sessions.pop(sid, None)
-            else:
-                # ambient event: buffer into the open turn (interleaved by ts),
-                # or write standalone if no turn is currently open
-                text = _summarize_event(name, ev)
-                if text is None:
-                    pass  # e.g. non-final MessageDisplay — archived in jsonl only
+            n = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(n) if n else b""
+            try:
+                ev = json.loads(body)
+            except Exception:
+                ev = {"_raw": body.decode("utf-8", "replace")}
+            recv = _ts()
+
+            # Normalize raw Gemini CLI events
+            event_type = ev.get("hook_event_name") or ev.get("event_type")        
+            if event_type:
+                # Map event types to SText log server names
+                if event_type == "BeforeAgent":
+                    ev["hook_event_name"] = "UserPromptSubmit"
+                    if "prompt" not in ev:
+                        ev["prompt"] = ev.get("prompt", "")
+                elif event_type == "BeforeTool":
+                    ev["hook_event_name"] = "PreToolUse"
+                    tool_call = ev.get("tool_call") or {}
+                    ev["tool_name"] = ev.get("tool_name") or tool_call.get("name") or "?"
+                    ev["tool_input"] = ev.get("tool_input") or tool_call.get("args")
+                    ev["tool_use_id"] = ev.get("tool_use_id") or tool_call.get("id")
+                elif event_type == "AfterTool":
+                    tool_call = ev.get("tool_call") or {}
+                    tool_response = ev.get("tool_response") or {}
+                    is_error = bool(ev.get("error") or tool_response.get("error"))
+                    ev["hook_event_name"] = "PostToolUseFailure" if is_error else "PostToolUse"
+                    ev["tool_name"] = ev.get("tool_name") or tool_call.get("name") or "?"
+                    ev["tool_use_id"] = ev.get("tool_use_id") or tool_call.get("id")
+                elif event_type == "AfterAgent":
+                    ev["hook_event_name"] = "Stop"
+                    ev["last_assistant_message"] = (
+                        ev.get("last_assistant_message")
+                        or ev.get("prompt_response")
+                        or ev.get("response")
+                        or ev.get("message")
+                        or ""
+                    )
+                    ev["stop_reason"] = ev.get("stop_reason") or ""
+                elif event_type == "Notification":
+                    ev["hook_event_name"] = "Notification"
+                    ev["message"] = ev.get("message") or ""
+                    ev["notification_type"] = ev.get("notification_type") or ""   
                 else:
+                    ev["hook_event_name"] = event_type
+
+            # Fill session_id
+            if "session_id" not in ev:
+                ev["session_id"] = ev.get("session_id") or ev.get("session_info", {}).get("session_id") or "_"
+
+            _append_jsonl(ev, recv)
+            name = ev.get("hook_event_name", "")
+            sid = ev.get("session_id", "_")
+            with _lock:
+                if name == "UserPromptSubmit":
+                    if sid in _sessions:
+                        _flush_turn(sid)
+                    _sessions[sid] = {
+                        "prompt": ev.get("prompt", ""),
+                        "start": recv,
+                        "tools": [],
+                        "extras": [],
+                    }
+                elif name == "PreToolUse":
+                    s = _sessions.setdefault(sid, {"prompt": "", "start": recv, "tools": [], "extras": []})
+                    s.setdefault("first_tool_ts", recv)
+                    s["tools"].append({
+                        "name": ev.get("tool_name", "?"),
+                        "input": ev.get("tool_input"),
+                        "pre": recv,
+                        "id": ev.get("tool_use_id"),
+                    })
+                elif name == "PostToolUse":
+                    _mark_tool_done(sid, ev.get("tool_use_id"), ev.get("tool_name", "?"), False, response=ev.get("tool_response"))
+                elif name == "PostToolUseFailure":
+                    _mark_tool_done(sid, ev.get("tool_use_id"), ev.get("tool_name", "?"), True, response=ev.get("tool_response"))
+                elif name == "AfterModel":
                     s = _sessions.get(sid)
                     if s is not None:
-                        s["extras"].append({
-                            "ts": recv,
-                            "glyph": _GLYPH.get(name, "•"),
-                            "name": name,
-                            "text": text,
-                        })
+                        resp = ev.get("llm_response") or {}
+                        try:
+                            parts = resp.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                            for p in parts:
+                                text = ""
+                                if isinstance(p, dict) and "thought" in p:        
+                                    text = p.get("text", "")
+                                elif isinstance(p, str) and ("**Analyzing" in p or "**Checking" in p or "**Refining" in p or "**Investigating" in p or "**Observing" in p or "**Clarifying" in p):
+                                    text = p
+                                if text:
+                                    current = s.setdefault("thinking", [])        
+                                    if not current:
+                                        current.append(text)
+                                    else:
+                                        if text.startswith(current[-1]):
+                                            current[-1] = text
+                                        elif not current[-1].startswith(text):    
+                                            current.append(text)
+                        except Exception:
+                            pass
+                elif name == "Stop":
+                    s = _sessions.get(sid)
+                    if s:
+                        s["stop_ts"] = recv
+                        msg = ev.get("last_assistant_message") or ev.get("prompt_response") or ev.get("message") or ev.get("response") or ""
+                        if msg or not s.get("stop_msg"):
+                            s["stop_msg"] = msg
+                        s["stop_reason"] = ev.get("stop_reason", "")
+                    if s and (s.get("stop_msg") or not s.get("tools")):
+                        _flush_turn(sid)
+                elif name == "SessionEnd":
+                    _md_ambient_standalone(recv, "⏹", "SessionEnd", _summarize_event("SessionEnd", ev))
+                    _sessions.pop(sid, None)
+                else:
+                    # ambient event: buffer into the open turn (interleaved by ts),
+                    # or write standalone if no turn is currently open
+                    text = _summarize_event(name, ev)
+                    if text is None:
+                        pass  # e.g. non-final MessageDisplay — archived in jsonl only
                     else:
-                        _md_ambient_standalone(recv, _GLYPH.get(name, "•"), name, text)
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(b"{}")
+                        s = _sessions.get(sid)
+                        if s is not None:
+                            s["extras"].append({
+                                "ts": recv,
+                                "glyph": _GLYPH.get(name, "•"),
+                                "name": name,
+                                "text": text,
+                            })
+                        else:
+                            _md_ambient_standalone(recv, _GLYPH.get(name, "•"), name, text)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(b"{}")
+        except Exception as e:
+            import traceback
+            try:
+                with open(os.path.join(OUT, "post_error.log"), "a", encoding="utf-8") as f:
+                    f.write(f"--- POST ERROR: {e} ---\n")
+                    traceback.print_exc(file=f)
+            except Exception:
+                pass
+            try:
+                self.send_error(500, str(e))
+            except Exception:
+                pass
 
 
 def rebuild_from_jsonl(date_str):
@@ -540,29 +656,37 @@ def rebuild_from_jsonl(date_str):
             agent_name = agent_info["name"]
             out.append(f"### {claude_ts.strftime('%H:%M:%S')}  {agent_name}")
             
-            items = [(t.get("pre") or start, "tool", t) for t in sess.get("tools", [])]
-            items += [(e.get("ts") or start, "extra", e) for e in sess.get("extras", [])]
-            items.sort(key=lambda x: x[0])
-            for _, kind, it in items:
-                if kind == "tool":
-                    tname = _map_tool_name(it['name'])
-                    head = f"  ⚙ {tname}"
-                    s = _summarize_tool_input(it['name'], it.get("input"))
-                    if s:
-                        head += f"   {s}"
-                    pre, post = it.get("pre"), it.get("post")
-                    if pre and post:
-                        head += f"   +{(post - pre).total_seconds() * 1000:.0f}ms"
-                    out.append(head)
-                    
-                    # No tool output/response is printed at all to keep logs clean and compact
-                    
-                    if post:
-                        out.append(f"  {'✘' if it.get('err') else '✔'} {tname}")
-                    else:
-                        out.append(f"  ⊘ {tname}   (denied / not run)")
-                else:
-                    out.append(f"  {it['glyph']} {it['name']}" + (f"   {it['text']}" if it.get("text") else "").rstrip())
+            # merge tool calls and ambient extras by timestamp so the log is chronological
+            tools = sess.get("tools", [])
+            extras = sess.get("extras", [])
+            
+            if tools:
+                from collections import Counter
+                counts = Counter()
+                denied = 0
+                failed = 0
+                for t in tools:
+                    tname = _map_tool_name(t["name"])
+                    if not t.get("post"):
+                        denied += 1
+                    elif t.get("err"):
+                        failed += 1
+                    counts[tname] += 1
+                parts = [f"{count}x {name}" for name, count in sorted(counts.items(), key=lambda x: (-x[1], x[0]))]
+                summary = "  ⚙ Tools: " + ", ".join(parts)
+                extra_info = []
+                if failed:
+                    extra_info.append(f"{failed} failed")
+                if denied:
+                    extra_info.append(f"{denied} denied")
+                if extra_info:
+                    summary += f"  ({'; '.join(extra_info)})"
+                out.append(summary)
+
+            # Chronologically print only extras
+            extras.sort(key=lambda x: x.get("ts") or start)
+            for e in extras:
+                out.append(f"  {e['glyph']} {e['name']}" + (f"   {e['text']}" if e.get("text") else "").rstrip())
             if sess.get("stop_msg"):
                 out.append("")
                 out.append(sess["stop_msg"])
@@ -719,7 +843,7 @@ def rebuild_from_jsonl(date_str):
     if os.path.exists(md_file):
         os.remove(md_file)
         
-    with open(md_file, "w", encoding="utf-8") as f:
+    with open(md_file, "w", encoding="utf-8", errors="replace") as f:
         f.write(f"# AI log — {date_str}\n\n")
         for _, sess_md_text in all_sessions_markdown:
             f.write(sess_md_text + "\n")

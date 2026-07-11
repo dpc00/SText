@@ -1,3 +1,8 @@
+# What Mitchell Hashimoto Would Recommend
+
+> 🎯 **Status:** Future Direction & Architecture Target.
+> This document defines the engineering standards and design patterns we are actively conforming to and refactoring toward. It does NOT represent the current implementation on disk.
+
 While Mitchell Hashimoto is an absolute machine when it comes to writing high-performance Zig code, he won't be writing a Sublime Text savior anytime soon. He is currently completely focused on making Ghostty a standalone terminal app.
 However, you can steal the exact engineering philosophy behind Ghostty to solve your Sublime Text problems.
 ## Why Sublime is Bottlenecking Your Tool

@@ -1,5 +1,8 @@
 # Ghostty Study Report — Patterns to Apply to `ai_terminal.py`
 
+> 🎯 **Status:** Future Direction & Architecture Target.
+> This document defines the engineering standards and design patterns we are actively conforming to and refactoring toward. It does NOT represent the current implementation on disk.
+
 Study period: 2026-07-06, ~1.5 hours (well under the 3-4h budget; stopped early per Donald's guidance).
 Source: `C:\Users\donal\tools\ghostty` @ commit `634957c8e` (PR #13226 "VT throughput optimizations from real-world dataset").
 

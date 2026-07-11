@@ -1,3 +1,8 @@
+# Master Prompt for Design 2
+
+> 🎯 **Status:** Future Direction & Architecture Target.
+> This document defines the engineering standards and design patterns we are actively conforming to and refactoring toward. It does NOT represent the current implementation on disk.
+
 Building a Python-based terminal emulator inside Sublime Text that matches Ghostty's strict standards requires a structured blueprint. Because Sublime Text plugins run on an internal Python 3.8/3.3 interpreter, you cannot easily drop in an external binary or heavy compiled libraries without massive friction.
 Instead, you must build a highly optimized pure-Python/C-extension terminal state machine that bridges to Sublime's TextListener and custom canvas or minihtml features.
 Here is a master-class mega-prompt designed to instruct Claude to architect, scaffold, and implement this package.

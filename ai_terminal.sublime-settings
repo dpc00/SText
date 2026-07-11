@@ -24,6 +24,64 @@
     // TUI take over the view with a fixed fullscreen matrix (loses scrollback).
     "force_main_screen": true,
 
+    // The default profile to run if no profile name is explicitly requested
+    "default_profile": "Gemini (Google Cloud Project) $1000!",
+
+    // Configured terminal/shell profiles for SText.
+    // This allows SText to work as a multi-console terminal launcher.
+    "profiles": {
+        "Gemini (Google Cloud Project) $1000!": {
+            "launch_command": ["cmd", "/c", "lg.bat"],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "GEMINI_PROMPT_QUEUE": "false",
+                "GOOGLE_CLOUD_LOCATION":"global",
+                "GOOGLE_CLOUD_PROJECT":"project-67efc385-8bb5-493f-a81",
+                "GOOGLE_PROJECT_NUMBER":"782908338549",
+                "GEMINI_SYSTEM_MD":"C:\\Users\\donal\\projects\\SText\\ai_sdk_prompt.md",
+            }
+        },
+        "Claude (Local Ollama)": {
+            "launch_command": ["cmd", "/c", "ollama", "launch", "claude"],
+            "spawn_env": { // needs more parameters at the moment mostly get from comments at old spawn env
+                "AI_TERMINAL_LOG_LINES": "1",
+                "ANTHROPIC_MODEL": "claude-sonnet-5",
+                "ANTHROPIC_VERTEX_PROJECT_ID": "project-67efc385-8bb5-493f-a81",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
+                "CLAUDE_CODE_USE_VERTEX": "1",
+                "CLOUD_ML_REGION": "global",
+                "GOOGLE_CLOUD_LOCATION":"global",
+                "GOOGLE_CLOUD_PROJECT":"project-67efc385-8bb5-493f-a81",
+                "GOOGLE_PROJECT_NUMBER":"782908338549",
+            }
+        },
+        "Claude (Direct Anthropic)": {
+            "launch_command": ["claude", "--chrome"],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_AI_TERMINAL_SENTINEL": "propagated",
+                "OLLAMA_MODEL":"glm-5.2:cloud"
+            }
+        },
+        "Command Prompt": {
+            "launch_command": ["cmd.exe"],
+            "spawn_env": {}
+        },
+        "PowerShell": {
+            "launch_command": ["powershell.exe"],
+            "spawn_env": {}
+        },
+        "Bash": {
+            "launch_command": ["bash"],
+            "spawn_env": {}
+        },
+        "Bash (WSL)": {
+            "launch_command": ["wsl.exe", "bash"],
+            "spawn_env": {}
+        }
+    },
+
+    // Legacy fallback keys (fully supported for backward compatibility)
     // argv list used to spawn the terminal program. Default runs Claude Code
     // via the Ollama local proxy (127.0.0.1:11434, glm-5.2:cloud). Swap to e.g.
     //   ["claude"]                          -- Claude Code direct against Anthropic API
@@ -57,14 +115,10 @@
         "AI_TERMINAL_LOG_LINES": "1",
         "GEMINI_PROMPT_QUEUE": "false"
         // "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "80",
-        // "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "80",
-        // "CLAUDE_CODE_AI_TERMINAL_SENTINEL": "propagated",
         // "CLAUDE_CODE_AI_TERMINAL_SENTINEL": "propagated",
         // "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1600000",
         // "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1600000",
         // "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
-        // "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
-        // "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "2000000",
         // "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "2000000",
         // "OLLAMA_MODEL":"glm-5.2:cloud"
         // "ANTHROPIC_MODEL": "claude-sonnet-5",
@@ -84,9 +138,10 @@
     // project's CLAUDE.md (project-specific rules). Edit this list to add
     // or remove context. Restart the bridge to pick up changes.
     "context_files": [
-        "C:\\Users\\donal\\agents.md",
-        "C:\\Users\\donal\\router.md",
-        "C:\\Users\\donal\\projects\\SText\\CLAUDE.md"
+        // "C:\\Users\\donal\\agents.md",
+        // "C:\\Users\\donal\\router.md",
+        // "C:\\Users\\donal\\projects\\SText\\agents.md",
+        // "C:\\Users\\donal\\projects\\SText\\CLAUDE.md"
     ],
 
     // Path to a markdown file whose contents are prepended to the system

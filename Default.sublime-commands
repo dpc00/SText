@@ -20,6 +20,7 @@
 	{"caption": "Ai: Trim Buffer Now", "command": "ai_trim_now"},
 	{"caption": "Ai: Open Terminal Here", "command": "ai_terminal_open_here"},
 	{"caption": "Ai: Open Terminal in Editor", "command": "ai_terminal_open_in_editor"},
+	{"caption": "Ai: Open Terminal Profile...", "command": "ai_terminal_select_profile"},
 	{"caption": "Ai: Quit Flask Apps", "command": "ai_quit_flask_apps"},
 	{"caption": "Ai: Search Conversations", "command": "ai_search_conversations"},
 	{"caption": "CC Statusline Editor", "command": "ccstatusline_editor_open"},

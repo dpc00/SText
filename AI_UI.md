@@ -1,3 +1,8 @@
+# Sublime Text AI UI Plugin Brief
+
+> 🎯 **Status:** Future Direction & Architecture Target.
+> This document defines the engineering standards and design patterns we are actively conforming to and refactoring toward. It does NOT represent the current implementation on disk.
+
 # "I have inserted below the Project Brief for the Sublime Text AI UI plugin. Let's
 start building it incrementally. To begin, please provide the absolute
 minimum Python boilerplate code for a Sublime Text 4 plugin that opens our
