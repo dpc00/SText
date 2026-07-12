@@ -73,8 +73,20 @@ def _last_claude_response():
                 # Check for Gemini CLI format
                 elif rec.get("type") == "gemini" and "content" in rec:
                     content = rec["content"]
-                    if content and content.strip():
-                        last_text = content
+                    if isinstance(content, str):
+                        if content.strip():
+                            last_text = content
+                    elif isinstance(content, list):
+                        parts = []
+                        for part in content:
+                            if isinstance(part, dict):
+                                if "text" in part:
+                                    parts.append(part["text"])
+                            elif isinstance(part, str):
+                                parts.append(part)
+                        text = "".join(parts).strip()
+                        if text:
+                            last_text = text
     except OSError:
         return None
     return last_text

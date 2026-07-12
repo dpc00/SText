@@ -17,8 +17,11 @@ import http.server
 import socketserver
 
 PORT = 9511
-OUT = r"C:\Users\donal\data\logs\ai"
+OUT = r"C:\Users\donal\data\logs"
 os.makedirs(OUT, exist_ok=True)
+
+DIAG_DIR = r"C:\Users\donal\data\logs\developer_diagnostics_and_runtime_server_error_logs"
+os.makedirs(DIAG_DIR, exist_ok=True)
 
 # Daemon-safe: under pythonw (no console) sys.stdout/stderr are None and
 # print() raises. Redirect to a devnull so the server never crashes on a
@@ -26,7 +29,7 @@ os.makedirs(OUT, exist_ok=True)
 if sys.stdout is None:
     sys.stdout = open(os.devnull, "w")
 if sys.stderr is None:
-    sys.stderr = open(os.path.join(OUT, "server_error.log"), "a")
+    sys.stderr = open(os.path.join(DIAG_DIR, "server_error.log"), "a", encoding="utf-8")
 
 _lock = threading.Lock()
 # session_id -> turn buffer
@@ -41,23 +44,13 @@ def _ts():
     return datetime.datetime.now()
 
 
-def _jsonl_path():
-    return os.path.join(OUT, f"events_{_date()}.jsonl")
-
-
 def _md_path():
     return os.path.join(OUT, f"{_date()}.md")
 
 
 def _append_jsonl(ev, recv_ts):
-    rec = {"ts": recv_ts.strftime("%H:%M:%S.%f")[:-3], **ev}
-    try:
-        data = json.dumps(rec, ensure_ascii=False) + "\n"
-        data_bytes = data.encode("utf-8", errors="replace")
-    except Exception:
-        data_bytes = (json.dumps(rec, ensure_ascii=True) + "\n").encode("utf-8")
-    with open(_jsonl_path(), "ab") as f:
-        f.write(data_bytes)
+    # disabled: user explicitly requested no events_*.jsonl files cluttering their logs directory
+    pass
 
 
 def _md_header_if_new():
@@ -569,7 +562,7 @@ class H(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             import traceback
             try:
-                with open(os.path.join(OUT, "post_error.log"), "a", encoding="utf-8") as f:
+                with open(os.path.join(DIAG_DIR, "post_error.log"), "a", encoding="utf-8") as f:
                     f.write(f"--- POST ERROR: {e} ---\n")
                     traceback.print_exc(file=f)
             except Exception:
@@ -870,5 +863,5 @@ if __name__ == "__main__":
             s.serve_forever()
     except Exception:
         import traceback
-        with open(os.path.join(OUT, "server_error.log"), "a", encoding="utf-8") as f:
+        with open(os.path.join(DIAG_DIR, "server_error.log"), "a", encoding="utf-8") as f:
             f.write(traceback.format_exc() + "\n")

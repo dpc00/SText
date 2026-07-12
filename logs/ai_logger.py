@@ -27,10 +27,10 @@ import sublime_plugin  # type: ignore
 
 # -- constants ----------------------------------------------------------------
 
-_LOG_DIR = str(Path.home() / "data" / "logs" / "ai")
+_LOG_DIR = str(Path.home() / "data" / "logs")
 _STATE_FILE = str(Path.home() / "data" / "state" / "ai_logger_state.json")
-_SCREENSHOT_DIR = str(Path.home() / "data" / "screenshots")
-_DIAGNOSTICS_FILE = str(Path.home() / "data" / "logs" / "ai" / "ai_diagnostics.log")
+_SCREENSHOT_DIR = str(Path.home() / "data" / "logs" / "periodic_automatic_editor_screenshots_for_additional_context")
+_DIAGNOSTICS_FILE = str(Path.home() / "data" / "logs" / "developer_diagnostics_and_runtime_server_error_logs" / "ai_diagnostics.log")
 _PROJECTS_DIR = str(Path.home() / ".claude" / "projects")
 _CHECK_MS = 500
 _SCREENSHOT_INTERVAL = 60
@@ -542,7 +542,10 @@ def _record_to_lines(record, id2name):
 def _append_log(date_str, text):
     try:
         os.makedirs(_LOG_DIR, exist_ok=True)
-        log_file = os.path.join(_LOG_DIR, f"ai_{date_str}.log")
+        log_file = os.path.join(_LOG_DIR, f"{date_str}.md")
+        if not os.path.exists(log_file):
+            with open(log_file, "w", encoding="utf-8", errors="replace") as f:
+                f.write(f"# AI log — {date_str}\n\n")
         with open(log_file, "a", encoding="utf-8", newline="") as f:
             f.write(text + "\n")
     except OSError as e:

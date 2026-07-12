@@ -18,7 +18,7 @@ import json
 import datetime
 import collections
 
-OUT = os.path.expanduser("~/data/logs/ai")
+OUT = os.path.expanduser("~/data/logs")
 
 _GLYPH = {
     "SessionStart":        "▶",

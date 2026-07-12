@@ -1710,18 +1710,18 @@ def _apply_color_regions(view, regs):
 # ─── debug logging ────────────────────────────────────────────────────────────
 
 _DEBUG = bool(os.environ.get("AI_TERMINAL_DEBUG"))
-_DEBUG_PATH = os.path.expanduser("~/data/logs/ai_terminal")
+_DEBUG_PATH = r"C:\Users\donal\data\logs\ai_terminal_raw_ansi_stream_debug_logs"
 _debug_lock = threading.Lock()
 # Asciicast v3 recording (recording patch): env-gated like _DEBUG. When on
 # (AI_TERMINAL_LOG_LINES set in spawn_env OR in ST's process env), each
-# _Terminal.start() opens a per-session .cast file under ~/data/logs/ai_terminal/
-# casts/ and writes the v3 header; _on_data/send_string/resize/kill append
+# _Terminal.start() opens a per-session .cast file under descriptive directory
+# and writes the v3 header; _on_data/send_string/resize/kill append
 # timed events. Recording at the stream layer (not scroll-off) means it is
 # faithful to what Claude emitted and does NOT duplicate on resume (a resume
 # is a new session = new .cast). Per stext-settings-json-strict the toggle is
 # NOT a top-level setting key; it lives in spawn_env where the user put it.
 _LOG_LINES = bool(os.environ.get("AI_TERMINAL_LOG_LINES"))
-_CAST_DIR = os.path.expanduser("~/data/logs/ai_terminal/casts")
+_CAST_DIR = r"C:\Users\donal\data\logs\ai_terminal_asciinema_casts_for_troubleshooting_rendering"
 
 
 def _debug_log(data):

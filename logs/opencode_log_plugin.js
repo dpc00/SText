@@ -54,14 +54,7 @@ function _rawPath() {
 }
 
 function _logRaw(type, payload) {
-  try {
-    const rec = JSON.stringify({ ts: new Date().toISOString(), type, payload }) + "\n";
-    // Bun: synchronous append via writeFileSync
-    const fs = require("fs");
-    fs.appendFileSync(_rawPath(), rec);
-  } catch (e) {
-    // best-effort; never break the session over logging
-  }
+  // disabled: user does not want raw jsonl files cluttering their logs directory
 }
 
 async function _post(ev) {

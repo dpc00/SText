@@ -120,5 +120,66 @@ This repository is a cumulative backup of the active Sublime Text `User` package
 - **AI(SDK) Module:** Files under `ai/ai_sdk.py`, etc., represent a partially-completed (half-done) Claude CLI replacement. They are separate from the core SText user-facing plugin tab and view manager loop.
 - **Guidance for AI Assistants:** Prioritize the authoritative instructions in `AGENTS.md`. Do not read out of half-done module files or assume they are applicable/involved in the core SText functionality unless specifically instructed by the user. Keep focus strictly within the requested task scope.
 
+---
+
+## 8. Live Command Class Hot-Swapping (Tactic 5)
+### The Problem:
+Even if a nested subdirectory file is successfully reloaded in Python's `sys.modules`, and even if the top-level `PluginLoader.py` is re-executed, Sublime Text's internal C++ core command registries (`sublime_plugin.window_command_classes` and `sublime_plugin.all_command_classes`) **still hold onto the old command class definitions from the initial startup scan**. Running the command in the editor will execute the stale in-memory bytecode, referencing older closure variables and stale helper functions, throwing unexpected crashes.
+
+### The Solution:
+You can programmatically hot-swap the command classes inside Sublime Text's live registries in real-time using the ST Python Console (`Ctrl+``):
+```python
+import sys, importlib, sublime_plugin
+
+# 1. Force-reload the nested module
+importlib.reload(sys.modules["User.ai.panic_dialog"])
+import User.ai.panic_dialog
+
+# 2. Map new command class definitions
+new_classes = {
+    "PanicOpenCommand": User.ai.panic_dialog.PanicOpenCommand,
+    "PanicSendCommand": User.ai.panic_dialog.PanicSendCommand,
+}
+
+# 3. Hot-swap in window command classes
+sublime_plugin.window_command_classes = [
+    new_classes.get(cls.__name__, cls) for cls in sublime_plugin.window_command_classes
+]
+
+# 4. Hot-swap in all command lists (Application, Window, Text)
+sublime_plugin.all_command_classes = [
+    [new_classes.get(cls.__name__, cls) for cls in sublist]
+    for sublist in sublime_plugin.all_command_classes
+]
+```
+Once executed, the live command mappings in SText are immediately updated to the fresh bytecode on disk without needing to restart the editor.
+
+---
+
+## 9. Port-Locks and Background Processes
+SText launches independent background daemon servers (like `ai_log_server.py` on port `9511`) by checking if the port is free before spawning them. 
+### The Problem:
+If SText is reloaded, or if you close and reopen SText, the old background daemon process might still be running and holding onto the port. Sublime Text's `PluginLoader.py` will see the port is bound and **will silently abort starting the new server**, leaving you running the older, stale, or crashed background code forever.
+
+### The Solution:
+Whenever you deploy updates to `ai_log_server.py` or another background script, you must explicitly kill the old running process to free the socket:
+1. Find the PID of the Python process listening on port `9511` (or get it from Sublime Text's startup console logs).
+2. Kill the process:
+   ```powershell
+   Stop-Process -Id <pid> -Force
+   ```
+3. Touch/copy `PluginLoader.py` to trigger a reload. It will see the port is free and immediately launch the newly updated server code.
+
+---
+
+## 10. Traceback vs. Bytecode Line Caching
+### The Phenomenon:
+You may sometimes see tracebacks in the console that print lines of code that make no semantic sense (e.g., throwing `AttributeError: 'list' object has no attribute 'strip'` on `if isinstance(content, str):`).
+
+### The Explanation:
+Python's traceback formatter reads lines **live from disk** using the standard `linecache` module, but the execution in-memory is still running the **old cached bytecode** from before the reload. If the files on disk have shifted line positions, the printed traceback line will be completely wrong.
+*   **Actionable Advice:** Trust the *exception type* and *variables* over the printed line text if hot-reloads were triggered. Call `linecache.clearcache()` or restart SText to sync the traceback formatter's cache with disk.
+
+
 
 
