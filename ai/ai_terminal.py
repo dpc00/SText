@@ -537,8 +537,8 @@ def _init_dynamic_color_scheme():
         if os.path.exists(_SCHEME_PATH):
             size = os.path.getsize(_SCHEME_PATH)
             # If the file size is very large (e.g. the old precompiled 8.9MB static matrix), shrink it to the base scheme.
-            # 2MB is a safe threshold to distinguish a dynamic scheme from the old static matrix.
-            if size > 2000000:
+            # 15MB is a safe threshold to distinguish a dynamic scheme from the old static matrix.
+            if size > 15000000:
                 msg = f"[init] Existing color scheme is very large ({size} bytes). Overwriting with clean base scheme."
                 print(f"[ai_terminal] {msg}")
                 _color_scheme_log(msg)
@@ -618,7 +618,7 @@ def _register_scope_async(fg, bg):
         _WRITE_PENDING = True
         
     # Throttled / debounced to avoid write storms and ST hot-reload crashes
-    sublime.set_timeout_async(_flush_pending_rules, 1000)
+    sublime.set_timeout_async(_flush_pending_rules, 15000)
 
 
 def _flush_pending_rules():
@@ -2058,7 +2058,7 @@ def _spawn(window, path, profile=None):
     env = dict(os.environ)
     env.update(extra_env)
 
-    backend = s.get("windows_pty_backend", "conpty")
+    backend = "winpty"
     if backend == "winpty":
         try:
             pty = _WinptyPty(argv, path, cols, rows, env)
