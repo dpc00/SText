@@ -499,7 +499,7 @@ _HEX = [None] + [_xterm_hex(i) for i in range(256)]
 
 _SCHEME_LOCK = threading.Lock()
 _REGISTERED_SCOPES = set()
-_SCHEME_PATH = None
+_SCHEME_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ai_terminal.sublime-color-scheme")
 _BASE_SCHEME = {
     "name": "AI Terminal",
     "variables": {},
