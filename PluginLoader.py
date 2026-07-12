@@ -15,11 +15,8 @@ import sys
 # does NOT reload any of SText's nested submodules (like ai/ai_terminal.py).
 # To force a full clean reload of all submodules when PluginLoader.py is reloaded,
 # we remove them from sys.modules before performing the imports below.
-# First, preserve the old modules in a special sys attribute so they can recover state during reload.
-sys._stext_old_modules = {}
 for mod_name in list(sys.modules.keys()):
     if mod_name.startswith("User.") and mod_name != "User.PluginLoader":
-        sys._stext_old_modules[mod_name] = sys.modules[mod_name]
         del sys.modules[mod_name]
 
 from User.ai.ai_sdk import (

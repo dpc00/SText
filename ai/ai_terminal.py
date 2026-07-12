@@ -499,7 +499,7 @@ _HEX = [None] + [_xterm_hex(i) for i in range(256)]
 
 _SCHEME_LOCK = threading.Lock()
 _REGISTERED_SCOPES = set()
-_SCHEME_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ai_terminal.sublime-color-scheme")
+_SCHEME_PATH = None  # Safely initialized inside _init_dynamic_color_scheme using sublime.packages_path()
 _BASE_SCHEME = {
     "name": "AI Terminal",
     "variables": {},
@@ -533,7 +533,7 @@ def _color_scheme_log(message):
 def _init_dynamic_color_scheme():
     global _SCHEME_PATH, _REGISTERED_SCOPES
     try:
-        _SCHEME_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ai_terminal.sublime-color-scheme")
+        _SCHEME_PATH = os.path.join(sublime.packages_path(), "User", "ai_terminal.sublime-color-scheme")
         if os.path.exists(_SCHEME_PATH):
             size = os.path.getsize(_SCHEME_PATH)
             # If the file size is very large (e.g. the old precompiled 8.9MB static matrix), shrink it to the base scheme.
@@ -1510,36 +1510,6 @@ class _Terminal:
             self.pty.kill()
         except Exception as e:
             print(f"[ai_terminal] kill error: {e}")
-
-
-# Preserve existing terminals on module reload so open terminal views don't "crash" (become unresponsive).
-import sys as _sys
-_old_mod = None
-if hasattr(_sys, "_stext_old_modules") and "User.ai.ai_terminal" in _sys._stext_old_modules:
-    _old_mod = _sys._stext_old_modules["User.ai.ai_terminal"]
-
-if _old_mod is not None:
-    try:
-        _old_terms = getattr(_old_mod, "_TERMINALS", {})
-        for _vid, _term in _old_terms.items():
-            # Update the instance class dynamically to point to the new classes in this reloaded module
-            _term.__class__ = _Terminal
-            if hasattr(_term, "pty") and _term.pty is not None:
-                if _term.pty.__class__.__name__ == "_WinptyPty":
-                    _term.pty.__class__ = _WinptyPty
-                else:
-                    _term.pty.__class__ = _Pty
-            if hasattr(_term, "screen") and _term.screen is not None:
-                _term.screen.__class__ = _Screen
-            if hasattr(_term, "parser") and _term.parser is not None:
-                _term.parser.__class__ = _Parser
-            if hasattr(_term, "process") and _term.process is not None:
-                _term.process.__class__ = _ProcessProxy
-            _TERMINALS[_vid] = _term
-        if _TERMINALS:
-            print(f"[ai_terminal] Successfully recovered {len(_TERMINALS)} active terminal(s) on module reload.")
-    except Exception as _re_err:
-        print(f"[ai_terminal] Failed to recover active terminals on reload: {_re_err}")
 
 
 # ─── view helpers ─────────────────────────────────────────────────────────────
