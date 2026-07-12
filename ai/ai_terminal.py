@@ -348,12 +348,12 @@ class _WinptyPty:
                 # winpty.PtyProcess.write expects str in some wrapper builds. Let's support both.
                 try:
                     self._proc.write(data)
-                except TypeError:
+                except (TypeError, AttributeError):
                     self._proc.write(data.decode("utf-8", "replace"))
             else:
                 self._proc.write(data)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[ai_terminal] winpty write error: {e}")
 
     def resize(self, cols, rows):
         if not self._alive or not self._proc:
@@ -1525,7 +1525,10 @@ if _old_mod is not None:
             # Update the instance class dynamically to point to the new classes in this reloaded module
             _term.__class__ = _Terminal
             if hasattr(_term, "pty") and _term.pty is not None:
-                _term.pty.__class__ = _Pty
+                if _term.pty.__class__.__name__ == "_WinptyPty":
+                    _term.pty.__class__ = _WinptyPty
+                else:
+                    _term.pty.__class__ = _Pty
             if hasattr(_term, "screen") and _term.screen is not None:
                 _term.screen.__class__ = _Screen
             if hasattr(_term, "parser") and _term.parser is not None:
