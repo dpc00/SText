@@ -1,0 +1,116 @@
+DPI mode: per-monitor v2
+startup, version: 4200 windows x64 channel: stable
+executable: /C/Program Files/Sublime Text/sublime_text.exe
+application: /C/Program Files/Sublime Text
+working dir: /C/Program Files/Sublime Text
+packages path: /C/Users/donal/AppData/Roaming/Sublime Text/Packages
+state path: /C/Users/donal/AppData/Roaming/Sublime Text/Local
+zip path: /C/Program Files/Sublime Text/Packages
+zip path: /C/Users/donal/AppData/Roaming/Sublime Text/Installed Packages
+ignored_packages: ["Vintage"]
+pre session restore time: 0.413338
+font face "Lucida Console" has different widths for bold characters, disabling to prevent text reflow
+startup time: 0.509338
+first paint time: 0.525338
+reloading python 3.3 plugin DiffTabs.diff_tabs
+reloading python 3.3 plugin DiffTabs.diff_tabs_edit_settings
+reloading python 3.3 plugin DiffTabs.diff_tabs_open_default_settings
+reloading python 3.3 plugin DiffTabs.diff_tabs_open_user_settings
+reloading python 3.3 plugin MarkdownPreview.browser
+reloading plugin Default.arithmetic
+reloading plugin Default.auto_indent_tag
+reloading plugin Default.block
+reloading python 3.3 plugin MarkdownPreview.markdown_preview
+reloading plugin Default.colors
+reloading plugin Default.comment
+reloading plugin Default.convert_color_scheme
+reloading plugin Default.convert_syntax
+reloading plugin Default.copy_path
+reloading plugin Default.echo
+reloading plugin Default.exec
+reloading plugin Default.fold
+reloading plugin Default.goto_line
+reloading plugin Default.history_list
+reloading plugin Default.html_print
+reloading plugin Default.indentation
+reloading plugin Default.install_package_control
+reloading plugin Default.keymap
+reloading plugin Default.kill_ring
+reloading plugin Default.mark
+reloading plugin Default.new_templates
+reloading plugin Default.open_context_url
+reloading plugin Default.open_in_browser
+reloading plugin Default.pane
+reloading plugin Default.paragraph
+reloading plugin Default.paste_from_history
+reloading plugin Default.profile
+reloading plugin Default.quick_panel
+reloading plugin Default.rename
+reloading plugin Default.run_syntax_tests
+reloading plugin Default.save_on_focus_lost
+reloading plugin Default.scroll
+reloading plugin Default.set_unsaved_view_name
+reloading plugin Default.settings
+reloading plugin Default.show_scope_name
+reloading plugin Default.side_bar
+reloading plugin Default.sort
+reloading plugin Default.switch_file
+reloading plugin Default.symbol
+reloading plugin Default.transform
+reloading plugin Default.transpose
+reloading plugin Default.ui
+reloading plugin CSS.css_completions
+reloading plugin Diff.diff
+reloading plugin HTML.encode_html_entities
+reloading plugin HTML.html_completions
+reloading plugin LSP-pyright.boot
+reloading python 3.3 plugin MarkdownPreview.markdown_settings
+reloading python 3.3 plugin MarkdownPreview.markdown_wrapper
+reloading plugin LSP.boot
+reloading plugin Package Control.plugin
+reloading plugin Pretty JSON.PrettyJson
+reloading plugin Pretty JSON.PrettyJsonListeners
+reloading plugin SSH-Panel.main
+reloading plugin Terminus.main
+reloading plugin Debugger.start
+reloading plugin sublime-mcp.sublime_mcp
+reloading plugin TreeSitter.load
+reloading plugin User.PluginLoader
+plugins loaded
+sublime-mcp: MCP SSE on 127.0.0.1:9502, HTTP bridge on 127.0.0.1:9500
+Tree-sitter: `python_path` not set, using language binaries bundled with tree_sitter_languages
+C:\Users\donal\AppData\Roaming\Sublime Text\Lib\python38\tree_sitter\__init__.py:36: FutureWarning: Language(path, name) is deprecated. Use Language(ptr, name) instead.
+  warn("{} is deprecated. Use {} instead.".format(old, new), FutureWarning)
+ai_logger: initialized (JSONL mode, polling every 500ms, screenshots every 60s)
+[ai_sdk] bridge starting (port 9504)
+[ai_terminal] [init] Initialized. Loaded 5165 registered scope rules from disk (362674 bytes).
+[ai_terminal] loaded
+ai_tab_manager: loaded
+PluginLoader: ai_log_server started (pid=15036)
+[ai_sdk] eval server on 127.0.0.1:9503
+Package Control: Skipping automatic upgrade, last run at 2026-07-12 00:19:41, next run at 2026-07-12 08:19:41 or after
+[ai_sdk bridge] [mcp] sublime-mcp: 71 tools loaded
+[ai_sdk bridge] [mcp] sublime-mcp: list_prompts failed: Unknown method: prompts/list
+[ai_sdk bridge] [mcp] sublime-mcp: list_resources failed: Unknown method: resources/list
+[ai_sdk bridge] [mcp] screenshot: 5 tools loaded
+[ai_sdk bridge] engine-mcp ready (stdio)
+[ai_sdk bridge] [mcp] computer-use-mcp: 23 tools loaded
+[ai_sdk bridge] [07/12/26 01:18:20] INFO     Processing request of type           server.py:727
+[ai_sdk bridge]                              ListToolsRequest
+[ai_sdk bridge] [mcp] vision: 5 tools loaded
+[ai_sdk bridge]                     INFO     Processing request of type           server.py:727
+[ai_sdk bridge]                              ListPromptsRequest
+[ai_sdk bridge]                     INFO     Processing request of type           server.py:727
+[ai_sdk bridge]                              ListResourcesRequest
+[ai_sdk bridge] [mcp] firecrawl: 26 tools loaded
+[ai_sdk bridge] GitHub MCP Server running on stdio
+[ai_sdk bridge] [mcp] github: 26 tools loaded
+[ai_sdk bridge] [mcp] tubealfred: 35 tools loaded
+[ai_sdk bridge] SQLite MCP Server running on stdio
+[ai_sdk bridge] [mcp] sqlite: 10 tools loaded
+[ai_sdk bridge] [mcp] sqlite: 3 prompts, 2 resources
+[ai_sdk bridge] [mcp] excel: 35 tools loaded
+[ai_sdk bridge] [agent_query_ollama] 236 MCP tools from 9 server(s) + 1 built-in = 237 total
+[ai_sdk bridge] [agent_query_ollama] bridge starting, 237 tools, port 9504
+[ai_terminal] [flush] SUCCESS: Flushed 1 dynamic rules to disk. Total rules: 5169
+font face "Times" could not be used with direct write, using gdi instead
