@@ -642,6 +642,13 @@ def _flush_pending_rules():
             _color_scheme_log(msg)
 
     if not scheme_data:
+        # Crucial safety check: if the file actually exists on disk, do NOT overwrite it
+        # with a blank base scheme as that would destroy all previously compiled rules!
+        if _SCHEME_PATH and os.path.exists(_SCHEME_PATH):
+            msg = "[flush] CRITICAL SAFETY: Aborting write to prevent wiping existing color scheme on disk."
+            print(f"[ai_terminal] {msg}")
+            _color_scheme_log(msg)
+            return
         scheme_data = dict(_BASE_SCHEME)
         scheme_data["rules"] = []
 
