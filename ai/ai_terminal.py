@@ -294,6 +294,101 @@ class _Pty:
             self._heap_buf = None
 
 
+class _WinptyPty:
+    """A child process attached to a winpty console (symmetrical to ConPTY _Pty)."""
+
+    def __init__(self, argv, cwd, cols, rows, env):
+        self.argv = list(argv)
+        self.pid = 0
+        self._cwd = cwd or None
+        self._env = env
+        self._cols = cols
+        self._rows = rows
+        self._proc = None
+        self._alive = True
+
+    def start(self):
+        try:
+            import winpty
+            # winpty.PtyProcess.spawn takes argv as a list of strings, env as a dict, and dimensions as (rows, cols)
+            # Note: winpty uses (rows, cols) dimensions, while ConPTY uses (cols, rows)!
+            self._proc = winpty.PtyProcess.spawn(
+                self.argv,
+                cwd=self._cwd,
+                env=self._env,
+                dimensions=(self._rows, self._cols)
+            )
+            self.pid = getattr(self._proc, "pid", 0)
+        except Exception as e:
+            print(f"[ai_terminal] winpty spawn failed: {e}")
+            raise e
+
+    def read(self, on_data):
+        """Blocking reader loop; calls on_data(bytes) until EOF. Run on a daemon thread."""
+        while self._alive and self._proc:
+            try:
+                # read up to 8192 bytes
+                data = self._proc.read(8192)
+                if not data:
+                    break
+                # winpty.PtyProcess.read might return str or bytes depending on the library build.
+                if isinstance(data, str):
+                    on_data(data.encode("utf-8", "ignore"))
+                else:
+                    on_data(data)
+            except Exception:
+                break
+        self._alive = False
+
+    def write(self, data):
+        if not self._alive or not self._proc:
+            return
+        try:
+            if isinstance(data, bytes):
+                # winpty.PtyProcess.write expects str in some wrapper builds. Let's support both.
+                try:
+                    self._proc.write(data)
+                except TypeError:
+                    self._proc.write(data.decode("utf-8", "replace"))
+            else:
+                self._proc.write(data)
+        except Exception:
+            pass
+
+    def resize(self, cols, rows):
+        if not self._alive or not self._proc:
+            return
+        self._cols, self._rows = cols, rows
+        try:
+            # winpty setwinsize expects (rows, cols)
+            self._proc.setwinsize(rows, cols)
+        except Exception:
+            pass
+
+    def is_alive(self):
+        if not self._alive or not self._proc:
+            return False
+        try:
+            alive = self._proc.isalive()
+            if not alive:
+                self._alive = False
+            return alive
+        except Exception:
+            self._alive = False
+            return False
+
+    def kill(self):
+        if not self._alive:
+            return
+        self._alive = False
+        if self._proc:
+            try:
+                self._proc.terminate()
+            except Exception:
+                pass
+            self._proc = None
+
+
 # ─── colour: 16-colour palette + SGR attr model ──────────────────────────────
 # The parser quantizes every SGR colour (16/256/truecolour) down to a 16-colour
 # id and packs (fg, bg, bold, reverse) into one int per cell. The renderer maps
@@ -1956,7 +2051,19 @@ def _spawn(window, path, profile=None):
     env = dict(os.environ)
     env.update(extra_env)
 
-    pty = _Pty(argv, path, cols, rows, env)
+    backend = s.get("windows_pty_backend", "conpty")
+    if backend == "winpty":
+        try:
+            pty = _WinptyPty(argv, path, cols, rows, env)
+            print("[ai_terminal] Spawning PTY process using 'winpty' backend.")
+        except Exception as e:
+            sublime.error_message(f"ai_terminal: failed to start Winpty PTY:\n{e}")
+            view.close()
+            return
+    else:
+        pty = _Pty(argv, path, cols, rows, env)
+        print("[ai_terminal] Spawning PTY process using 'conpty' backend.")
+
     try:
         pty.start()
     except Exception as e:

@@ -11,6 +11,12 @@
     // Live: changing this swaps the live deque (trims oldest if smaller).
     "scrollback_history_size": 300,
 
+    // Toggles the PTY backend on Windows.
+    // "conpty" (default) -- Windows native CreatePseudoConsole API.
+    // "winpty" -- Symmetrical winpty PTY backend. Use this to confirm or isolate
+    // whether the random conversation replays are a ConPTY-specific issue.
+    "windows_pty_backend": "conpty",
+
     // Floor and ceiling on the auto-sized terminal width in characters.
     // cols is computed from the viewport width; min_columns is the lower
     // bound, max_columns caps it (null = no cap). The renderer's no-horizontal-
