@@ -577,6 +577,19 @@ def _tool_summary(name, inp):
 
 
 def _format_panic_response(record):
+    rtype = record.get("type")
+    if rtype == "gemini":
+        text = record.get("content") or ""
+        parts = []
+        if text.strip():
+            parts.append(text.strip())
+        tool_calls = record.get("toolCalls") or []
+        for tc in tool_calls:
+            parts.append(
+                "  ● " + _tool_summary(tc.get("name", "?"), tc.get("args") or {})
+            )
+        return "\n\n".join(parts) if parts else ""
+
     msg = record.get("message") or {}
     content = msg.get("content") or []
     parts = []
@@ -595,7 +608,7 @@ def _format_panic_response(record):
 
 
 def _check_auto_panic(record):
-    if not _AUTO_PANIC:
+    if not _AUTO_PANIC and not _panic_is_open():
         return
     global _new_turn
     rtype = record.get("type")
@@ -603,17 +616,30 @@ def _check_auto_panic(record):
     if rtype == "user":
         msg = record.get("message") or {}
         c = msg.get("content")
+        if not c:
+            c = record.get("content")
         # Only a real user text message (not tool results) starts a new turn
         if isinstance(c, str) and c.strip():
             _new_turn = True
-        elif isinstance(c, list) and any(
-            b.get("type") == "text" for b in c if isinstance(b, dict)
-        ):
-            _new_turn = True
-    if rtype != "assistant":
+        elif isinstance(c, list):
+            for b in c:
+                if isinstance(b, dict):
+                    if b.get("type") == "text" or "text" in b:
+                        _new_turn = True
+                        break
+                elif isinstance(b, str) and b.strip():
+                    _new_turn = True
+                    break
+    if rtype not in ("assistant", "gemini"):
         return
-    msg = record.get("message") or {}
-    output_tokens = (msg.get("usage") or {}).get("output_tokens", 0)
+    output_tokens = 0
+    if rtype == "assistant":
+        msg = record.get("message") or {}
+        output_tokens = (msg.get("usage") or {}).get("output_tokens", 0)
+    elif rtype == "gemini":
+        tokens = record.get("tokens") or {}
+        output_tokens = tokens.get("output", 0)
+
     if output_tokens < _PANIC_THRESHOLD:
         return
     text = _format_panic_response(record)
@@ -638,26 +664,72 @@ def _check_auto_panic(record):
 # -- core flush ---------------------------------------------------------------
 
 
+def _check_auto_panic_safe(record):
+    sublime.set_timeout(lambda: _check_auto_panic(record), 0)
+
+
 def _flush_jsonl(path):
     """Read any new records from path since last offset and log them."""
     global _last_record_ts, _current_jsonl, _seen_uuids, _seen_uuid_counter
-    state = _jsonl_state.setdefault(path, {"offset": 0})
-    if path != _current_jsonl:
-        _current_jsonl = path
-
+    
     try:
         if not os.path.exists(path):
             return
+        size = os.path.getsize(path)
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return
+
+    # Initialize state if not present (setting offset to current file size on first-time discovery)
+    is_new = path not in _jsonl_state
+    state = _jsonl_state.setdefault(path, {"offset": size, "mtime": mtime})
+    if is_new:
+        # Save state right away so we don't forget we've seen it
+        _save_state()
+        return
+
+    if path != _current_jsonl:
+        _current_jsonl = path
+
+    # If the file hasn't grown and mtime hasn't changed, skip entirely!
+    if size <= state.get("offset", 0) and mtime <= state.get("mtime", 0):
+        return
+
+    # Handle file truncation/reset
+    if size < state.get("offset", 0):
+        state["offset"] = 0
+
+    if size == state.get("offset", 0):
+        state["mtime"] = mtime
+        return
+
+    try:
         with open(path, "rb") as f:
             f.seek(state["offset"])
             chunk = f.read()
             state["offset"] += len(chunk)
+            state["mtime"] = mtime
         if not chunk:
             return
+
         buf = chunk.decode("utf-8", errors="replace")
+        
+        # Check if the buffer ends with a newline
+        has_trailing_newline = buf.endswith("\n")
+        lines_list = buf.split("\n")
+        
+        # If there's no trailing newline, the last element of lines_list is a partial line.
+        # We adjust state["offset"] backwards by the byte length of that partial line so we read it next time.
+        if not has_trailing_newline and lines_list:
+            partial_line = lines_list.pop()
+            try:
+                partial_bytes_len = len(partial_line.encode("utf-8"))
+                state["offset"] -= partial_bytes_len
+            except Exception:
+                pass
+
         by_date = {}  # date_str -> list of log lines
-        while "\n" in buf:
-            line, buf = buf.split("\n", 1)
+        for line in lines_list:
             line = line.strip()
             if not line:
                 continue
@@ -683,7 +755,7 @@ def _flush_jsonl(path):
             rec_lines = _record_to_lines(record, _id2name)
             if rec_lines:
                 by_date.setdefault(_record_local_date(ts), []).extend(rec_lines)
-            _check_auto_panic(record)
+            _check_auto_panic_safe(record)
         for date_str, lines in by_date.items():
             _append_log(date_str, "\n".join(lines))
         _save_state()
@@ -695,12 +767,20 @@ def _flush_jsonl(path):
 
 
 def _tick():
+    global _tick_active
+    if _tick_active:
+        return
+    _tick_active = True
+    threading.Thread(target=_tick_background, daemon=True).start()
+
+
+def _tick_background():
     global _last_cleanup_time, _tick_active
-    _tick_active = False  # we're running now; no pending schedule
     current_time = time.time()
     if current_time - _last_cleanup_time > 9000:
         _cleanup_old_screenshots()
         _last_cleanup_time = current_time
+    
     projects = Path(_PROJECTS_DIR)
     if projects.exists():
         try:
@@ -711,15 +791,39 @@ def _tick():
                     _flush_jsonl(str(jf))
         except OSError:
             pass
+    
+    # Discover and flush Gemini JSONL chat files
+    gemini_base = Path(os.path.expanduser("~/.gemini/tmp"))
+    if gemini_base.exists():
+        try:
+            for proj_dir in gemini_base.iterdir():
+                if not proj_dir.is_dir():
+                    continue
+                chats_dir = proj_dir / "chats"
+                if chats_dir.exists() and chats_dir.is_dir():
+                    for jf in chats_dir.glob("*.jsonl"):
+                        _flush_jsonl(str(jf))
+        except OSError:
+            pass
+
     _SS_KEY = "__screenshot__"
     if _SS_KEY not in _last_screenshot_time:
         _last_screenshot_time[_SS_KEY] = current_time
     elif current_time - _last_screenshot_time[_SS_KEY] > _SCREENSHOT_INTERVAL:
         _last_screenshot_time[_SS_KEY] = current_time
-        threading.Thread(target=_take_screenshot, args=(_SS_KEY,), daemon=True).start()
-    if not _tick_active:
-        _tick_active = True
-        sublime.set_timeout(_tick, _CHECK_MS)
+        try:
+            _take_screenshot(_SS_KEY)
+        except Exception as e:
+            _diagnostic_log(f"SCREENSHOT_BG_ERROR: {e}")
+
+    # Re-schedule on the main thread
+    sublime.set_timeout(_tick_schedule, _CHECK_MS)
+
+
+def _tick_schedule():
+    global _tick_active
+    _tick_active = False
+    _tick()
 
 
 # -- commands -----------------------------------------------------------------

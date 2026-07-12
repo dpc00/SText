@@ -1939,7 +1939,15 @@ def _spawn(window, path, profile=None):
         profile_name = "Legacy" if profile_name else None
 
     # Determine unique tab name
-    tab_name = _next_ai_name(window, prefix=f"Ai ({profile_name})" if profile_name else "Ai")
+    pfx = "Ai"
+    if profile_name:
+        if "Gemini" in profile_name:
+            pfx = "Gemini"
+        elif "Claude" in profile_name:
+            pfx = "Claude"
+        else:
+            pfx = profile_name
+    tab_name = _next_ai_name(window, prefix=pfx)
 
     view = _terminal_view(window, name=tab_name)
     window.focus_view(view)

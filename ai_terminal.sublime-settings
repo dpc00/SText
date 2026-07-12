@@ -25,12 +25,12 @@
     "force_main_screen": true,
 
     // The default profile to run if no profile name is explicitly requested
-    "default_profile": "Gemini (Google Cloud Project) $1000!",
+    "default_profile": "Gemini",
 
     // Configured terminal/shell profiles for SText.
     // This allows SText to work as a multi-console terminal launcher.
     "profiles": {
-        "Gemini (Google Cloud Project) $1000!": {
+        "Gemini": {
             "launch_command": ["cmd", "/c", "lg.bat"],
             "spawn_env": {
                 "AI_TERMINAL_LOG_LINES": "1",

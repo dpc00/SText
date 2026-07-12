@@ -110,5 +110,15 @@ Isolate and test core internal functions by invoking them directly from the cons
 ### Tactic 3: Event-Driven Log Tracing
 Rather than manually stepping through code, place high-level structured logs (such as the JSONL logging in `logs/` or `data/logs/`) to track the exact sequence of asynchronous events. This lets you trace thread transitions, PTY input/output, and lifecycle events concurrently in real-time.
 
+---
+
+## 7. Repository Scope & Divergent Modules (CRITICAL FOR AI AGENTS)
+This repository is a cumulative backup of the active Sublime Text `User` package. Over time, it has burgueoned and diverged into multiple standalone features, experimental scripts, and half-done projects. 
+
+### Avoid Confusion:
+- **Experimental Files:** Do NOT assume every module or subdirectory file is fully integrated or active.
+- **AI(SDK) Module:** Files under `ai/ai_sdk.py`, etc., represent a partially-completed (half-done) Claude CLI replacement. They are separate from the core SText user-facing plugin tab and view manager loop.
+- **Guidance for AI Assistants:** Prioritize the authoritative instructions in `AGENTS.md`. Do not read out of half-done module files or assume they are applicable/involved in the core SText functionality unless specifically instructed by the user. Keep focus strictly within the requested task scope.
+
 
 

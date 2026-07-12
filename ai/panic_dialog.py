@@ -40,8 +40,14 @@ _PANIC_LAYOUT = {
 
 
 def _last_claude_response():
-    pattern = os.path.expanduser("~/.claude/projects/**/*.jsonl")
-    files = glob.glob(pattern, recursive=True)
+    patterns = [
+        os.path.expanduser("~/.claude/projects/**/*.jsonl"),
+        os.path.expanduser("~/.gemini/tmp/*/chats/*.jsonl"),
+        os.path.expanduser("~/.gemini/tmp/*/chats/**/*.jsonl")
+    ]
+    files = []
+    for pattern in patterns:
+        files.extend(glob.glob(pattern, recursive=True))
     if not files:
         return None
     latest = max(files, key=os.path.getmtime)
@@ -56,11 +62,19 @@ def _last_claude_response():
                     rec = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                
+                # Check for Claude CLI format
                 msg = rec.get("message", {})
                 if msg.get("role") == "assistant":
                     for block in msg.get("content", []):
                         if isinstance(block, dict) and block.get("type") == "text":
                             last_text = block["text"]
+                
+                # Check for Gemini CLI format
+                elif rec.get("type") == "gemini" and "content" in rec:
+                    content = rec["content"]
+                    if content and content.strip():
+                        last_text = content
     except OSError:
         return None
     return last_text
