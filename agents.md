@@ -1,34 +1,52 @@
-# SText — Agent Context
+# SText — Local Workspace Map & Router (Layer 2)
 
-**Root law:** If you need the org map, go to C:\Users\donal\router.md (note: router.md is a high-level lobby index, whereas this file is the authoritative source for SText development).
-**If this isn't the right place for your task, go back to:** C:\Users\donal\agents.md
+**Root law:** If you need the master projects map, go to the parent directory: `../agents.md`
 
 **Operational Law:** Assume you can access anything directly. Do NOT query, list, or inspect what project folders are loaded in the Sublime Text sidebar or sidebar workspaces.
 
 ---
 
-## What This Project Is
-Sublime Text plugin + Claude Code UI integration. The goal is a zero-fatigue graphical wrapper around Claude Code and MCP — separate panes for chat, config, status, and ideas.
+## 🔄 SText 4-Stage Development Pipeline
+Every task in this workspace must progress sequentially through these stages:
+1. **Stage 1: Design & Specs** — Review UI goals in `AI_UI.md` and define configuration parameters.
+2. **Stage 2: Core Coding** — Modify the target python module inside `ai/`, `backend/`, or `launchers/`.
+3. **Stage 3: Local Staging** — Copy modified modules to the active Packages User folder.
+4. **Stage 4: Verification & Logging** — Check live ST console logs and verify the change in real-time.
 
-## Critical Assumption & Deployment Law
-Plugin edits made in the Git workspace `C:\Users\donal\projects\SText\` are NOT live in Sublime Text until they are copied/deployed to `C:\Users\donal\AppData\Roaming\Sublime Text\Packages\User\`. 
-To ensure your changes are live, you MUST copy any modified files to the active Packages directory. This can be done via a shell command (e.g., `Copy-Item`). Never assume a plugin behaves correctly or that test results are valid until the changed files have been deployed to the live directory.
+---
 
-## Key Files
-- ai/ai_tab_manager.py — Tab/view management
-- ai/ai_search_app.py — Search functionality
-- Default.sublime-commands — Command palette entries (may need entries merged from sublime-mcp)
-- AI_UI.md — Project brief for the Sublime Text AI UI plugin
+## 🚦 Local Context Routing Table
+Use this table to immediately lock your focus onto the relevant files. Do not scan, read, or list other files in the workspace:
 
-## Active Goals
-- Build the multi-pane UI (Ideas / Conversation / Config / Status panes)
-- ctrl-alt-i textbox as default input method
-- Side-by-side Q&A widget (Claude questions left, user answers right)
-- Tone/priority signaling in the UI
+| Current Objective / Task | Read/Load Files (In-Scope) | Skip/Ignore Files (Out-of-Scope) | Required MCP Tools |
+| :--- | :--- | :--- | :--- |
+| **SText Terminal / PTY / winpty** | `ai/ai_terminal.py`, `ai_terminal.sublime-settings` | All other `ai/` scripts, UI code | ST Console log readers |
+| **Inline Chat View / SDK / Client** | `ai/ai_sdk.py`, `backend/agent_query.py` | Terminal rendering modules | TCP network monitors |
+| **Tab/View Management** | `ai/ai_tab_manager.py` | Local launchers, logging scripts | Sublime eval tools |
+| **Auto-Restart / Plugin Loading** | `PluginLoader.py` | UI modules, core backends | File-system deployment |
+| **SSH-Panel / Network Autoconnect** | `launchers/ssh_panel_auto_connect.py` | All `ai/` files, settings | Local ping tools |
+| **Inbox & Status UI Panels** | `ai/ai_hub.py`, `C:\Users\donal\ideas_inbox.md` | Core PTY backends, loaders | HTML layout engines |
 
-## Known Issues
-- Default.sublime-commands may have entries that belong in sublime-mcp's 'MCP Commander.sublime-commands'
-- See C:\Users\donal\ideas_inbox.md for full list
+---
 
-## Related Project
-sublime-mcp at C:\Users\donal\projects\sublime-mcp — the MCP server this plugin talks to
+## 📝 Key Files Directory
+- `ai/ai_tab_manager.py` — Tab and view management logic.
+- `ai/ai_search_app.py` — Search functionality.
+- `Default.sublime-commands` — Command palette registrations.
+- `AI_UI.md` — Project brief for the Sublime Text AI UI wrapper.
+
+---
+
+## 🎯 Active Goals
+* Build the multi-pane UI (separate boxes for Ideas, Conversations, Config, and Status).
+* Make `Ctrl+Alt+I` text-input box the default input method for terminal commands.
+* Build the side-by-side Q&A widget (Claude's questions on the left, user answers on the right).
+* Implement tone/priority signaling in the graphical panels.
+
+---
+
+## 🤝 Session Continuity & Baton Protocol
+- **The Problem:** When Sublime Text restarts, the active AI session's memory is terminated. Re-contextualizing from scratch takes 10+ minutes and causes severe user fatigue.
+- **The Protocol:**
+  1. **Before any Restart or Handoff:** Always write the current task state, files in scope, and the last 3 conversation turns to `.session_baton.json` at the root of SText.
+  2. **Upon Startup (Session Initialization/Pickup):** Your absolute first priority upon starting a new session is to check if `.session_baton.json` exists. If it does, load it immediately to hydrate your context, explain to the user exactly what task and state you are resuming, and then delete the baton file. This ensures instant continuation with zero wait time.

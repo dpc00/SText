@@ -9,15 +9,38 @@ are not imported here -- they are launched as separate processes by the modules 
 """
 import sys
 
-# --- Nested Submodule Reloader ---
-# Sublime Text only automatically reloads top-level .py files. Since Python
-# caches imported modules in sys.modules, reloading PluginLoader.py normally
-# does NOT reload any of SText's nested submodules (like ai/ai_terminal.py).
-# To force a full clean reload of all submodules when PluginLoader.py is reloaded,
-# we remove them from sys.modules before performing the imports below.
-for mod_name in list(sys.modules.keys()):
-    if mod_name.startswith("User.") and mod_name != "User.PluginLoader":
-        del sys.modules[mod_name]
+# --- SText Auto-Restart on Hot-Reload ---
+# If SText's PluginLoader is reloaded (which happens when you copy nested submodules
+# and touch/copy PluginLoader.py), we detect the reload sentinel. To prevent
+# destructive module reloading, crashing terminals, and color scheme wipes, we:
+# 1) Refuse to perform any further imports or registrations.
+# 2) Spawn a detached PowerShell process to restart Sublime Text.
+# 3) Trigger a graceful exit of Sublime Text.
+if getattr(sys, "_stext_plugin_loader_loaded", False):
+    print("\n[SText] Hot-reload of PluginLoader detected! Initiating clean IDE restart...")
+    try:
+        import sublime
+        import subprocess
+        
+        executable = sublime.executable_path()
+        # Wait 500ms to allow ST to exit, then start a fresh instance
+        restart_cmd = f'Start-Sleep -Milliseconds 500; Start-Process -FilePath "{executable}"'
+        
+        subprocess.Popen(
+            ["powershell.exe", "-NoProfile", "-Command", restart_cmd],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL
+        )
+        sublime.set_timeout(lambda: sublime.run_command("exit"), 50)
+    except Exception as e:
+        print(f"[SText] Failed to trigger auto-restart: {e}")
+        
+    raise ImportError("SText auto-restart triggered.")
+
+# Mark that SText has successfully loaded for the first time in this session
+sys._stext_plugin_loader_loaded = True
 
 from User.ai.ai_sdk import (
     AiSdkViewListener,
@@ -197,10 +220,5 @@ _PLUGIN_UNLOADED_MODULES = [
     "User.config.st_config",        # stop HTTP server
 ]
 
-# Clean up temporary old module preservation reference to prevent memory leaks
-if hasattr(sys, "_stext_old_modules"):
-    try:
-        del sys._stext_old_modules
-    except Exception:
-        pass
+
 

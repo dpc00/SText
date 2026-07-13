@@ -1363,6 +1363,11 @@ class _Terminal:
         self._cast_lock = threading.Lock()
         self._cast_t0 = 0.0       # session start (epoch seconds)
         self._cast_last = 0.0     # timestamp of the previous event
+        # Flood guard variables to defend against uncontrolled process dumps (the C-Dump bug)
+        self._flood_mode = False
+        self._last_data_time = 0.0
+        self._bytes_in_window = 0
+        self._window_start = 0.0
 
     @classmethod
     def from_id(cls, view_id):
@@ -1444,6 +1449,34 @@ class _Terminal:
     def _on_data(self, data):
         if _DEBUG:
             _debug_log(data)
+
+        now = time.time()
+        chunk_len = len(data)
+
+        # 1. Track byte rate in a sliding 1-second window
+        if now - self._window_start > 1.0:
+            self._bytes_in_window = chunk_len
+            self._window_start = now
+        else:
+            self._bytes_in_window += chunk_len
+
+        # 2. Trigger Flood Guard if throughput exceeds 150 KB/s
+        if self._bytes_in_window > 150 * 1024 and not self._flood_mode:
+            self._flood_mode = True
+            sublime.set_timeout(lambda: self.view.set_status("flood_guard", "⚠️ FLOOD SHIELD ACTIVATED"), 0)
+            print("[ai_terminal] ⚠️ FLOOD SHIELD ACTIVATED: High-throughput stream detected. Suspending UI renders to prevent editor freeze.")
+
+        if self._flood_mode:
+            # Under flood: record the asciicast (cheap/fast) but bypass expensive pyte parser & UI rendering
+            text = self._decoder.decode(data)
+            if "executing hook" not in text.lower():
+                self._cast("o", text)
+
+            # Set debounce timer to detect when the flood stops (400ms silence)
+            self._last_data_time = now
+            sublime.set_timeout_async(lambda: self._check_flood_silence(now), 400)
+            return
+
         text = self._decoder.decode(data)
         with self._lock:
             self.parser.feed(text)
@@ -1461,6 +1494,17 @@ class _Terminal:
         if "executing hook" not in text.lower():
             self._cast("o", text)
         _schedule_render(self)
+
+    def _check_flood_silence(self, trigger_time):
+        # If no new data has arrived since this trigger, the flood has settled!
+        if self._flood_mode and self._last_data_time == trigger_time:
+            with self._lock:
+                self._flood_mode = False
+                self._bytes_in_window = 0
+            sublime.set_timeout(lambda: self.view.erase_status("flood_guard"), 0)
+            print("[ai_terminal] ✅ FLOOD SHIELD DEACTIVATED: Stream settled. Re-aligning view.")
+            # Trigger a clean screen render of the final state
+            _schedule_render(self)
 
     def send_string(self, s):
         # Recording patch: emit an "i" (input) event for what the user typed.

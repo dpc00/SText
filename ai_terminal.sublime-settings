@@ -15,7 +15,7 @@
     // "conpty" -- Windows native CreatePseudoConsole API.
     // "winpty" -- Symmetrical winpty PTY backend. Use this to confirm or isolate
     // whether the random conversation replays are a ConPTY-specific issue.
-    "windows_pty_backend": "winpty",
+    "windows_pty_backend": "conpty",
 
     // Floor and ceiling on the auto-sized terminal width in characters.
     // cols is computed from the viewport width; min_columns is the lower
@@ -37,10 +37,11 @@
     // This allows SText to work as a multi-console terminal launcher.
     "profiles": {
         "Gemini": {
-            "launch_command": ["cmd", "/c", "lg.bat"],
+            "launch_command": ["gemini.cmd"],
             "spawn_env": {
                 "AI_TERMINAL_LOG_LINES": "1",
                 "GEMINI_PROMPT_QUEUE": "false",
+                "GEMINI_API_KEY": "",
                 "GOOGLE_CLOUD_LOCATION":"global",
                 "GOOGLE_CLOUD_PROJECT":"project-67efc385-8bb5-493f-a81",
                 "GOOGLE_PROJECT_NUMBER":"782908338549",
@@ -94,7 +95,7 @@
     //   ["cmd", "/c", "opencode"]            -- OpenCode instead of Claude Code
     //   ["cmd", "/c", "claude"]              -- Claude Code on Windows (native cmd shim)
     // Applied on the next _spawn: close and reopen the ai_terminal tab to pick up.
-    "launch_command": ["cmd", "/c", "lg.bat"],
+    "launch_command": ["gemini.cmd"],
 
     // claude --model gemini-2.5-pro
 
