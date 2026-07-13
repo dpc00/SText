@@ -150,9 +150,20 @@ def _screenshot_via_mcp(filepath: str) -> bool:
             [bun_exe, "run", mcp_script],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,  # Redirect stderr to devnull to avoid blocking/deadlock on Windows
             startupinfo=si,
         )
+
+        # Watchdog thread: prevent any potential infinite hang by terminating the process after 10 seconds
+        def _watchdog():
+            time.sleep(10)
+            try:
+                if proc.poll() is None:
+                    _diagnostic_log("SCREENSHOT_TIMEOUT: screenshot-mcp process timed out and was terminated")
+                    proc.terminate()
+            except Exception:
+                pass
+        threading.Thread(target=_watchdog, daemon=True).start()
 
         def send(obj):
             proc.stdin.write((json.dumps(obj) + "\n").encode())
@@ -865,9 +876,8 @@ def plugin_loaded():
     _load_state()
     os.makedirs(_LOG_DIR, exist_ok=True)
     _cleanup_old_screenshots()
-    if not _tick_active:
-        _tick_active = True
-        sublime.set_timeout(_tick, _CHECK_MS)
+    _tick_active = False
+    sublime.set_timeout(_tick, _CHECK_MS)
     msg = (
         f"ai_logger: initialized (JSONL mode, polling every {_CHECK_MS}ms, "
         f"screenshots every {_SCREENSHOT_INTERVAL}s)"

@@ -2075,7 +2075,10 @@ def _spawn(window, path, profile=None):
     env = dict(os.environ)
     env.update(extra_env)
 
-    backend = "winpty"
+    backend = s.get("windows_pty_backend", "conpty")
+    if profile_data and isinstance(profile_data, dict):
+        backend = profile_data.get("windows_pty_backend", backend)
+
     if backend == "winpty":
         try:
             pty = _WinptyPty(argv, path, cols, rows, env)

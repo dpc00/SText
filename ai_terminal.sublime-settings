@@ -15,7 +15,7 @@
     // "conpty" -- Windows native CreatePseudoConsole API.
     // "winpty" -- Symmetrical winpty PTY backend. Use this to confirm or isolate
     // whether the random conversation replays are a ConPTY-specific issue.
-    "windows_pty_backend": "conpty",
+    "windows_pty_backend": "winpty",
 
     // Floor and ceiling on the auto-sized terminal width in characters.
     // cols is computed from the viewport width; min_columns is the lower
