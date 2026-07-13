@@ -26,7 +26,7 @@
     "auto_close_tags": false,
     "auto_complete": true,
     "auto_complete_commit_on_tab": true,
-    "auto_hide_menu": true,
+    "auto_hide_menu": false,
     "auto_hide_status_bar": false,
     "auto_match_enabled": false,
     "close_windows_when_empty": true,
@@ -52,7 +52,7 @@
     /*"color_scheme": "Mariana.sublime-color-scheme",*/
     "font_face": "Lucida Console",
     "wrap_width_style": "variable",
-    "auto_hide_tabs": true,
+    "auto_hide_tabs": false,
     "show_tab_close_buttons_on_left": true,
     "open_tabs_after_current": false,
 }
