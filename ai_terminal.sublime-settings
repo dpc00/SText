@@ -17,6 +17,14 @@
     // whether the random conversation replays are a ConPTY-specific issue.
     "windows_pty_backend": "conpty",
 
+    // Terminal View Cursor / Caret preferences:
+    // Enables a block cursor (True/False). Default True.
+    "block_caret": true,
+    // Caret blink/draw style ("blink", "solid", "smooth", "phase", "wide"). Default "blink".
+    "caret_style": "blink",
+    // Extra pixel-width for caret line drawing. Default 2.
+    "caret_extra_width": 2,
+
     // Floor and ceiling on the auto-sized terminal width in characters.
     // cols is computed from the viewport width; min_columns is the lower
     // bound, max_columns caps it (null = no cap). The renderer's no-horizontal-

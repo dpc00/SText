@@ -150,7 +150,28 @@ class _Pty:
     """A child process attached to a Windows pseudoconsole."""
 
     def __init__(self, argv, cwd, cols, rows, env):
-        self.argv = list(argv)
+        import shutil
+        import subprocess
+
+        argv = list(argv)
+        if argv:
+            # Resolve path search directory
+            search_path = os.environ.get("PATH", "")
+            if cwd:
+                search_path = cwd + os.pathsep + search_path
+            
+            # Find the fully resolved program path (including .cmd/.bat extensions via PATHEXT)
+            resolved_prog = shutil.which(argv[0], path=search_path) or argv[0]
+            
+            if resolved_prog.lower().endswith((".cmd", ".bat")):
+                # Check if it is not already wrapped by cmd.exe /c
+                is_wrapped = False
+                if len(argv) >= 2 and argv[0].lower() in ("cmd", "cmd.exe") and argv[1].lower() in ("/c", "/k"):
+                    is_wrapped = True
+                if not is_wrapped:
+                    argv = ["cmd.exe", "/c"] + argv
+
+        self.argv = argv
         self.pid = 0
         self._hPC = None
         self._hInWrite = None      # we write input here
@@ -160,7 +181,7 @@ class _Pty:
         self._attr_list = None
         self._heap_buf = None
         self._alive = True
-        self._cmdline = " ".join(argv)
+        self._cmdline = subprocess.list2cmdline(self.argv)
         self._cwd = cwd or None
         self._env = env
         self._cols = cols
@@ -669,7 +690,9 @@ def _scope_for(attr):
     fg = attr & _ATTR_FG_MASK
     bg = (attr & _ATTR_BG_MASK) >> _BG_SHIFT
     if attr & _REVERSE:
-        fg, bg = bg, fg
+        real_fg = fg if fg != 0 else 16  # Default foreground maps to white (xterm 15, 1-based index 16)
+        real_bg = bg if bg != 0 else 1   # Default background maps to black (xterm 0, 1-based index 1)
+        fg, bg = real_bg, real_fg
     if attr & _FAINT:
         r, g, b = _XTERM256_RGB[fg - 1] if fg else (255, 255, 255)
         fg = _quantize256(r // 2, g // 2, b // 2) + 1
@@ -705,11 +728,6 @@ _settings = None  # sublime.Settings; (re)bound in plugin_loaded
 
 _DEFAULT_SCROLLBACK = 300
 _DEFAULT_MIN_COLS = 20
-_DEFAULT_LAUNCH_COMMAND = ["cmd", "/c", "ollama", "launch", "claude"]
-_DEFAULT_SPAWN_ENV = {
-    "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
-    "CLAUDE_CODE_AI_TERMINAL_SENTINEL": "propagated",
-}
 
 
 def _scrollback_size():
@@ -743,29 +761,25 @@ def _cols_bounds():
 
 def _launch_command():
     """argv list used to spawn the terminal program. Read from the
-    `launch_command` setting so the agent/gateway can be swapped (e.g. to
-    `["claude"]` for direct Anthropic API, or `["opencode"]`) without editing
-    the plugin. Falls back to _DEFAULT_LAUNCH_COMMAND on any shape error.
+    `launch_command` setting. Returns None on any shape error or if missing.
     Applied on the next _spawn (reopen the ai_terminal tab)."""
     s = _settings or sublime.load_settings(_SETTINGS_NAME)
-    cmd = s.get("launch_command", _DEFAULT_LAUNCH_COMMAND)
+    cmd = s.get("launch_command")
     if not isinstance(cmd, list) or not all(isinstance(a, str) for a in cmd):
-        return _DEFAULT_LAUNCH_COMMAND
+        return None
     return list(cmd)
 
 
 def _spawn_env():
     """Dict of env vars to apply to the spawned terminal process (merged on
-    top of os.environ). Read from the `spawn_env` setting so agent-specific
-    env can be swapped alongside `launch_command` without editing the plugin.
-    Keys and values must be strings; falls back to _DEFAULT_SPAWN_ENV on any
-    shape error. Applied on the next _spawn (reopen the ai_terminal tab)."""
+    top of os.environ). Read from the `spawn_env` setting. Returns an empty
+    dict on any shape error or if missing. Applied on the next _spawn (reopen the ai_terminal tab)."""
     s = _settings or sublime.load_settings(_SETTINGS_NAME)
-    ev = s.get("spawn_env", _DEFAULT_SPAWN_ENV)
+    ev = s.get("spawn_env")
     if not isinstance(ev, dict) or not all(
         isinstance(k, str) and isinstance(v, str) for k, v in ev.items()
     ):
-        return dict(_DEFAULT_SPAWN_ENV)
+        return {}
     return dict(ev)
 
 
@@ -844,6 +858,7 @@ class _Screen:
         self.history = collections.deque(maxlen=_scrollback_size())
         self.saved = (0, 0)
         self.alt_screen = False
+        self.cursor_visible = True
         self.dirty = True
 
     def resize(self, cols, rows):
@@ -1065,7 +1080,7 @@ class _Screen:
                 cells = [(srow[c], arow[c]) for c in range(self.cols)]
                 grid_rows.append(_rstrip_cells(cells))
         if self.alt_screen:
-            return grid_rows, cy_in_grid, cx
+            return grid_rows, cy_in_grid, cx, self.cursor_visible
         _settings_debug_log(f"    [render_cells] ENTER: listing self.history (len={len(self.history)})...")
         try:
             hist = list(self.history)
@@ -1073,7 +1088,7 @@ class _Screen:
         except Exception as e:
             _settings_debug_log(f"    [render_cells] ERROR during list(self.history): {e}\n{traceback.format_exc()}")
             raise
-        return hist + grid_rows, len(hist) + cy_in_grid, cx
+        return hist + grid_rows, len(hist) + cy_in_grid, cx, self.cursor_visible
 
 
 # ─── _Parser: minimal ANSI state machine (Claude ratatui subset) ─────────────
@@ -1294,6 +1309,8 @@ class _Parser:
             if priv and "1049" in self.params:
                 if not _force_main_screen():
                     s.alt_screen = (final == "h")
+            elif priv and "25" in self.params:
+                s.cursor_visible = (final == "h")
             # all others consumed-and-dropped so the stream stays in sync
         elif final == "S":  # SU -- Scroll Up
             n = p[0] if p and p[0] else 1
@@ -1320,14 +1337,14 @@ class _ProcessProxy:
 
     @property
     def argv(self):
-        return self._pty.argv
+        return self._pty.argv if self._pty else []
 
     @property
     def pid(self):
-        return self._pty.pid
+        return self._pty.pid if self._pty else 0
 
     def isalive(self):
-        return self._pty.is_alive()
+        return self._pty.is_alive() if self._pty else False
 
 
 class _Terminal:
@@ -1368,6 +1385,8 @@ class _Terminal:
         self._last_data_time = 0.0
         self._bytes_in_window = 0
         self._window_start = 0.0
+        # Local command mode line editing buffer
+        self._local_input_buffer = ""
 
     @classmethod
     def from_id(cls, view_id):
@@ -1375,6 +1394,8 @@ class _Terminal:
             return _TERMINALS.get(view_id)
 
     def start(self):
+        if self.pty is None:
+            return
         # Recording patch: asciicast v3. Recording is on if
         # AI_TERMINAL_LOG_LINES is set in the spawn_env setting OR in ST's
         # process environment (_LOG_LINES). Checked per-spawn so a settings
@@ -1507,21 +1528,190 @@ class _Terminal:
             _schedule_render(self)
 
     def send_string(self, s):
-        # Recording patch: emit an "i" (input) event for what the user typed.
-        # Most useful event for replay -- shows exactly what was entered.
-        self._cast("i", s)
-        self.pty.write(s.encode("utf-8", errors="replace"))
+        if self.pty is None:
+            self._handle_local_input(s)
+        else:
+            # Recording patch: emit an "i" (input) event for what the user typed.
+            # Most useful event for replay -- shows exactly what was entered.
+            self._cast("i", s)
+            self.pty.write(s.encode("utf-8", errors="replace"))
+
+    def _handle_local_input(self, s):
+        for ch in s:
+            if ch == "\r" or ch == "\n":
+                cmd_str = self._local_input_buffer.strip()
+                self._local_input_buffer = ""
+                with self._lock:
+                    self.parser.feed("\r\n")
+                self._execute_local_command(cmd_str)
+            elif ch in ("\x7f", "\b"):
+                if len(self._local_input_buffer) > 0:
+                    self._local_input_buffer = self._local_input_buffer[:-1]
+                    with self._lock:
+                        self.parser.feed("\b \b")
+                    _schedule_render(self)
+            elif ord(ch) >= 32:
+                self._local_input_buffer += ch
+                with self._lock:
+                    self.parser.feed(ch)
+                _schedule_render(self)
+
+    def _print_local_prompt(self):
+        with self._lock:
+            self.parser.feed("> ")
+        _schedule_render(self)
+
+    def _execute_local_command(self, cmd_str):
+        if not cmd_str:
+            self._print_local_prompt()
+            return
+
+        parts = cmd_str.split()
+        cmd = parts[0].lower()
+        args = parts[1:]
+
+        if cmd == "help":
+            help_text = (
+                "Available commands:\r\n"
+                "  launch dos        - Start a Windows Command Prompt\r\n"
+                "  launch bash       - Start a Bash shell\r\n"
+                "  launch <profile>  - Start a configured profile\r\n"
+                "  list              - List all configured terminal profiles\r\n"
+                "  help              - Show this help text\r\n\r\n"
+            )
+            with self._lock:
+                self.parser.feed(help_text)
+            self._print_local_prompt()
+        elif cmd == "list" or (cmd == "list" and args and args[0] == "profiles"):
+            s = sublime.load_settings(_SETTINGS_NAME)
+            profiles = s.get("profiles", {})
+            if profiles:
+                plist = "Available profiles:\r\n"
+                for p in profiles:
+                    plist += f"  {p}\r\n"
+                plist += "\r\n"
+            else:
+                plist = "No profiles configured in settings.\r\n\r\n"
+            with self._lock:
+                self.parser.feed(plist)
+            self._print_local_prompt()
+        elif cmd == "launch":
+            if not args:
+                with self._lock:
+                    self.parser.feed("Error: specify what to launch (e.g. 'launch dos').\r\n")
+                self._print_local_prompt()
+                return
+            
+            target = args[0].lower()
+            argv = None
+            profile_name = None
+            
+            s = sublime.load_settings(_SETTINGS_NAME)
+            profiles = s.get("profiles", {})
+            
+            if target in ("dos", "cmd"):
+                argv = ["cmd.exe"]
+                profile_name = ""  # Keep default blank name
+            elif target == "bash":
+                argv = ["bash"]
+                profile_name = ""  # Keep default blank name
+            elif args[0] in profiles:
+                profile_name = args[0]
+                profile_data = profiles[profile_name]
+                if isinstance(profile_data, dict):
+                    argv = profile_data.get("launch_command")
+            
+            if not argv:
+                matched_profile = None
+                for p in profiles:
+                    if p.lower() == args[0].lower():
+                        matched_profile = p
+                        break
+                if matched_profile:
+                    profile_name = matched_profile
+                    profile_data = profiles[profile_name]
+                    if isinstance(profile_data, dict):
+                        argv = profile_data.get("launch_command")
+
+            if not argv:
+                # Fall back to launching the entire command arguments literally
+                argv = args
+                profile_name = " ".join(args)
+
+            self._spawn_pty_for_local_command(argv, profile_name)
+        else:
+            with self._lock:
+                self.parser.feed(f"Unknown command: '{cmd}'. Type 'help' for info.\r\n")
+            self._print_local_prompt()
+
+    def _spawn_pty_for_local_command(self, argv, profile_name):
+        path = _resolve_editor_path(self.view)
+        if not path:
+            window = self.view.window()
+            folders = window.folders() if window else []
+            path = folders[0] if folders else None
+            
+        cols, rows = _measure(self.view)
+        
+        s = sublime.load_settings(_SETTINGS_NAME)
+        profiles = s.get("profiles", {})
+        profile_data = profiles.get(profile_name) if profile_name else None
+        extra_env = {}
+        backend = s.get("windows_pty_backend", "conpty")
+        
+        if profile_data and isinstance(profile_data, dict):
+            extra_env = profile_data.get("spawn_env", {})
+            backend = profile_data.get("windows_pty_backend", backend)
+            
+        env = dict(os.environ)
+        env.update(extra_env)
+        
+        if backend == "winpty":
+            try:
+                pty = _WinptyPty(argv, path, cols, rows, env)
+            except Exception as e:
+                with self._lock:
+                    self.parser.feed(f"Error starting Winpty: {e}\r\n")
+                self._print_local_prompt()
+                return
+        else:
+            pty = _Pty(argv, path, cols, rows, env)
+            
+        try:
+            pty.start()
+        except Exception as e:
+            with self._lock:
+                self.parser.feed(f"Error starting process: {e}\r\n")
+            self._print_local_prompt()
+            return
+            
+        with self._lock:
+            self.pty = pty
+            self.process = _ProcessProxy(pty)
+            pfx = profile_name if profile_name else ""
+            self.view.set_name(_next_ai_name(self.view.window(), prefix=pfx))
+            self.screen.reset()
+            
+        self.start()
 
     def resize(self, cols, rows):
         if cols == self._last_cols and rows == self._last_rows:
             return
+            
+        # Rate-limit high-frequency resizes to permanently neutralize the scrollbar oscillation feedback loop
+        now = time.time()
+        if now - getattr(self, "_last_resize_time", 0.0) < 3.0:
+            return
+        self._last_resize_time = now
+
         self._last_cols, self._last_rows = cols, rows
         with self._lock:
             self.screen.resize(cols, rows)
-        self.pty.resize(cols, rows)
-        # Recording patch: emit an "r" (resize) event so the .cast records
-        # geometry changes for accurate replay.
-        self._cast("r", f"{int(cols)}x{int(rows)}")
+        if self.pty:
+            self.pty.resize(cols, rows)
+            # Recording patch: emit an "r" (resize) event so the .cast records
+            # geometry changes for accurate replay.
+            self._cast("r", f"{int(cols)}x{int(rows)}")
         # Re-render so the view text matches the new (narrower) grid right
         # away. Without this, the view keeps stale wider text until Claude
         # next emits output, and the stale wider lines show a horizontal
@@ -1533,10 +1723,12 @@ class _Terminal:
         external caller that just wants the visible buffer; the renderer itself
         goes through render_cells() + _build_text_and_regions for colour."""
         with self._lock:
-            rows, _cy, _cx = self.screen.render_cells()
+            rows, _cy, _cx, _cv = self.screen.render_cells()
         return "\n".join("".join(ch for ch, _ in row) for row in rows)
 
     def kill(self):
+        if self.pty is None:
+            return
         # Recording patch: emit an "x" (exit) event and close the .cast
         # file so the recording ends cleanly. The stream-layer "o" events
         # already captured everything Claude emitted, so there's no need
@@ -1558,7 +1750,7 @@ class _Terminal:
 
 # ─── view helpers ─────────────────────────────────────────────────────────────
 
-_VIEW_NAME = "Ai"
+_VIEW_NAME = "Terminal"
 _VIEW_SETTING = "ai_terminal_view"
 _TAG_SETTING = "ai_logger"  # so panic_dialog / ClaudeSendTab still find this view
 
@@ -1630,6 +1822,7 @@ def _terminal_view(window, name=None):
     # is NOT set.
     v.settings().set("draw_centered", False)
     v.settings().set("scroll_past_end", False)
+    v.settings().set("horizontal_scrollbar_visibility", "never")
     v.settings().set(_VIEW_SETTING, True)
     v.settings().set(_TAG_SETTING, True)
     # Instant resize on gutter / line_numbers / fold_buttons / margin toggles.
@@ -1754,11 +1947,11 @@ def _do_render(term):
     # Read structured cells + TUI cursor under one lock acquisition so the caret
     # row (history offset + screen.y) matches the text we render this frame.
     with term._lock:
-        rows, cy, cx = term.screen.render_cells()
+        rows, cy, cx, cursor_visible = term.screen.render_cells()
     term.screen.dirty = False
     text, regions = _build_text_and_regions(rows)
     view.run_command("ai_terminal_render",
-                     {"text": text, "cursor": [cy, cx], "regions": regions})
+                     {"text": text, "cursor": [cy, cx], "regions": regions, "cursor_visible": cursor_visible})
 
 
 def _build_text_and_regions(rows):
@@ -2049,60 +2242,71 @@ def _spawn(window, path, profile=None):
     profile_data = profiles.get(profile_name) if profile_name else None
     
     if profile_data and isinstance(profile_data, dict):
-        argv = profile_data.get("launch_command", _DEFAULT_LAUNCH_COMMAND)
+        argv = profile_data.get("launch_command")
         extra_env = profile_data.get("spawn_env", {})
     else:
         # Fallback to legacy single command settings
         argv = _launch_command()
         extra_env = _spawn_env()
-        profile_name = "Legacy" if profile_name else None
+        profile_name = "Legacy" if (profile_name and argv) else None
 
-    # Determine unique tab name
-    pfx = "Ai"
-    if profile_name:
-        if "Gemini" in profile_name:
-            pfx = "Gemini"
-        elif "Claude" in profile_name:
-            pfx = "Claude"
-        else:
-            pfx = profile_name
+    # Determine unique tab name: blank by default if no profile is loaded
+    pfx = profile_name if profile_name else ""
     tab_name = _next_ai_name(window, prefix=pfx)
 
     view = _terminal_view(window, name=tab_name)
     window.focus_view(view)
     cols, rows = _measure(view)
     
-    env = dict(os.environ)
-    env.update(extra_env)
+    if argv:
+        env = dict(os.environ)
+        env.update(extra_env)
 
-    backend = s.get("windows_pty_backend", "conpty")
-    if profile_data and isinstance(profile_data, dict):
-        backend = profile_data.get("windows_pty_backend", backend)
+        backend = s.get("windows_pty_backend", "conpty")
+        if profile_data and isinstance(profile_data, dict):
+            backend = profile_data.get("windows_pty_backend", backend)
 
-    if backend == "winpty":
+        if backend == "winpty":
+            try:
+                pty = _WinptyPty(argv, path, cols, rows, env)
+                print("[ai_terminal] Spawning PTY process using 'winpty' backend.")
+            except Exception as e:
+                sublime.error_message(f"ai_terminal: failed to start Winpty PTY:\n{e}")
+                view.close()
+                return
+        else:
+            pty = _Pty(argv, path, cols, rows, env)
+            print("[ai_terminal] Spawning PTY process using 'conpty' backend.")
+
         try:
-            pty = _WinptyPty(argv, path, cols, rows, env)
-            print("[ai_terminal] Spawning PTY process using 'winpty' backend.")
+            pty.start()
         except Exception as e:
-            sublime.error_message(f"ai_terminal: failed to start Winpty PTY:\n{e}")
+            sublime.error_message(f"ai_terminal: failed to start PTY:\n{e}")
             view.close()
             return
+        screen = _Screen(cols, rows)
+        parser = _Parser(screen)
+        term = _Terminal(view, pty, screen, parser)
+        with _REG_LOCK:
+            _TERMINALS[view.id()] = term
+        term.start()
     else:
-        pty = _Pty(argv, path, cols, rows, env)
-        print("[ai_terminal] Spawning PTY process using 'conpty' backend.")
-
-    try:
-        pty.start()
-    except Exception as e:
-        sublime.error_message(f"ai_terminal: failed to start PTY:\n{e}")
-        view.close()
-        return
-    screen = _Screen(cols, rows)
-    parser = _Parser(screen)
-    term = _Terminal(view, pty, screen, parser)
-    with _REG_LOCK:
-        _TERMINALS[view.id()] = term
-    term.start()
+        # No launch command configured -> Start in Local Command Mode (completely blank tab, doesn't launch anything!)
+        screen = _Screen(cols, rows)
+        parser = _Parser(screen)
+        term = _Terminal(view, None, screen, parser)
+        with _REG_LOCK:
+            _TERMINALS[view.id()] = term
+            
+        welcome = (
+            "SText Terminal (Local Command Mode)\r\n"
+            "Type 'launch dos' or 'launch bash' to start a shell.\r\n"
+            "Type 'help' for other options.\r\n\r\n"
+        )
+        with term._lock:
+            term.parser.feed(welcome)
+            term._local_input_buffer = ""
+            term._print_local_prompt()
 
 
 class AiTerminalOpenHereCommand(sublime_plugin.WindowCommand):
@@ -2367,7 +2571,7 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
     No key/menu/palette binding; invoked programmatically.
     """
 
-    def run(self, edit, text="", cursor=None, regions=None):
+    def run(self, edit, text="", cursor=None, regions=None, cursor_visible=True):
         view = self.view
         view.set_read_only(False)
         # Only re-pin to the bottom if the user is already near it, so scrolling
@@ -2401,18 +2605,23 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
         # above the bottom -- so Claude's output appeared below the fold and
         # the user said "our terminal is not listening to Claude."
         term = _Terminal.from_id(view.id())
-        if term is not None:
-            if vp[1] < term._last_vp_y - lh * 1.5:
-                term._auto_follow = False
-            if near_bottom:
-                term._auto_follow = True
-        do_follow = (term is not None and term._auto_follow) if term is not None else near_bottom
-        if cursor is not None:
+        do_follow = False # Never auto-scroll in ST on render. Ever.
+        if cursor is not None and cursor_visible:
             last_row = view.rowcol(view.size())[0]
             row = min(int(cursor[0]), last_row)
             line_start = view.text_point(row, 0)
             line_end = view.line(line_start).b
-            pos = min(line_start + int(cursor[1]), line_end)
+            
+            # Ensure the line has enough characters up to the cursor column by padding with spaces.
+            # This matches Terminus's robust cursor-positioning strategy and avoids clamping.
+            col = int(cursor[1])
+            line_len = line_end - line_start
+            if line_len < col:
+                padding = " " * (col - line_len)
+                view.insert(edit, line_end, padding)
+                line_end = view.line(line_start).b
+                
+            pos = min(line_start + col, line_end)
             sel = view.sel()
             sel.clear()
             sel.add(sublime.Region(pos, pos))
@@ -2428,7 +2637,7 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
                 if term is not None:
                     term._last_vp_y = view.viewport_position()[1]
         else:
-            view.run_command("move_to", {"to": "eof"})
+            view.sel().clear()
             if do_follow and not content_fits:
                 _scroll_to_bottom(view)
                 if term is not None:
