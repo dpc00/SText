@@ -1,4 +1,4 @@
-"""ai_terminal.py -- bare-bones owned terminal for the Claude CLI.
+﻿"""ai_terminal.py -- bare-bones owned terminal for the Claude CLI.
 
 Replaces the Terminus dependency for AI launch. No third-party packages: pure
 ctypes against the Windows ConPTY (Pseudoconsole) API, plus a small cursor-aware
@@ -37,7 +37,7 @@ from functools import lru_cache
 import sublime
 import sublime_plugin
 
-# ─── ctypes ConPTY binding (guarded: a failure must not crash PluginLoader.py) ─────
+# ΓöÇΓöÇΓöÇ ctypes ConPTY binding (guarded: a failure must not crash PluginLoader.py) ΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 _PTY_OK = False
 _k32 = None
@@ -143,7 +143,7 @@ if os.name == "nt":
         _PTY_OK = False
 
 
-# ─── _Pty: ConPTY child process ───────────────────────────────────────────────
+# ΓöÇΓöÇΓöÇ _Pty: ConPTY child process ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 
 class _Pty:
@@ -410,7 +410,7 @@ class _WinptyPty:
             self._proc = None
 
 
-# ─── colour: 16-colour palette + SGR attr model ──────────────────────────────
+# ΓöÇΓöÇΓöÇ colour: 16-colour palette + SGR attr model ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 # The parser quantizes every SGR colour (16/256/truecolour) down to a 16-colour
 # id and packs (fg, bg, bold, reverse) into one int per cell. The renderer maps
 # each non-default cell to a scope in ai_terminal.sublime-color-scheme and
@@ -716,7 +716,7 @@ def _rstrip_cells(cells):
     return cells[:end]
 
 
-# ─── plugin settings (ai_terminal.sublime-settings) ──────────────────────────
+# ΓöÇΓöÇΓöÇ plugin settings (ai_terminal.sublime-settings) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 # User-tunable knobs read from a settings file so they can be changed without
 # editing source: scrollback history size (the minimap-fill knob -- retune by
 # eye against the minimap) and min/max terminal columns (floor/ceiling on the
@@ -828,7 +828,7 @@ def _on_settings_change():
     _settings_debug_log("<<< _on_settings_change FINISHED")
 
 
-# ─── _Screen: cursor-aware grid ──────────────────────────────────────────────
+# ΓöÇΓöÇΓöÇ _Screen: cursor-aware grid ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 # Cells carry a packed colour attr alongside the char; the renderer coalesces
 # equal-attr runs into add_regions. The cursor-aware layout is what removes the
 # Terminus gutter/width bugs.
@@ -904,28 +904,14 @@ class _Screen:
         when the user edits scrollback_history_size -- NOT from resize, so a
         window shrink does not silently drop history (the bug that got
         auto-sizing reverted)."""
-        _settings_debug_log(f"    [set_history_cap] ENTER: cap={cap}, current_maxlen={self.history.maxlen}, current_len={len(self.history)}")
-        try:
-            cap = max(0, int(cap))
-            if cap == self.history.maxlen:
-                _settings_debug_log("    [set_history_cap] RETURN: cap matches current maxlen, returning early.")
-                return
-            _settings_debug_log(f"    [set_history_cap] Swapping deque to new maxlen={cap}...")
-            self.history = collections.deque(self.history, maxlen=cap)
-            _settings_debug_log(f"    [set_history_cap] Swapped. New len={len(self.history)}, maxlen={self.history.maxlen}")
-        except Exception as e:
-            _settings_debug_log(f"    [set_history_cap] ERROR: {e}\n{traceback.format_exc()}")
-            raise
+        cap = max(0, int(cap))
+        if cap == self.history.maxlen:
+            return
+        self.history = collections.deque(self.history, maxlen=cap)
 
     def _scroll_up(self):
         popped = [(self.grid[0][c], self.attrs[0][c]) for c in range(self.cols)]
-        _settings_debug_log(f"    [_scroll_up] ENTER: len(history) before append={len(self.history)}")
-        try:
-            self.history.append(_rstrip_cells(popped))
-            _settings_debug_log(f"    [_scroll_up] SUCCESS: len(history) after append={len(self.history)}")
-        except Exception as e:
-            _settings_debug_log(f"    [_scroll_up] ERROR during append: {e}\n{traceback.format_exc()}")
-            raise
+        self.history.append(_rstrip_cells(popped))
         self.grid.pop(0)
         self.attrs.pop(0)
         self.grid.append([_BLANK] * self.cols)
@@ -1081,17 +1067,11 @@ class _Screen:
                 grid_rows.append(_rstrip_cells(cells))
         if self.alt_screen:
             return grid_rows, cy_in_grid, cx, self.cursor_visible
-        _settings_debug_log(f"    [render_cells] ENTER: listing self.history (len={len(self.history)})...")
-        try:
-            hist = list(self.history)
-            _settings_debug_log(f"    [render_cells] SUCCESS: listed {len(hist)} elements")
-        except Exception as e:
-            _settings_debug_log(f"    [render_cells] ERROR during list(self.history): {e}\n{traceback.format_exc()}")
-            raise
+        hist = list(self.history)
         return hist + grid_rows, len(hist) + cy_in_grid, cx, self.cursor_visible
 
 
-# ─── _Parser: minimal ANSI state machine (Claude ratatui subset) ─────────────
+# ΓöÇΓöÇΓöÇ _Parser: minimal ANSI state machine (Claude ratatui subset) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 _GROUND, _ESC, _CSI, _OSC = 0, 1, 2, 3
 
@@ -1323,7 +1303,7 @@ class _Parser:
         # P, @, L, M, r, and any other finals: consumed-and-dropped.
 
 
-# ─── _Terminal: per-view owner + registry ────────────────────────────────────
+# ΓöÇΓöÇΓöÇ _Terminal: per-view owner + registry ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 _TERMINALS = {}
 _REG_LOCK = threading.Lock()
@@ -1484,8 +1464,8 @@ class _Terminal:
         # 2. Trigger Flood Guard if throughput exceeds 150 KB/s
         if self._bytes_in_window > 150 * 1024 and not self._flood_mode:
             self._flood_mode = True
-            sublime.set_timeout(lambda: self.view.set_status("flood_guard", "⚠️ FLOOD SHIELD ACTIVATED"), 0)
-            print("[ai_terminal] ⚠️ FLOOD SHIELD ACTIVATED: High-throughput stream detected. Suspending UI renders to prevent editor freeze.")
+            sublime.set_timeout(lambda: self.view.set_status("flood_guard", "ΓÜá∩╕Å FLOOD SHIELD ACTIVATED"), 0)
+            print("[ai_terminal] ΓÜá∩╕Å FLOOD SHIELD ACTIVATED: High-throughput stream detected. Suspending UI renders to prevent editor freeze.")
 
         if self._flood_mode:
             # Under flood: record the asciicast (cheap/fast) but bypass expensive pyte parser & UI rendering
@@ -1523,7 +1503,7 @@ class _Terminal:
                 self._flood_mode = False
                 self._bytes_in_window = 0
             sublime.set_timeout(lambda: self.view.erase_status("flood_guard"), 0)
-            print("[ai_terminal] ✅ FLOOD SHIELD DEACTIVATED: Stream settled. Re-aligning view.")
+            print("[ai_terminal] Γ£à FLOOD SHIELD DEACTIVATED: Stream settled. Re-aligning view.")
             # Trigger a clean screen render of the final state
             _schedule_render(self)
 
@@ -1748,7 +1728,7 @@ class _Terminal:
             print(f"[ai_terminal] kill error: {e}")
 
 
-# ─── view helpers ─────────────────────────────────────────────────────────────
+# ΓöÇΓöÇΓöÇ view helpers ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 _VIEW_NAME = "Terminal"
 _VIEW_SETTING = "ai_terminal_view"
@@ -1919,7 +1899,7 @@ def _measure(view):
     return cols, rows
 
 
-# ─── debounced renderer ──────────────────────────────────────────────────────
+# ΓöÇΓöÇΓöÇ debounced renderer ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 _RENDER_MS = 40
 
@@ -1980,7 +1960,7 @@ def _build_text_and_regions(rows):
         offset += 1
     if parts and parts[-1] == "\n":
         parts.pop()
-    text = "".join(parts).replace(" ", " ")
+    text = "".join(parts).replace("┬á", " ")
     return text, regs
 
 
@@ -2019,7 +1999,7 @@ def _apply_color_regions(view, regs):
     _LAST_COLOR_KEYS[vid] = used
 
 
-# ─── debug logging ────────────────────────────────────────────────────────────
+# ΓöÇΓöÇΓöÇ debug logging ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 _DEBUG = bool(os.environ.get("AI_TERMINAL_DEBUG"))
 _DEBUG_PATH = r"C:\Users\donal\data\logs\ai_terminal_raw_ansi_stream_debug_logs"
@@ -2046,7 +2026,7 @@ def _debug_log(data):
         pass
 
 
-# ─── view event listener: keystroke forwarding + lifecycle ───────────────────
+# ΓöÇΓöÇΓöÇ view event listener: keystroke forwarding + lifecycle ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 
 class AiTerminalViewListener(sublime_plugin.ViewEventListener):
@@ -2149,7 +2129,7 @@ class AiTerminalViewListener(sublime_plugin.ViewEventListener):
             _TERMINALS.pop(self.view.id(), None)
         threading.Thread(target=term.kill, daemon=True).start()
 
-    # ─── pre-empt ST's internal view.show on focus/hover ───────────────────
+    # ΓöÇΓöÇΓöÇ pre-empt ST's internal view.show on focus/hover ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     #
     # ST's compositor repaints the view on Windows activation messages
     # (WM_ACTIVATE / WM_KILLFOCUS) and on hover, and briefly paints at a stale
@@ -2207,7 +2187,7 @@ class AiTerminalKeyInterceptor(sublime_plugin.EventListener):
         return None
 
 
-# ─── commands ────────────────────────────────────────────────────────────────
+# ΓöÇΓöÇΓöÇ commands ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 
 def _resolve_editor_path(view):
@@ -2312,7 +2292,7 @@ def _spawn(window, path, profile=None):
 class AiTerminalOpenHereCommand(sublime_plugin.WindowCommand):
     """Open a Claude TUI terminal in the chosen directory.
 
-    Menu: Side Bar.sublime-menu — "Open Ai Terminal here..."
+    Menu: Side Bar.sublime-menu ΓÇö "Open Ai Terminal here..."
     Command palette: "Ai: Open Terminal Here"
     """
 
@@ -2330,7 +2310,7 @@ class AiTerminalOpenHereCommand(sublime_plugin.WindowCommand):
 class AiTerminalOpenInEditorCommand(sublime_plugin.TextCommand):
     """Open a Claude TUI terminal in this file's directory.
 
-    Menu: Context.sublime-menu / Tab Context.sublime-menu — "Open Ai Terminal here..."
+    Menu: Context.sublime-menu / Tab Context.sublime-menu ΓÇö "Open Ai Terminal here..."
     Command palette: "Ai: Open Terminal in Editor"
     """
 
@@ -2383,7 +2363,7 @@ class AiTerminalSendStringCommand(sublime_plugin.TextCommand):
             term.send_string(string)
 
 
-# ─── key -> byte translation (ported from Terminus key.py) ───────────────────
+# ΓöÇΓöÇΓöÇ key -> byte translation (ported from Terminus key.py) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 #
 # ST does NOT fire on_text_command for unbound printable keys: they take a direct
 # text-input path that bypasses the command system, so typed letters never
@@ -2650,12 +2630,12 @@ class AiTerminalNukeCommand(sublime_plugin.TextCommand):
     """Clear the view and reset the terminal screen (terminus_nuke equivalent).
 
     Key binding: ctrl+alt+k (context: setting.ai_terminal_view == true).
-    Menu: Main.sublime-menu → Tools → Ai Utilities — "Nuke Ai Terminal".
+    Menu: Main.sublime-menu ΓåÆ Tools ΓåÆ Ai Utilities ΓÇö "Nuke Ai Terminal".
     Command palette: "Ai: Nuke Ai Terminal".
     """
 
     def is_enabled(self):
-        # Gate so the menu item greys out outside an ai_terminal view —
+        # Gate so the menu item greys out outside an ai_terminal view ΓÇö
         # run() would otherwise blank any active file view.
         return bool(self.view.settings().get("ai_terminal_view"))
 
@@ -2703,7 +2683,7 @@ class AiTerminalDumpScreenCommand(sublime_plugin.TextCommand):
                 print(f"     {marks}|  (attrs: * = non-default)")
 
 
-# ─── resize poller + lifecycle ───────────────────────────────────────────────
+# ΓöÇΓöÇΓöÇ resize poller + lifecycle ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 _POLL_MS = 750
 _poll_token = None
@@ -2734,7 +2714,7 @@ def _poll_loop():
     _poll_token = sublime.set_timeout(_poll_loop, _POLL_MS)
 
 
-# ─── viewport clamp ───────────────────────────────────────────────────────────
+# ΓöÇΓöÇΓöÇ viewport clamp ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 #
 # ST's view.show() overshoots to a NEGATIVE viewport y (e.g. vp[1]=-20) when
 # content fits the viewport -- it tries to "nicely" position the caret and
@@ -2819,6 +2799,6 @@ def plugin_unloaded():
     # Deliberately do NOT kill ConPTY children on unload.  The terminal
     # process may be opencode itself (or another long-running CLI agent);
     # killing it here means a plugin reload triggered by the agent's own
-    # file deployment will murder the agent mid-session — an unrecoverable
+    # file deployment will murder the agent mid-session ΓÇö an unrecoverable
     # crash with no error log.  The children are owned by this ST instance
     # and will be cleaned up when ST itself exits.

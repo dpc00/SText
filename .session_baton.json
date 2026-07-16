@@ -1,0 +1,26 @@
+{
+  "task": "Fix ST freeze on first prompt when launching 'Ollama (OpenCode)' profile in ai_terminal",
+  "status": "Partially resolved",
+  "date": "2026-07-16",
+  "resolved": [
+    "Removed _settings_debug_log disk-logging calls from render_cells, _scroll_up, set_history_cap (hot paths firing every 40ms, each doing open/write/close to disk)",
+    "Found and fixed stale second copy of ai_terminal.py at Packages/User/ai/ai_terminal.py that was overriding the fixed copy"
+  ],
+  "unresolved": [
+    "Target bug: 'Ollama (OpenCode)' profile launches opencode but there is a separate target/task bug the user wants addressed later"
+  ],
+  "files_in_scope": [
+    "ai/ai_terminal.py",
+    "ai_terminal.sublime-settings",
+    "Packages/User/ai_terminal.py (deployed)",
+    "Packages/User/ai/ai_terminal.py (second deployed copy)",
+    "Packages/User/ai_terminal.sublime-settings (deployed)"
+  ],
+  "key_facts": [
+    "Profile 'Ollama (OpenCode)' uses launch_command ['ollama', 'launch', 'opencode'] with CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1",
+    "opencode sends 118x45 full-screen truecolor frames via ANSI",
+    "Two deployed copies of ai_terminal.py exist: Packages/User/ and Packages/User/ai/ — BOTH must be updated on any change",
+    "Last known-good git commit: e10cd76 (July 15 20:35) — but it still had the debug logging bug",
+    "Debug logging was introduced in f5b8aec (July 10 17:55)"
+  ]
+}
