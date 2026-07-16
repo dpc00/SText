@@ -1,17 +1,16 @@
 """ai_log_server.py — hook-fed conversation logger.
 
-Receives Claude hook events via HTTP POST (Claude itself POSTs each
-event here — no JSONL tailing), and writes two formats to ~/data/logs/:
+Receives agent hook events via HTTP POST (Claude Code, Gemini, opencode
+POST each event here), and writes a clean human-readable markdown log
+to ~/data/logs/<date>.md: turns, collapsed tool calls, final text.
 
-  events_<date>.jsonl   — every event, raw, one JSON line per event (archive / machine)
-  <date>.md             — clean human render: turns, collapsed tool calls, final text
-
-This is the "correct" logging path: data straight from Claude's mouth.
+This is the "correct" logging path: data straight from the agent's mouth.
 """
 import datetime
 import json
 import os
 import sys
+import time
 import threading
 import http.server
 import socketserver
@@ -34,6 +33,9 @@ if sys.stderr is None:
 _lock = threading.Lock()
 # session_id -> turn buffer
 _sessions = {}
+# dedup: (sid, event_name, second-precision ts) seen recently
+_recent_events = {}
+_DEDUP_TTL = 5.0  # seconds
 
 
 def _date():
@@ -46,11 +48,6 @@ def _ts():
 
 def _md_path():
     return os.path.join(OUT, f"{_date()}.md")
-
-
-def _append_jsonl(ev, recv_ts):
-    # disabled: user explicitly requested no events_*.jsonl files cluttering their logs directory
-    pass
 
 
 def _md_header_if_new():
@@ -475,9 +472,25 @@ class H(http.server.BaseHTTPRequestHandler):
             if "session_id" not in ev:
                 ev["session_id"] = ev.get("session_id") or ev.get("session_info", {}).get("session_id") or "_"
 
-            _append_jsonl(ev, recv)
             name = ev.get("hook_event_name", "")
             sid = ev.get("session_id", "_")
+            # Dedup: drop identical ambient events (same sid+name within 1s).
+            # Tool events (PreToolUse/PostToolUse) are NOT deduped -- they carry
+            # unique tool_use_ids and parallel calls can share a name+second.
+            if name in ("InstructionsLoaded", "SessionEnd", "SessionStart",
+                        "Setup", "Notification", "ConfigChange", "CwdChanged"):
+                dedup_key = (sid, name, recv.strftime("%Y%m%d%H%M%S"))
+                now = time.time()
+                with _lock:
+                    last_ts = _recent_events.get(dedup_key)
+                    if last_ts and (now - last_ts) < _DEDUP_TTL:
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(b"{}")
+                        return
+                    _recent_events[dedup_key] = now
             with _lock:
                 if name == "UserPromptSubmit":
                     if sid in _sessions:
@@ -573,288 +586,12 @@ class H(http.server.BaseHTTPRequestHandler):
                 pass
 
 
-def rebuild_from_jsonl(date_str):
-    """
-    Rebuilds <date_str>.md from events_<date_str>.jsonl by grouping events by session_id,
-    reconstructing each session's turns separately, and then merging them chronologically.
-    """
-    import collections
-    jsonl_file = os.path.join(OUT, f"events_{date_str}.jsonl")
-    md_file = os.path.join(OUT, f"{date_str}.md")
-    
-    if not os.path.exists(jsonl_file):
-        print(f"No JSONL file found for {date_str} at {jsonl_file}")
-        return
-        
-    print(f"Rebuilding {md_file} from {jsonl_file} by grouping sessions...")
-    
-    # Read all raw events
-    events = []
-    with open(jsonl_file, "r", encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            try:
-                ev = json.loads(line)
-                events.append(ev)
-            except Exception:
-                pass
-                
-    # Sort globally by ts
-    events.sort(key=lambda x: x.get("ts", ""))
-    
-    # Group events by session_id
-    sessions_events = collections.defaultdict(list)
-    for ev in events:
-        sid = ev.get("session_id", "_")
-        sessions_events[sid].append(ev)
-        
-    # We will reconstruct the turns for each session separately
-    all_sessions_markdown = []
-    
-    for sid, sess_evs in sessions_events.items():
-        # Temporary sessions state for this specific sid
-        sess_state = {}
-        sess_turns = []
-        
-        # Track agent names/display dynamically for this session
-        agent_info = {"name": "Claude", "display": "Claude Code"}
-        if sid == "opencode":
-            agent_info = {"name": "OpenCode", "display": "OpenCode CLI"}
-        elif sid == "openclaw":
-            agent_info = {"name": "OpenClaw", "display": "OpenClaw CLI"}
-        elif sid == "qwen":
-            agent_info = {"name": "Qwen", "display": "Qwen CLI"}
-            
-        def flush_sess_turn():
-            if sid not in sess_state:
-                return
-            sess = sess_state.pop(sid)
-            start = sess.get("start")
-            out = []
-            out.append(f"### {start.strftime('%H:%M:%S')}  ▸ You")
-            if sess.get("prompt"):
-                out.append(sess["prompt"])
-            out.append("")
-            
-            ts_cands = []
-            if sess.get("first_tool_ts"):
-                ts_cands.append(sess["first_tool_ts"])
-            for e in sess.get("extras", []):
-                if e.get("ts"):
-                    ts_cands.append(e["ts"])
-            claude_ts = min(ts_cands) if ts_cands else start
-            
-            # Determine agent name based on current session
-            agent_name = agent_info["name"]
-            out.append(f"### {claude_ts.strftime('%H:%M:%S')}  {agent_name}")
-            
-            # merge tool calls and ambient extras by timestamp so the log is chronological
-            tools = sess.get("tools", [])
-            extras = sess.get("extras", [])
-            
-            if tools:
-                from collections import Counter
-                counts = Counter()
-                denied = 0
-                failed = 0
-                for t in tools:
-                    tname = _map_tool_name(t["name"])
-                    if not t.get("post"):
-                        denied += 1
-                    elif t.get("err"):
-                        failed += 1
-                    counts[tname] += 1
-                parts = [f"{count}x {name}" for name, count in sorted(counts.items(), key=lambda x: (-x[1], x[0]))]
-                summary = "  ⚙ Tools: " + ", ".join(parts)
-                extra_info = []
-                if failed:
-                    extra_info.append(f"{failed} failed")
-                if denied:
-                    extra_info.append(f"{denied} denied")
-                if extra_info:
-                    summary += f"  ({'; '.join(extra_info)})"
-                out.append(summary)
-
-            # Chronologically print only extras
-            extras.sort(key=lambda x: x.get("ts") or start)
-            for e in extras:
-                out.append(f"  {e['glyph']} {e['name']}" + (f"   {e['text']}" if e.get("text") else "").rstrip())
-            if sess.get("stop_msg"):
-                out.append("")
-                out.append(sess["stop_msg"])
-            out.append("")
-            foot = []
-            stop_ts = sess.get("stop_ts")
-            if stop_ts and start:
-                foot.append(f"{(stop_ts - start).total_seconds():.1f}s")
-            if sess.get("stop_reason") and sess["stop_reason"] != "end_turn":
-                foot.append(sess["stop_reason"])
-            if foot:
-                out.append("  — " + "  ·  ".join(foot))
-                out.append("")
-            
-            sess_turns.append((start, "\n".join(out)))
-
-        for ev in sess_evs:
-            name = ev.get("hook_event_name", "")
-            
-            # Check transcript_path to dynamically resolve agent identity
-            tpath = ev.get("transcript_path")
-            if tpath and isinstance(tpath, str):
-                if ".gemini" in tpath:
-                    agent_info = {"name": "Gemini", "display": "Gemini CLI"}
-                elif ".claude" in tpath:
-                    agent_info = {"name": "Claude", "display": "Claude Code"}
-                elif ".openclaw" in tpath:
-                    agent_info = {"name": "OpenClaw", "display": "OpenClaw CLI"}
-                elif ".qwen" in tpath:
-                    agent_info = {"name": "Qwen", "display": "Qwen CLI"}
-                elif "opencode" in tpath:
-                    agent_info = {"name": "OpenCode", "display": "OpenCode CLI"}
-            
-            ts_str = ev.get("ts", "")
-            try:
-                h, m, s_part = ts_str.split(":")
-                sec, ms = s_part.split(".")
-                y, mo, d = map(int, date_str.split("-"))
-                recv = datetime.datetime(y, mo, d, int(h), int(m), int(sec), int(ms) * 1000)
-            except Exception:
-                recv = datetime.datetime.now()
-                
-            if name == "UserPromptSubmit":
-                if sid in sess_state:
-                    flush_sess_turn()
-                sess_state[sid] = {
-                    "prompt": ev.get("prompt", ""),
-                    "start": recv,
-                    "tools": [],
-                    "extras": [],
-                }
-            elif name == "PreToolUse":
-                s = sess_state.setdefault(sid, {"prompt": "", "start": recv, "tools": [], "extras": []})
-                s.setdefault("first_tool_ts", recv)
-                s["tools"].append({
-                    "name": ev.get("tool_name", "?"),
-                    "input": ev.get("tool_input"),
-                    "pre": recv,
-                    "id": ev.get("tool_use_id"),
-                })
-            elif name == "PostToolUse":
-                s = sess_state.get(sid)
-                if s:
-                    done_ts = recv
-                    tool_use_id = ev.get("tool_use_id")
-                    tool_name = ev.get("tool_name", "?")
-                    matched = False
-                    if tool_use_id:
-                        for t in s["tools"]:
-                            if t.get("id") == tool_use_id and not t.get("post"):
-                                t["post"] = done_ts
-                                t["err"] = False
-                                matched = True
-                                break
-                    if not matched:
-                        for t in s["tools"]:
-                            if t["name"] == tool_name and not t.get("post"):
-                                t["post"] = done_ts
-                                t["err"] = False
-                                break
-            elif name == "PostToolUseFailure":
-                s = sess_state.get(sid)
-                if s:
-                    done_ts = recv
-                    tool_use_id = ev.get("tool_use_id")
-                    tool_name = ev.get("tool_name", "?")
-                    matched = False
-                    if tool_use_id:
-                        for t in s["tools"]:
-                            if t.get("id") == tool_use_id and not t.get("post"):
-                                t["post"] = done_ts
-                                t["err"] = True
-                                matched = True
-                                break
-                    if not matched:
-                        for t in s["tools"]:
-                            if t["name"] == tool_name and not t.get("post"):
-                                t["post"] = done_ts
-                                t["err"] = True
-                                break
-            elif name == "Stop":
-                s = sess_state.get(sid)
-                if s:
-                    s["stop_ts"] = recv
-                    msg = ev.get("last_assistant_message") or ev.get("prompt_response") or ev.get("message") or ev.get("response") or ""
-                    if msg or not s.get("stop_msg"):
-                        s["stop_msg"] = msg
-                    s["stop_reason"] = ev.get("stop_reason", "")
-                if s and (s.get("stop_msg") or not s.get("tools")):
-                    flush_sess_turn()
-            elif name == "SessionEnd":
-                line = f"### {recv.strftime('%H:%M:%S')}  ◦ ⏹ SessionEnd"
-                text = _summarize_event("SessionEnd", ev)
-                if text:
-                    line += f"   {text}"
-                sess_turns.append((recv, line + "\n"))
-                sess_state.pop(sid, None)
-            else:
-                text = _summarize_event(name, ev)
-                if text is not None:
-                    s = sess_state.get(sid)
-                    if s is not None:
-                        s["extras"].append({
-                            "ts": recv,
-                            "glyph": _GLYPH.get(name, "•"),
-                            "name": name,
-                            "text": text,
-                        })
-                    else:
-                        line = f"### {recv.strftime('%H:%M:%S')}  ◦ {_GLYPH.get(name, '•')} {name}"
-                        if text:
-                            line += f"   {text}"
-                        sess_turns.append((recv, line + "\n"))
-                        
-        if sid in sess_state:
-            flush_sess_turn()
-            
-        if sess_turns:
-            sess_turns.sort(key=lambda x: x[0])
-            session_start_time = sess_turns[0][0]
-            
-            agent_display = agent_info["display"]
-            sess_md = []
-            sess_md.append(f"## ─── Session Start — {agent_display} ({sid}) ───")
-            sess_md.append("")
-            for _, turn_text in sess_turns:
-                sess_md.append(turn_text)
-            sess_md.append(f"## ─── Session End — {agent_display} ───\n")
-            
-            all_sessions_markdown.append((session_start_time, "\n".join(sess_md)))
-            
-    all_sessions_markdown.sort(key=lambda x: x[0])
-    
-    if os.path.exists(md_file):
-        os.remove(md_file)
-        
-    with open(md_file, "w", encoding="utf-8", errors="replace") as f:
-        f.write(f"# AI log — {date_str}\n\n")
-        for _, sess_md_text in all_sessions_markdown:
-            f.write(sess_md_text + "\n")
-            
-    print(f"Rebuild completed successfully for {date_str}! All CLI sessions separated and restored!")
-
-
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--rebuild", help="Rebuild markdown log for a specific date (YYYY-MM-DD)")
     parser.add_argument("--port", type=int, default=PORT, help="Port to listen on")
     args = parser.parse_args()
-    
-    if args.rebuild:
-        rebuild_from_jsonl(args.rebuild)
-        sys.exit(0)
-        
+
     socketserver.TCPServer.allow_reuse_address = True
     try:
         with socketserver.ThreadingTCPServer(("127.0.0.1", args.port), H) as s:

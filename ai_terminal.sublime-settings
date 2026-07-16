@@ -25,6 +25,14 @@
     // Extra pixel-width for caret line drawing. Default 2.
     "caret_extra_width": 2,
 
+    // Font for the terminal view only (overrides the global font_face for
+    // ai_terminal tabs). Must be a monospace font with full box-drawing
+    // (U+2500-U+257F), block-element (U+2580-U+259F), and miscellaneous
+    // TUI symbol coverage (U+23BF, U+23F8, U+2733, U+273B, U+2802, U+2B1D).
+    // "Cascadia Code" ships with Windows 10+ and has all of these.
+    // Set to null to inherit the global font_face.
+    "terminal_font": "Cascadia Code",
+
     // Floor and ceiling on the auto-sized terminal width in characters.
     // cols is computed from the viewport width; min_columns is the lower
     // bound, max_columns caps it (null = no cap). The renderer's no-horizontal-
@@ -39,7 +47,7 @@
     "force_main_screen": true,
 
     // The default profile to run if no profile name is explicitly requested
-    "default_profile": "Gemini",
+    "default_profile": "Ollama (OpenCode)",
 
     // Configured terminal/shell profiles for SText.
     // This allows SText to work as a multi-console terminal launcher.
@@ -56,8 +64,8 @@
                 "GEMINI_SYSTEM_MD":"C:\\Users\\donal\\projects\\SText\\ai_sdk_prompt.md",
             }
         },
-        "Claude (Local Ollama)": {
-            "launch_command": ["ollama", "launch", "claude"],
+        "Ollama (OpenCode)": {
+            "launch_command": ["ollama", "launch", "opencode"],
             "spawn_env": { // needs more parameters at the moment mostly get from comments at old spawn env
                 "AI_TERMINAL_LOG_LINES": "1",
                 "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
@@ -71,6 +79,16 @@
                 // "GOOGLE_CLOUD_LOCATION":"global",
                 // "GOOGLE_CLOUD_PROJECT":"project-67efc385-8bb5-493f-a81",
                 // "GOOGLE_PROJECT_NUMBER":"782908338549",
+            }
+        },
+        "Ollama (OpenCode Mini)": {
+            "launch_command": ["ollama", "launch", "opencode", "--", "--mini"],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
+                "ANTHROPIC_AUTH_TOKEN":"ollama",
+                "ANTHROPIC_API_KEY":"",
+                "ANTHROPIC_BASE_URL":"http://localhost:11434",
             }
         },
         "Claude (Direct Anthropic)": {
