@@ -61,19 +61,21 @@
             "spawn_env": { // needs more parameters at the moment mostly get from comments at old spawn env
                 "AI_TERMINAL_LOG_LINES": "1",
                 "ANTHROPIC_MODEL": "claude-sonnet-5",
-                "ANTHROPIC_VERTEX_PROJECT_ID": "project-67efc385-8bb5-493f-a81",
+                // "ANTHROPIC_VERTEX_PROJECT_ID": "project-67efc385-8bb5-493f-a81",
                 "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
-                "CLAUDE_CODE_USE_VERTEX": "1",
-                "CLOUD_ML_REGION": "global",
-                "GOOGLE_CLOUD_LOCATION":"global",
-                "GOOGLE_CLOUD_PROJECT":"project-67efc385-8bb5-493f-a81",
-                "GOOGLE_PROJECT_NUMBER":"782908338549",
+                // "CLAUDE_CODE_USE_VERTEX": "1",
+                // "CLOUD_ML_REGION": "global",
+                // "GOOGLE_CLOUD_LOCATION":"global",
+                //"GOOGLE_CLOUD_PROJECT":"project-67efc385-8bb5-493f-a81",
+                // "GOOGLE_PROJECT_NUMBER":"782908338549",
+                "OLLAMA_MODEL":"glm-4-flash:cloud"
             }
         },
         "Claude (Direct Anthropic)": {
             "launch_command": ["claude", "--chrome"],
             "spawn_env": {
-                "AI_TERMINAL_LOG_LINES": "1",
+                "4-flashTERMINA
+                            ": "1",
                 "CLAUDE_CODE_AI_TERMINAL_SENTINEL": "propagated",
                 "OLLAMA_MODEL":"glm-5.2:cloud"
             }
