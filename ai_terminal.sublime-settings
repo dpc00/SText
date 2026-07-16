@@ -57,12 +57,12 @@
             }
         },
         "Claude (Local Ollama)": {
-            "launch_command": ["cmd", "/c", "ollama", "launch", "claude"],
+            "launch_command": ["ollama", "launch", "claude"],
             "spawn_env": { // needs more parameters at the moment mostly get from comments at old spawn env
                 "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
                 // "ANTHROPIC_MODEL": "claude-sonnet-5",
                 // "ANTHROPIC_VERTEX_PROJECT_ID": "project-67efc385-8bb5-493f-a81",
-                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
                 // "CLAUDE_CODE_USE_VERTEX": "1",
                 // "CLOUD_ML_REGION": "global",
                 // "GOOGLE_CLOUD_LOCATION":"global",
