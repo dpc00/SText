@@ -1,10 +1,11 @@
 {
   "task": "Fix ST freeze on first prompt when launching 'Ollama (OpenCode)' profile in ai_terminal",
   "status": "Partially resolved",
-  "date": "2026-07-16",
+  "date": "2026-07-17",
   "resolved": [
     "Removed _settings_debug_log disk-logging calls from render_cells, _scroll_up, set_history_cap (hot paths firing every 40ms, each doing open/write/close to disk)",
-    "Found and fixed stale second copy of ai_terminal.py at Packages/User/ai/ai_terminal.py that was overriding the fixed copy"
+    "Found and fixed stale second copy of ai_terminal.py at Packages/User/ai/ai_terminal.py that was overriding the fixed copy",
+    "Removed stray duplicate ai_terminal.py at Packages/User/ai_terminal.py (byte-identical to canonical, but caused double plugin load as 'ai_terminal' + 'ai.ai_terminal' -> double event listeners, likely freeze contributor). Cleared its stale __pycache__ entry. Canonical location is now sole copy: User/ai/ai_terminal.py (matches PluginLoader.py imports 'from User.ai.ai_terminal')"
   ],
   "unresolved": [
     "Target bug: 'Ollama (OpenCode)' profile launches opencode but there is a separate target/task bug the user wants addressed later"
@@ -12,14 +13,14 @@
   "files_in_scope": [
     "ai/ai_terminal.py",
     "ai_terminal.sublime-settings",
-    "Packages/User/ai_terminal.py (deployed)",
-    "Packages/User/ai/ai_terminal.py (second deployed copy)",
-    "Packages/User/ai_terminal.sublime-settings (deployed)"
+    "Packages/User/ai/ai_terminal.py (canonical deployed copy)",
+    "Packages/User/ai_terminal.sublime-settings (deployed)",
+    "PluginLoader.py"
   ],
   "key_facts": [
     "Profile 'Ollama (OpenCode)' uses launch_command ['ollama', 'launch', 'opencode'] with CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1",
     "opencode sends 118x45 full-screen truecolor frames via ANSI",
-    "Two deployed copies of ai_terminal.py exist: Packages/User/ and Packages/User/ai/ — BOTH must be updated on any change",
+    "PluginLoader.py:66 imports from User.ai.ai_terminal; canonical deploy path is User/ai/ai_terminal.py (NOT User root)",
     "Last known-good git commit: e10cd76 (July 15 20:35) — but it still had the debug logging bug",
     "Debug logging was introduced in f5b8aec (July 10 17:55)"
   ]
