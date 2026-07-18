@@ -1281,9 +1281,9 @@ class _Parser:
             s.move_abs(s.y, (p[0] if p and p[0] else 1) - 1)
         elif final == "d":  # VPA -- vertical position absolute
             s.move_abs((p[0] if p and p[0] else 1) - 1, s.x)
-        elif final == "s":
+        elif final == "s" and not priv:
             s.save_cursor()
-        elif final == "u":
+        elif final == "u" and not priv:
             s.restore_cursor()
         elif final in ("h", "l"):  # set / reset mode (private: 1049/2004/mouse/sync)
             if priv and "1049" in self.params:
