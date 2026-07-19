@@ -42,27 +42,28 @@ if getattr(sys, "_stext_plugin_loader_loaded", False):
 # Mark that SText has successfully loaded for the first time in this session
 sys._stext_plugin_loader_loaded = True
 
-from User.ai.ai_sdk import (
-    AiSdkViewListener,
-    AiSdkKeyInterceptor,
-    AiSdkReplaceCommand,
-    AiSdkFocusCommand,
-    AiSdkSubmitCommand,
-    AiSdkNoopCommand,
-    AiSdkStopCommand,
-    AiSdkClearCommand,
-    AiSdkOpenHereCommand,
-    AiSdkOpenInEditorCommand,
-)
-from User.ai.ai_hub import AiHubOpenCommand, AiHubRefreshCommand, AiHubStatusListener
-from User.ai.ai_tab_manager import (
-    AiTrimNowCommand,
-    AiDumpBufferCommand,
-    AiListSessionsCommand,
-    AiSearchConversationsCommand,
-    AiQuitFlaskAppsCommand,
-    AiEventListener,
-)
+if False:
+    from User.ai.ai_sdk import (
+        AiSdkViewListener,
+        AiSdkKeyInterceptor,
+        AiSdkReplaceCommand,
+        AiSdkFocusCommand,
+        AiSdkSubmitCommand,
+        AiSdkNoopCommand,
+        AiSdkStopCommand,
+        AiSdkClearCommand,
+        AiSdkOpenHereCommand,
+        AiSdkOpenInEditorCommand,
+    )
+    from User.ai.ai_hub import AiHubOpenCommand, AiHubRefreshCommand, AiHubStatusListener
+    from User.ai.ai_tab_manager import (
+        AiTrimNowCommand,
+        AiDumpBufferCommand,
+        AiListSessionsCommand,
+        AiSearchConversationsCommand,
+        AiQuitFlaskAppsCommand,
+        AiEventListener,
+    )
 from User.ai.ai_terminal import (
     AiTerminalOpenHereCommand,
     AiTerminalOpenInEditorCommand,
@@ -202,7 +203,7 @@ def plugin_unloaded():
 # user-visible signal that the module is alive.
 _PLUGIN_LOADED_MODULES = [
     "User.logs.ai_logger",          # 60s screenshot capture + JSONL logging
-    "User.ai.ai_sdk",              # no-op today; wired for parity + future work
+    # "User.ai.ai_sdk",              # no-op today; wired for parity + future work
     "User.ai.ai_terminal",          # ConPTY Claude terminal; start resize poller
     "User.ai.ai_tab_manager",       # prints "loaded" + ensures log dir exists
     "User.ai.panic_dialog",         # restore panic-dialog phantoms after reload
@@ -213,7 +214,7 @@ _PLUGIN_LOADED_MODULES = [
 # fire for users.
 _PLUGIN_UNLOADED_MODULES = [
     "User.logs.ai_logger",          # flush JSONL + save state
-    "User.ai.ai_sdk",              # stop AI(SDK) server + bridge
+    # "User.ai.ai_sdk",              # stop AI(SDK) server + bridge
     "User.ai.ai_terminal",          # kill all live ConPTY children
     "User.ai.ai_tab_manager",       # prints "unloaded"
     "User.config.settings_editor",  # stop HTTP server (port 57324)

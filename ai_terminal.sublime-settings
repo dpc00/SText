@@ -100,6 +100,20 @@
                 "OLLAMA_MODEL":"glm-5.2:cloud"
             }
         },
+        "OpenCode (Local Qwen2.5 - FREE)": {
+            "launch_command": ["ollama", "launch", "opencode", "--model", "qwen2.5:7b"],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+            }
+        },
+        "OpenCode (GLM-5.2 Cloud - uses Ollama Pro quota)": {
+            "launch_command": ["ollama", "launch", "opencode", "--model", "glm-5.2:cloud"],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+            }
+        },
         "Command Prompt": {
             "launch_command": ["cmd.exe"],
             "spawn_env": {}
