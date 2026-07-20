@@ -53,7 +53,7 @@
     // This allows SText to work as a multi-console terminal launcher.
     "profiles": {
         "Ollama (OpenCode)": {
-            "launch_command": ["ollama", "launch", "opencode","--model","deepseek-v4-flash:cloud"],
+            "launch_command": ["ollama", "launch", "opencode"],
             "spawn_env": { // needs more parameters at the moment mostly get from comments at old spawn env
                 // "AI_TERMINAL_LOG_LINES": "1",
                 // "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
@@ -79,27 +79,27 @@
                 // "ANTHROPIC_BASE_URL":"http://localhost:11434",
             }
         },
-        "Gemini": {
-            "launch_command": ["gemini.cmd"],
-            "spawn_env": {
-                "AI_TERMINAL_LOG_LINES": "1",
-                "GEMINI_PROMPT_QUEUE": "false",
-                "GEMINI_API_KEY": "",
-                "GOOGLE_CLOUD_LOCATION":"global",
-                "GOOGLE_CLOUD_PROJECT":"project-67efc385-8bb5-493f-a81",
-                "GOOGLE_PROJECT_NUMBER":"782908338549",
-                "GEMINI_SYSTEM_MD":"C:\\Users\\donal\\projects\\SText\\ai_sdk_prompt.md",
-            }
-        },
-        "Claude --chrome": {
-            "launch_command": ["claude", "--chrome"],
-            "spawn_env": {
-                "AI_TERMINAL_LOG_LINES": "1",
-                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
-                "CLAUDE_CODE_AI_TERMINAL_SENTINEL": "propagated",
-                // "OLLAMA_MODEL":"glm-5.2:cloud"
-            }
-        },
+        // "Gemini": {
+        //     "launch_command": ["gemini.cmd"],
+        //     "spawn_env": {
+        //         "AI_TERMINAL_LOG_LINES": "1",
+        //         "GEMINI_PROMPT_QUEUE": "false",
+        //         "GEMINI_API_KEY": "",
+        //         "GOOGLE_CLOUD_LOCATION":"global",
+        //         "GOOGLE_CLOUD_PROJECT":"project-67efc385-8bb5-493f-a81",
+        //         "GOOGLE_PROJECT_NUMBER":"782908338549",
+        //         "GEMINI_SYSTEM_MD":"C:\\Users\\donal\\projects\\SText\\ai_sdk_prompt.md",
+        //     }
+        // },
+        // "Claude --chrome": {
+        //     "launch_command": ["claude", "--chrome"],
+        //     "spawn_env": {
+        //         "AI_TERMINAL_LOG_LINES": "1",
+        //         "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
+        //         "CLAUDE_CODE_AI_TERMINAL_SENTINEL": "propagated",
+        //         // "OLLAMA_MODEL":"glm-5.2:cloud"
+        //     }
+        // },
         "Command Prompt": {
             "launch_command": ["cmd.exe"],
             "spawn_env": {}
