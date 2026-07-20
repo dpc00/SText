@@ -24,8 +24,8 @@ import sublime_plugin  # type: ignore
 
 # -- minimal log helpers (duplicated from ai_logger.py for independence) ------
 
-_LOG_DIR = str(Path.home() / "data" / "logs" / "ai")
-_DIAGNOSTICS_FILE = str(Path.home() / "data" / "logs" / "ai" / "ai_diagnostics.log")
+_LOG_DIR = str(Path.home() / "data" / "logs" / "developer_diagnostics_and_runtime_server_error_logs")
+_DIAGNOSTICS_FILE = str(Path.home() / "data" / "logs" / "developer_diagnostics_and_runtime_server_error_logs" / "ai_diagnostics.log")
 
 
 def _diagnostic_log(message: str) -> None:

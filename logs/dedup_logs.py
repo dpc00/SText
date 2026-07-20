@@ -35,7 +35,7 @@ if sys.stdout.encoding != "utf-8":
 
 SEED_WINDOW = 8
 MIN_BLOCK = 20
-LOG_DIR = Path.home() / "data" / "logs" / "ai"
+LOG_DIR = Path.home() / "data" / "logs" / "developer_diagnostics_and_runtime_server_error_logs"
 
 
 def deduplicate(lines: List[str]) -> Tuple[List[str], List[Tuple[int, int]]]:

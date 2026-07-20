@@ -49,6 +49,18 @@
     // The default profile to run if no profile name is explicitly requested
     "default_profile": "Ollama (OpenCode)",
 
+    // Display order for the profile picker. Profiles not listed appear at the end.
+    "profile_order": [
+        "Ollama (OpenCode)",
+        "Ollama (OpenCode Mini)",
+        "Gemini",
+        "Claude (Direct Anthropic)",
+        "Command Prompt",
+        "PowerShell",
+        "Bash",
+        "Bash (WSL)"
+    ],
+
     // Configured terminal/shell profiles for SText.
     // This allows SText to work as a multi-console terminal launcher.
     "profiles": {
@@ -65,7 +77,7 @@
             }
         },
         "Ollama (OpenCode)": {
-            "launch_command": ["ollama", "launch", "opencode"],
+            "launch_command": ["ollama", "launch", "opencode", "--model", "deepseek-v4-flash:cloud"],
             "spawn_env": { // needs more parameters at the moment mostly get from comments at old spawn env
                 "AI_TERMINAL_LOG_LINES": "1",
                 "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
