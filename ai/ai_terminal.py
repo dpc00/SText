@@ -2496,9 +2496,21 @@ class AiTerminalKeypressCommand(sublime_plugin.TextCommand):
                 return
         code = _translate_key(key, ctrl=ctrl, alt=alt, shift=shift)
         if code:
-            term._auto_follow = True
-            _scroll_to_bottom(self.view)
-            term._last_vp_y = self.view.viewport_position()[1]
+            # PageUp / PageDn / Home / End are scrollback-navigation keys, not
+            # input keys: the user is moving through scrollback, not returning
+            # to the prompt. Calling _scroll_to_bottom here yanks them back to
+            # the prompt AND triggers set_viewport_position, which on Windows
+            # makes ST recompute layout and transiently flip horizontal
+            # scrollbar visibility -- each flip fires a resize event, and the
+            # repeated PgUp/PgDn cycle disrupts the screen replay. Skip the
+            # scroll-to-bottom + viewport write for these keys; just forward
+            # the byte sequence to the PTY (TUIs like less/vim/claude-code
+            # handle their own scrolling on receipt of \x1b[5~ / \x1b[6~).
+            _SCROLLBACK_KEYS = frozenset(("pageup", "pagedown", "home", "end"))
+            if key.lower() not in _SCROLLBACK_KEYS:
+                term._auto_follow = True
+                _scroll_to_bottom(self.view)
+                term._last_vp_y = self.view.viewport_position()[1]
             term.send_string(code)
 
 

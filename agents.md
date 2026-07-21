@@ -45,6 +45,20 @@ Use this table to immediately lock your focus onto the relevant files. Do not sc
 
 ---
 
+## 🛠 Editor Authority — sublime-mcp is the primary editor interface
+Default to sublime-mcp tools for everything — read, edit, save, close, find, navigation, selection, outside-workspace paths, all of it. ST has no sandbox; outside-workspace is just a path and `sublime-mcp_open_file` opens it like any other. Never use `eval_python` or `run_command` to bypass tool routing — that's the Gemini bug, not a solution. Fall back to built-in filesystem tools (read/edit/write/grep/glob) ONLY when ST or the sublime-mcp bridge is non-responsive (frozen, crashed, plugin-load failure, MCP HTTP error). The fallback trigger is ST being down, not the path being outside the workspace.
+
+**Related rules (established this session):**
+- Advisory, not prohibition — built-in tools stay available as an escape hatch for when ST is dysfunctional.
+- ST has no sandbox; outside-workspace is not a special case. Gemini's sandbox was the bug, not the design.
+- Never use `eval_python` to bypass sandbox (the Gemini bug).
+- Never use `run_command` as a generic escape hatch — the user cannot see what the agent is doing. Every ST command should be a named, typed MCP tool with visible args.
+- Expose ALL of ST's capabilities as dedicated typed tools with detailed instructions. User: "add every ST component, command that it comes with."
+- sublime-mcp is faster than built-in read/edit (45x on edit, 11x on read warm) — performance is not a reason to bypass it.
+- Phase B (exposing ST's built-in commands as typed MCP tools) is COMPLETE as of 2026-07-21. Status and batch breakdown live in the sublime-mcp repo's own docs (`sublime-mcp/docs/AGENT_GUIDE.md` and `sublime-mcp/docs/agents.md`), not here.
+
+---
+
 ## 🤝 Session Continuity & Baton Protocol
 - **The Problem:** When Sublime Text restarts, the active AI session's memory is terminated. Re-contextualizing from scratch takes 10+ minutes and causes severe user fatigue.
 - **The Protocol:**
