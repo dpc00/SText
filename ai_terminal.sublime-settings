@@ -79,6 +79,10 @@
                 // "ANTHROPIC_BASE_URL":"http://localhost:11434",
             }
         },
+        "Kimi": {
+            "launch_command": ["kimi"],
+            "spawn_env": {}
+        },
         // "Gemini": {
         //     "launch_command": ["gemini.cmd"],
         //     "spawn_env": {

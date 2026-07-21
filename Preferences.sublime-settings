@@ -56,4 +56,7 @@
     "show_tab_close_buttons_on_left": true,
     "open_tabs_after_current": false,
     "font_size": 11,
+    "color_scheme": "Monokai.sublime-color-scheme",
+    "dark_color_scheme": "Monokai.sublime-color-scheme",
+    "light_color_scheme": "Mariana.sublime-color-scheme",
 }
