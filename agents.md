@@ -17,7 +17,8 @@ Every task in this workspace must progress sequentially through these stages:
 5. **Stage 5: Commit** — After the change is verified working, `git add` + `git commit` immediately. SText is a backup repo; uncommitted work is lost work. A verified, working change that is not committed is an incomplete task. Commit even if the user did not ask — this repo exists to snapshot work.
 
 ### ⛔ Commit Discipline (non-negotiable)
-- **Commit on every verified change.** Not "when asked." Not "at the end of the session." After each change that compiles and works.
+- **Commit on every verified code change** (modules, launchers, behavior-affecting settings). Not "when asked." Not "at the end of the session." After each change that compiles and works.
+- **Do NOT commit personal editor preferences** (font size, color scheme tweaks, window layout). Those are the user's environment, not code. Leave them uncommitted.
 - The `pybak` commits in history are the backup script's automatic snapshots. Agent commits should be **descriptive** (`feat:`, `fix:`, `refactor:`), not `pybak`, so they're distinguishable.
 - Uncommitted working changes that get wiped by a later `git checkout`/`restore` are the agent's fault, not the user's. The agent that made the change owns the commit.
 - Before any `git checkout <commit> -- <file>` or `git restore`, check `git status` and `git diff` first. If there are uncommitted changes that contain valuable work, **commit them or stash them before destroying them.**
