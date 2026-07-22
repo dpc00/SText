@@ -69,6 +69,7 @@ from User.ai.ai_terminal import (
     AiTerminalOpenInEditorCommand,
     AiTerminalSelectProfileCommand,
     AiTerminalSendStringCommand,
+    AiTerminalSendStringWindowCommand,
     AiTerminalKeypressCommand,
     AiTerminalRenderCommand,
     AiTerminalNukeCommand,
