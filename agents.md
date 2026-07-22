@@ -6,12 +6,21 @@
 
 ---
 
-## 🔄 SText 4-Stage Development Pipeline
+## 🔄 SText 5-Stage Development Pipeline
 Every task in this workspace must progress sequentially through these stages:
 1. **Stage 1: Design & Specs** — Review UI goals in `AI_UI.md` and define configuration parameters.
 2. **Stage 2: Core Coding** — Modify the target python module inside `ai/`, `backend/`, or `launchers/`.
 3. **Stage 3: Local Staging** — Copy modified modules to the active Packages User folder.
+   - `ai/ai_terminal.py` must be staged to `Packages/User/ai/ai_terminal.py` (NOT the `Packages/User` root).
+   - Before staging, verify by `grep`/`Test-Path` that no stale root copy exists; if it does, delete it.
 4. **Stage 4: Verification & Logging** — Check live ST console logs and verify the change in real-time.
+5. **Stage 5: Commit** — After the change is verified working, `git add` + `git commit` immediately. SText is a backup repo; uncommitted work is lost work. A verified, working change that is not committed is an incomplete task. Commit even if the user did not ask — this repo exists to snapshot work.
+
+### ⛔ Commit Discipline (non-negotiable)
+- **Commit on every verified change.** Not "when asked." Not "at the end of the session." After each change that compiles and works.
+- The `pybak` commits in history are the backup script's automatic snapshots. Agent commits should be **descriptive** (`feat:`, `fix:`, `refactor:`), not `pybak`, so they're distinguishable.
+- Uncommitted working changes that get wiped by a later `git checkout`/`restore` are the agent's fault, not the user's. The agent that made the change owns the commit.
+- Before any `git checkout <commit> -- <file>` or `git restore`, check `git status` and `git diff` first. If there are uncommitted changes that contain valuable work, **commit them or stash them before destroying them.**
 
 ---
 
@@ -56,6 +65,14 @@ Default to sublime-mcp tools for everything — read, edit, save, close, find, n
 - Expose ALL of ST's capabilities as dedicated typed tools with detailed instructions. User: "add every ST component, command that it comes with."
 - sublime-mcp is faster than built-in read/edit (45x on edit, 11x on read warm) — performance is not a reason to bypass it.
 - Phase B (exposing ST's built-in commands as typed MCP tools) is COMPLETE as of 2026-07-21. Status and batch breakdown live in the sublime-mcp repo's own docs (`sublime-mcp/docs/AGENT_GUIDE.md` and `sublime-mcp/docs/agents.md`), not here.
+
+---
+
+## 📺 Terminal Visibility Rule
+When sublime-mcp is available, agents MUST prefer the visible terminal pattern
+(see `ai/visible_terminal_skill.md`) over the native Bash tool for shell commands.
+It runs commands in a visible ST terminal tab and captures exit codes. Fall back
+to the native Bash tool only when sublime-mcp is unavailable.
 
 ---
 
