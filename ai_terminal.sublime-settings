@@ -55,8 +55,8 @@
         "Ollama (OpenCode)": {
             "launch_command": ["ollama", "launch", "opencode"],
             "spawn_env": { // needs more parameters at the moment mostly get from comments at old spawn env
-                // "AI_TERMINAL_LOG_LINES": "1",
-                // "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
                 // "ANTHROPIC_AUTH_TOKEN":"ollama",
                 // "ANTHROPIC_API_KEY":"",
                 // "ANTHROPIC_BASE_URL":"http://localhost:11434",
@@ -72,7 +72,7 @@
         "Ollama (OpenCode Mini)": {
             "launch_command": ["ollama", "launch", "opencode", "--", "--mini"],
             "spawn_env": {
-                // "AI_TERMINAL_LOG_LINES": "1",
+                "AI_TERMINAL_LOG_LINES": "1",
                 // "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
                 // "ANTHROPIC_AUTH_TOKEN":"ollama",
                 // "ANTHROPIC_API_KEY":"",
@@ -82,6 +82,23 @@
         "Kimi": {
             "launch_command": ["kimi"],
             "spawn_env": {}
+        },
+        "Ollama (Codex)": {
+            "launch_command": ["ollama", "launch", "codex"],
+            "spawn_env": { // needs more parameters at the moment mostly get from comments at old spawn env
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
+                // "ANTHROPIC_AUTH_TOKEN":"ollama",
+                // "ANTHROPIC_API_KEY":"",
+                // "ANTHROPIC_BASE_URL":"http://localhost:11434",
+                // "ANTHROPIC_MODEL": "claude-sonnet-5",
+                // "ANTHROPIC_VERTEX_PROJECT_ID": "project-67efc385-8bb5-493f-a81",
+                // "CLAUDE_CODE_USE_VERTEX": "1",
+                // "CLOUD_ML_REGION": "global",
+                // "GOOGLE_CLOUD_LOCATION":"global",
+                // "GOOGLE_CLOUD_PROJECT":"project-67efc385-8bb5-493f-a81",
+                // "GOOGLE_PROJECT_NUMBER":"782908338549",
+            }
         },
         // "Gemini": {
         //     "launch_command": ["gemini.cmd"],
