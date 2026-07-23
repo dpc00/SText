@@ -1685,13 +1685,13 @@ def _measure(view):
     # more disruptive than the ~3c right gap we pay here. The gap is the cost
     # of a non-wrapping terminal view with zero scrollbars.
     # Floor/ceiling from settings (ai_terminal.sublime-settings ->
-    # min_columns / max_columns). Subtract 3.0 char widths to account
+    # min_columns / max_columns). Subtract 3.5 char widths to account
     # for ST's scroll range math plus fractional em_width precision: the -3
     # is needed for the +1 end-of-line caret and ~2 chars of ST padding.
-    # With resize debouncing (3s), oscillation is prevented, so we no longer
-    # need the extra margin that was needed to avoid triggering resize loops.
+    # The +0.5 buffer prevents horizontal scrollbars from appearing and
+    # re-triggering the layout callbacks within the debounce window.
     mn, mx = _cols_bounds()
-    cols = max(mn, int((usable_w - 3.0 * cw) / cw))
+    cols = max(mn, int((usable_w - 3.5 * cw) / cw))
     if mx is not None:
         cols = min(mx, cols)
     # Subtract 1 row for a vertical safety margin: int(ex[1]/lh) fills the
