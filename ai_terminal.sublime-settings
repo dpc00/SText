@@ -53,7 +53,7 @@
     // This allows SText to work as a multi-console terminal launcher.
     "profiles": {
         "Ollama (OpenCode)": {
-            "launch_command": ["opencode"],
+            "launch_command": ["ollama", "launch", "opencode"],
             "spawn_env": { // needs more parameters at the moment mostly get from comments at old spawn env
                 // "AI_TERMINAL_LOG_LINES": "1",
                 // "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
@@ -70,7 +70,7 @@
             }
         },
         "Ollama (OpenCode Mini)": {
-            "launch_command": ["opencode", "--mini"],
+            "launch_command": ["ollama", "launch", "opencode", "--", "--mini"],
             "spawn_env": {
                 // "AI_TERMINAL_LOG_LINES": "1",
                 // "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
