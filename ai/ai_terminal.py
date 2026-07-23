@@ -1624,7 +1624,7 @@ def _terminal_view(window, name=None):
     vid = v.id()
 
     def _on_layout_setting_change():
-        _schedule_resize_for(vid)
+        sublime.set_timeout(lambda: _trigger_resize_for(vid), 0)
 
     for _key in ("gutter", "line_numbers", "fold_buttons", "margin"):
         v.settings().add_on_change(_key, _on_layout_setting_change)
@@ -1691,7 +1691,7 @@ def _measure(view):
     # The +0.5 buffer prevents horizontal scrollbars from appearing and
     # re-triggering the layout callbacks within the debounce window.
     mn, mx = _cols_bounds()
-    cols = max(mn, int((usable_w - 3.5 * cw) / cw))
+    cols = max(mn, int((usable_w - 4.0 * cw) / cw))
     if mx is not None:
         cols = min(mx, cols)
     # Subtract 1 row for a vertical safety margin: int(ex[1]/lh) fills the
