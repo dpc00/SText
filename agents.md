@@ -71,7 +71,7 @@ Default to sublime-mcp tools for everything — read, edit, save, close, find, n
 
 ## 📺 Terminal Visibility Rule
 When sublime-mcp is available, agents MUST prefer the visible terminal pattern
-(see `ai/visible_terminal_skill.md`) over the native Bash tool for shell commands.
+(see `sublime-mcp/docs/visible_terminal_skill.md`) over the native Bash tool for shell commands.
 It runs commands in a visible ST terminal tab and captures exit codes. Fall back
 to the native Bash tool only when sublime-mcp is unavailable.
 
