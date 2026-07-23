@@ -2031,7 +2031,7 @@ def _spawn(window, path, profile=None):
     env = dict(os.environ)
     env.update(extra_env)
 
-    backend = "winpty"
+    backend = s.get("windows_pty_backend", "conpty")
     if backend == "winpty":
         try:
             pty = _WinptyPty(argv, path, cols, rows, env)
