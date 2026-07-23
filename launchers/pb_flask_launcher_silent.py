@@ -44,26 +44,32 @@ class PbFlaskSilentCommand(sublime_plugin.WindowCommand):
     """ % PORT
 
     def run(self):
-        _log = lambda msg: sublime.status_message(f"[pb_flask_silent] {msg}")
+        _log = lambda msg: (sublime.status_message(f"[pb_flask_silent] {msg}"), print(f"[pb_flask_silent] {msg}"))
         _t0 = time.monotonic()
         _log(f"run() entered")
-        kill_existing(PORT)
-        _log(f"kill_existing done: {time.monotonic()-_t0:.2f}s")
-        from User.winutil._job import assign_pid
-        proc = subprocess.Popen(
-            [r"C:\Users\donal\AppData\Local\Programs\Python\Python312\python.exe", r"C:/Users/donal/projects/pybackup/ui/app.py"],
-            creationflags=subprocess.CREATE_NO_WINDOW,
-            startupinfo=_si,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-        )
-        _log(f"Popen done: {time.monotonic()-_t0:.2f}s, pid={proc.pid}")
-        try:
-            assign_pid(proc.pid)
-        except Exception:
-            pass
-        _log(f"assign_pid done: {time.monotonic()-_t0:.2f}s")
-        # Open browser only after Flask is ready (background thread, non-blocking)
-        threading.Thread(target=_wait_and_open, args=(PORT,), daemon=True).start()
-        _log(f"wait thread started: {time.monotonic()-_t0:.2f}s")
+
+        def _bg():
+            t0 = time.monotonic()
+            kill_existing(PORT)
+            _log(f"kill_existing done: {time.monotonic()-t0:.2f}s")
+            from User.winutil._job import assign_pid
+            proc = subprocess.Popen(
+                [r"C:\Users\donal\AppData\Local\Programs\Python\Python312\python.exe", r"C:/Users/donal/projects/pybackup/ui/app.py"],
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                startupinfo=_si,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+            )
+            _log(f"Popen done: {time.monotonic()-t0:.2f}s, pid={proc.pid}")
+            try:
+                assign_pid(proc.pid)
+            except Exception:
+                pass
+            _log(f"assign_pid done: {time.monotonic()-t0:.2f}s")
+            # Open browser only after Flask is ready (background thread, non-blocking)
+            threading.Thread(target=_wait_and_open, args=(PORT,), daemon=True).start()
+            _log(f"wait thread started: {time.monotonic()-t0:.2f}s")
+
+        threading.Thread(target=_bg, daemon=True).start()
+        _log(f"bg thread launched: {time.monotonic()-_t0:.2f}s")
