@@ -1341,6 +1341,7 @@ class _Terminal:
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._lock = threading.Lock()
         self._render_pending = False
+        self._resize_pending = False
         self._reader = None
         self._last_cols = screen.cols
         self._last_rows = screen.rows
@@ -1546,6 +1547,31 @@ def _trigger_resize_for(vid):
         print(f"[ai_terminal] on_change resize error: {e}")
 
 
+def _schedule_resize_for(vid):
+    """Schedule a resize with debouncing (3s) to prevent oscillation.
+    Coalesces rapid layout changes (gutter, line_numbers, fold_buttons, margin)
+    into a single resize call instead of firing on every setting change."""
+    with _REG_LOCK:
+        term = _TERMINALS.get(vid)
+    if term is None:
+        return
+    # If already scheduled, do nothing; timeout will coalesce all pending changes
+    if term._resize_pending:
+        return
+    term._resize_pending = True
+    sublime.set_timeout(lambda: _do_resize(vid), _RESIZE_DEBOUNCE_MS)
+
+
+def _do_resize(vid):
+    """Execute the debounced resize. Clears the pending flag."""
+    with _REG_LOCK:
+        term = _TERMINALS.get(vid)
+    if term is None:
+        return
+    term._resize_pending = False
+    _trigger_resize_for(vid)
+
+
 def _next_ai_name(window, prefix=None):
     """Return a unique Ai tab name for the window: 'prefix', then 'prefix 2', ...
     Distinct view.name() per tab so send_to_view (and other name-based tools) can
@@ -1598,7 +1624,7 @@ def _terminal_view(window, name=None):
     vid = v.id()
 
     def _on_layout_setting_change():
-        sublime.set_timeout(lambda: _trigger_resize_for(vid), 0)
+        _schedule_resize_for(vid)
 
     for _key in ("gutter", "line_numbers", "fold_buttons", "margin"):
         v.settings().add_on_change(_key, _on_layout_setting_change)
@@ -1687,6 +1713,7 @@ def _measure(view):
 # ─── debounced renderer ──────────────────────────────────────────────────────
 
 _RENDER_MS = 40
+_RESIZE_DEBOUNCE_MS = 3000
 
 
 def _schedule_render(term):
