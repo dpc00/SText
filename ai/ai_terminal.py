@@ -1659,10 +1659,12 @@ def _measure(view):
     # more disruptive than the ~3c right gap we pay here. The gap is the cost
     # of a non-wrapping terminal view with zero scrollbars.
     # Floor/ceiling from settings (ai_terminal.sublime-settings ->
-    # min_columns / max_columns). The -3 no-horizontal-scrollbar math still
-    # applies inside these bounds; max_columns=null means no ceiling.
+    # min_columns / max_columns). Subtract 3.5 char widths (not 3) to account
+    # for ST's scroll range math plus fractional em_width precision: the -3
+    # leaves a 1-char sliver in some cases due to em_width rounding; subtracting
+    # 3.5 chars worth of pixels before dividing handles this correctly.
     mn, mx = _cols_bounds()
-    cols = max(mn, int(usable_w / cw) - 3)
+    cols = max(mn, int((usable_w - 3.5 * cw) / cw))
     if mx is not None:
         cols = min(mx, cols)
     # Subtract 1 row for a vertical safety margin: int(ex[1]/lh) fills the
