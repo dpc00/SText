@@ -51,7 +51,7 @@ class PbFlaskSilentCommand(sublime_plugin.WindowCommand):
         _log(f"kill_existing done: {time.monotonic()-_t0:.2f}s")
         from User.winutil._job import assign_pid
         proc = subprocess.Popen(
-            ["python", r"C:/Users/donal/projects/pybackup/ui/app.py"],
+            [r"C:\Users\donal\AppData\Local\Programs\Python\Python312\python.exe", r"C:/Users/donal/projects/pybackup/ui/app.py"],
             creationflags=subprocess.CREATE_NO_WINDOW,
             startupinfo=_si,
             stdout=subprocess.DEVNULL,
