@@ -39,7 +39,7 @@
     "gutter": true,
     "line_numbers": true,
     "margin": 4,
-    "scroll_past_end": false,
+    "scroll_past_end": true,
     "show_git_status": false,
     "show_line_endings": true,
     "sidebar_on_right": false,

@@ -300,7 +300,7 @@ class AiHubOpenCommand(sublime_plugin.WindowCommand):
         v.set_read_only(True)
         v.settings().set("gutter", False)
         v.settings().set("line_numbers", False)
-        v.settings().set("scroll_past_end", False)
+        v.settings().set("scroll_past_end", True)
         v.settings().set("word_wrap", False)
         v.settings().set("show_minimap", False)
         v.settings().set("scroll_bar_enabled", False)
