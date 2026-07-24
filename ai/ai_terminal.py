@@ -705,7 +705,7 @@ _settings = None  # sublime.Settings; (re)bound in plugin_loaded
 
 _DEFAULT_SCROLLBACK = 300
 _DEFAULT_MIN_COLS = 20
-_DEFAULT_LAUNCH_COMMAND = ["cmd", "/c", "ollama", "launch", "claude"]
+_DEFAULT_LAUNCH_COMMAND = ["cmd.exe"]
 _DEFAULT_SPAWN_ENV = {
     "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
     "CLAUDE_CODE_AI_TERMINAL_SENTINEL": "propagated",
@@ -1611,7 +1611,7 @@ def _terminal_view(window, name=None):
     # hide the main menu while the terminal is focused -- unacceptable, so it
     # is NOT set.
     v.settings().set("draw_centered", False)
-    v.settings().set("scroll_past_end", False)
+    v.settings().set("scroll_past_end", True)
     v.settings().set(_VIEW_SETTING, True)
     v.settings().set(_TAG_SETTING, True)
     # Instant resize on gutter / line_numbers / fold_buttons / margin toggles.
