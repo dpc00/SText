@@ -256,7 +256,7 @@ class _Pty:
         if not self._alive or self._hPC is None:
             return
         self._cols, self._rows = cols, rows
-        _k32.ResizePseudoConsole(self._hPC, _COORD(cols, rows))
+        # _k32.ResizePseudoConsole(self._hPC, _COORD(cols, rows))
 
     def is_alive(self):
         if not self._alive or self._hProcess is None:
@@ -1624,7 +1624,8 @@ def _terminal_view(window, name=None):
     vid = v.id()
 
     def _on_layout_setting_change():
-        sublime.set_timeout(lambda: _trigger_resize_for(vid), 0)
+        # sublime.set_timeout(lambda: _trigger_resize_for(vid), 0)
+        pass
 
     for _key in ("gutter", "line_numbers", "fold_buttons", "margin"):
         v.settings().add_on_change(_key, _on_layout_setting_change)
@@ -2540,9 +2541,9 @@ def _poll_loop():
             view = term.view
             if not view.is_valid():
                 continue
-            cols, rows = _measure(view)
-            if (cols, rows) != (term._last_cols, term._last_rows):
-                term.resize(cols, rows)
+            # cols, rows = _measure(view)
+            # if (cols, rows) != (term._last_cols, term._last_rows):
+            #     term.resize(cols, rows)
     except Exception as e:
         print(f"[ai_terminal] poll error: {e}")
     _poll_token = sublime.set_timeout(_poll_loop, _POLL_MS)
