@@ -1331,7 +1331,7 @@ class _ProcessProxy:
 
 
 class _Terminal:
-    def __init__(self, view, pty, screen, parser):
+    def __init__(self, view, pty, screen, parser, spawn_env=None):
         self.view = view
         self.pty = pty
         self.screen = screen
@@ -1345,6 +1345,7 @@ class _Terminal:
         self._reader = None
         self._last_cols = screen.cols
         self._last_rows = screen.rows
+        self._spawn_env = spawn_env or {}
         # Auto-follow model (Terminus-style): scroll to the bottom to show new
         # Claude output whenever _auto_follow is True. It starts True, flips
         # False when the user scrolls up to read scrollback (detected in the
@@ -1379,10 +1380,12 @@ class _Terminal:
         # each session is its own recording -- a resume's replay is a NEW
         # .cast, not appended duplicates) and write the v3 header. Events
         # are appended by _cast() from _on_data / send_string / resize / kill.
+        # Recording is on if AI_TERMINAL_LOG_LINES is set in the merged spawn
+        # env (profile or legacy top-level) OR in ST's process env.
         log_on = _LOG_LINES
         if not log_on:
             try:
-                log_on = bool(_spawn_env().get("AI_TERMINAL_LOG_LINES"))
+                log_on = bool((self._spawn_env or {}).get("AI_TERMINAL_LOG_LINES"))
             except Exception:
                 pass
         if log_on:
@@ -2094,7 +2097,7 @@ def _spawn(window, path, profile=None):
         return
     screen = _Screen(cols, rows)
     parser = _Parser(screen)
-    term = _Terminal(view, pty, screen, parser)
+    term = _Terminal(view, pty, screen, parser, spawn_env=extra_env)
     with _REG_LOCK:
         _TERMINALS[view.id()] = term
     term.start()
