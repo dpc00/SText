@@ -1341,7 +1341,6 @@ class _Terminal:
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._lock = threading.Lock()
         self._render_pending = False
-        self._resize_pending = False
         self._reader = None
         self._last_cols = screen.cols
         self._last_rows = screen.rows
@@ -1365,6 +1364,8 @@ class _Terminal:
         self._cast_lock = threading.Lock()
         self._cast_t0 = 0.0       # session start (epoch seconds)
         self._cast_last = 0.0     # timestamp of the previous event
+        # Geometry watcher for standard terminal resize behavior.
+        self._watcher = _LayoutWatcher(self)
 
     @classmethod
     def from_id(cls, view_id):
@@ -1530,57 +1531,105 @@ def _vwrite(view, text):
     sublime.set_timeout(_do, 0)
 
 
-def _trigger_resize_for(vid):
-    """Resize the PTY for a genuine windowing-layer event (gutter/line_numbers/
-    fold_buttons/margin toggle). NOT called from the poller -- the poller used
-    to re-measure viewport_extent after PTY output, which is a feedback loop:
-    resize -> SIGWINCH -> TUI redraws -> output burst -> viewport_extent
-    transiently changes -> _measure returns new cols -> another resize ->
-    infinite replay on long conversations. Removing the poller's auto-resize
-    path broke that loop; this function is now only called from user-initiated
-    layout changes, which are one-shot and safe.
-    
-    The TUI repaints its current frame on SIGWINCH; our grid truncates/pads
-    and the TUI overwrites it. No scrollback reflow needed (the agents redraw
-    their own frame)."""
-    with _REG_LOCK:
-        term = _TERMINALS.get(vid)
-    if term is None:
+class _LayoutWatcher:
+    """Standard terminal-style layout watcher.
+
+    Watches a single ai_terminal view for genuine geometry changes (window
+    resize, gutter/line_numbers/fold_buttons/margin toggles, font changes)
+    and resizes the PTY only when the measured (cols, rows) actually changes.
+
+    Key design choices that prevent the resize<->replay oscillation bug:
+      - We never auto-resize in response to PTY output.
+      - We measure only the viewport; transient content-width fluctuations
+        (scrollbars appearing/disappearing because of the TUI's own output)
+        do not change the viewport size, so they do not trigger a resize.
+      - Changes are debounced: rapid-fire layout events coalesce into one
+        resize call after the viewport size has been stable for a short window.
+      - We resize only if the new (cols, rows) differs from the last one we
+        told the PTY.
+    """
+
+    _DEBOUNCE_MS = 150
+    _POLL_MS = 250
+
+    def __init__(self, term):
+        self.term = term
+        self._pending = False
+        self._token = None
+        self._last_measure = None
+
+    def request(self):
+        """Request a resize check. Safe to call frequently; debounces."""
+        if self._pending:
+            return
+        self._pending = True
+        self._token = sublime.set_timeout(lambda: self._run(), self._DEBOUNCE_MS)
+
+    def _run(self):
+        self._pending = False
+        view = self.term.view
+        if not view or not view.is_valid():
+            return
+        try:
+            size = _measure(view)
+        except Exception as e:
+            print(f"[ai_terminal] layout measure error: {e}")
+            return
+        if size == self._last_measure:
+            return
+        self._last_measure = size
+        cols, rows = size
+        if (cols, rows) != (self.term._last_cols, self.term._last_rows):
+            self.term.resize(cols, rows)
+            print(f"[ai_terminal] resized PTY to {cols}x{rows}")
+
+    def dispose(self):
+        if self._token is not None:
+            try:
+                sublime.cancel_timeout(self._token)
+            except Exception:
+                pass
+            self._token = None
+        self._pending = False
+
+
+# Lightweight periodic watcher: real window resizes and some setting toggles do
+# not always fire add_on_change, so we poll the measured size every 250ms and
+# resize only when it actually changes. This is NOT auto-resize-on-output: it
+# is purely geometry polling.
+_WATCHER_TOKEN = None
+
+
+def _start_layout_watcher():
+    global _WATCHER_TOKEN
+    if _WATCHER_TOKEN is not None:
         return
-    view = term.view
-    if not view or not view.is_valid():
-        return
+    _layout_tick()
+
+
+def _layout_tick():
+    global _WATCHER_TOKEN
+    _WATCHER_TOKEN = None
     try:
-        cols, rows = _measure(view)
-        if (cols, rows) != (term._last_cols, term._last_rows):
-            term.resize(cols, rows)
+        with _REG_LOCK:
+            terms = list(_TERMINALS.values())
+        for term in terms:
+            if term._watcher is None:
+                continue
+            term._watcher.request()
     except Exception as e:
-        print(f"[ai_terminal] on_change resize error: {e}")
+        print(f"[ai_terminal] layout watcher error: {e}")
+    _WATCHER_TOKEN = sublime.set_timeout(_layout_tick, _LayoutWatcher._POLL_MS)
 
 
-def _schedule_resize_for(vid):
-    """Schedule a resize with debouncing (3s) to prevent oscillation.
-    Coalesces rapid layout changes (gutter, line_numbers, fold_buttons, margin)
-    into a single resize call instead of firing on every setting change."""
-    with _REG_LOCK:
-        term = _TERMINALS.get(vid)
-    if term is None:
-        return
-    # If already scheduled, do nothing; timeout will coalesce all pending changes
-    if term._resize_pending:
-        return
-    term._resize_pending = True
-    sublime.set_timeout(lambda: _do_resize(vid), _RESIZE_DEBOUNCE_MS)
-
-
-def _do_resize(vid):
-    """Execute the debounced resize. Clears the pending flag."""
-    with _REG_LOCK:
-        term = _TERMINALS.get(vid)
-    if term is None:
-        return
-    term._resize_pending = False
-    _trigger_resize_for(vid)
+def _stop_layout_watcher():
+    global _WATCHER_TOKEN
+    if _WATCHER_TOKEN is not None:
+        try:
+            sublime.cancel_timeout(_WATCHER_TOKEN)
+        except Exception:
+            pass
+        _WATCHER_TOKEN = None
 
 
 def _next_ai_name(window, prefix=None):
@@ -1641,7 +1690,7 @@ def _terminal_view(window, name=None):
         # and is disabled; this is NOT the poller.
         sublime.set_timeout(lambda: _trigger_resize_for(vid), 0)
 
-    for _key in ("gutter", "line_numbers", "fold_buttons", "margin"):
+    for _key in ("gutter", "line_numbers", "fold_buttons", "margin", "font_face", "font_size"):
         v.settings().add_on_change(_key, _on_layout_setting_change)
     # Dedicated colour scheme: defines the ai.fg/bg/fb.* scopes the renderer
     # maps cells to (see gen_color_scheme.py). Scoped to this view only, so the
@@ -1953,6 +2002,9 @@ class AiTerminalViewListener(sublime_plugin.ViewEventListener):
         term = _Terminal.from_id(self.view.id())
         if term is None:
             return
+        if term._watcher is not None:
+            term._watcher.dispose()
+            term._watcher = None
         with _REG_LOCK:
             _TERMINALS.pop(self.view.id(), None)
         threading.Thread(target=term.kill, daemon=True).start()
