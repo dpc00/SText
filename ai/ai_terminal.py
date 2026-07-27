@@ -256,7 +256,7 @@ class _Pty:
         if not self._alive or self._hPC is None:
             return
         self._cols, self._rows = cols, rows
-        # _k32.ResizePseudoConsole(self._hPC, _COORD(cols, rows))
+        _k32.ResizePseudoConsole(self._hPC, _COORD(cols, rows))
 
     def is_alive(self):
         if not self._alive or self._hProcess is None:
@@ -1354,6 +1354,18 @@ class _Terminal:
         # sticking at the top showing the banner.
         self._auto_follow = True
         self._last_vp_y = 0.0
+        # Resize cooldown: timestamp (time.time()) of the last resize we
+        # actually applied to the PTY. While time.time() - _last_resize_ts <
+        # _RESIZE_COOLDOWN_S, _trigger_resize_for ignores measurement changes.
+        # This breaks the resize -> SIGWINCH -> Claude replays the whole long
+        # conversation -> output burst grows scrollback -> vertical scrollbar
+        # appears -> viewport_extent shrinks -> _measure returns cols-2 ->
+        # another resize -> infinite replay loop. The replay typically takes
+        # 1-3s on a long conversation; 3s of cooldown lets it settle (the TUI
+        # reaches a stable frame) before we react to the (now-stable)
+        # viewport_extent. Without this, a single resize on a long session
+        # replays the conversation forever.
+        self._last_resize_ts = 0.0
         # Asciicast v3 recording (recording patch). When recording is on,
         # start() opens a per-session .cast file and writes the v3 header;
         # _on_data / send_string / resize / kill append timed events. Off
@@ -1473,6 +1485,7 @@ class _Terminal:
         if cols == self._last_cols and rows == self._last_rows:
             return
         self._last_cols, self._last_rows = cols, rows
+        self._last_resize_ts = time.time()
         with self._lock:
             self.screen.resize(cols, rows)
         self.pty.resize(cols, rows)
@@ -1531,10 +1544,20 @@ def _trigger_resize_for(vid):
     """Immediately re-measure and resize the terminal for the given view id.
     Used by the settings().add_on_change callbacks so that toggling the gutter,
     line numbers, fold buttons, or margin resizes the PTY at once instead of
-    waiting up to _POLL_MS (750ms) for the poller to notice."""
+    waiting up to _POLL_MS (750ms) for the poller to notice.
+    
+    Cooldown-gated: ignores measurement changes within _RESIZE_COOLDOWN_S of
+    the last applied resize. This is what breaks the resize<->replay loop --
+    a resize fires SIGWINCH, Claude replays the whole long conversation, the
+    output burst transiently flips the vertical scrollbar, which flips
+    viewport_extent, which _measure reads as a new cols value, which without
+    this guard would trigger another resize and replay the conversation
+    again, forever."""
     with _REG_LOCK:
         term = _TERMINALS.get(vid)
     if term is None:
+        return
+    if time.time() - term._last_resize_ts < _RESIZE_COOLDOWN_S:
         return
     view = term.view
     if not view or not view.is_valid():
@@ -1624,8 +1647,7 @@ def _terminal_view(window, name=None):
     vid = v.id()
 
     def _on_layout_setting_change():
-        # sublime.set_timeout(lambda: _trigger_resize_for(vid), 0)
-        pass
+        sublime.set_timeout(lambda: _trigger_resize_for(vid), 0)
 
     for _key in ("gutter", "line_numbers", "fold_buttons", "margin"):
         v.settings().add_on_change(_key, _on_layout_setting_change)
@@ -1716,6 +1738,12 @@ def _measure(view):
 
 _RENDER_MS = 40
 _RESIZE_DEBOUNCE_MS = 3000
+# Cooldown after an applied resize during which _trigger_resize_for ignores
+# measurement changes. Breaks the resize<->replay oscillation on long
+# conversations (see _last_resize_ts docstring in _Terminal). 3s covers the
+# 1-3s a long-conversation replay takes to reach a stable frame; a too-short
+# cooldown re-triggers the loop on the replay's transient scrollbar flip.
+_RESIZE_COOLDOWN_S = 3.0
 
 
 def _schedule_render(term):
@@ -2541,9 +2569,16 @@ def _poll_loop():
             view = term.view
             if not view.is_valid():
                 continue
-            # cols, rows = _measure(view)
-            # if (cols, rows) != (term._last_cols, term._last_rows):
-            #     term.resize(cols, rows)
+            # Skip while in resize cooldown -- see _trigger_resize_for. The
+            # poller is the slow path (750ms) that catches window resizes the
+            # setting-change callback misses; the cooldown here prevents it
+            # from re-triggering the replay loop on the transient scrollbar
+            # flip from a long conversation's replay.
+            if time.time() - term._last_resize_ts < _RESIZE_COOLDOWN_S:
+                continue
+            cols, rows = _measure(view)
+            if (cols, rows) != (term._last_cols, term._last_rows):
+                term.resize(cols, rows)
     except Exception as e:
         print(f"[ai_terminal] poll error: {e}")
     _poll_token = sublime.set_timeout(_poll_loop, _POLL_MS)
