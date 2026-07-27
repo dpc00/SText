@@ -1528,19 +1528,18 @@ def _vwrite(view, text):
 
 
 def _trigger_resize_for(vid):
-    """Grow-only resize: only ever INCREASES the PTY's cols/rows, never shrinks.
+    """Resize the PTY for a genuine windowing-layer event (gutter/line_numbers/
+    fold_buttons/margin toggle). NOT called from the poller -- the poller used
+    to re-measure viewport_extent after PTY output, which is a feedback loop:
+    resize -> SIGWINCH -> TUI redraws -> output burst -> viewport_extent
+    transiently changes -> _measure returns new cols -> another resize ->
+    infinite replay on long conversations. Removing the poller's auto-resize
+    path broke that loop; this function is now only called from user-initiated
+    layout changes, which are one-shot and safe.
     
-    The replay loop is caused by SHRINK: resize -> SIGWINCH -> Claude replays
-    the whole long conversation -> scrollback grows -> vertical scrollbar
-    appears -> viewport_extent shrinks -> _measure returns cols-2 -> another
-    shrink -> infinite replay on long conversations.
-    
-    GROW is safe: giving Claude more columns never grows scrollback (the
-    existing content just has more room), so there's no scrollbar flip and no
-    loop. This covers the one legitimate resize case: a user who launches the
-    terminal in a too-narrow window and then widens it. If they shrink the
-    window, the PTY keeps its wider cols (text wraps / clips) -- the user can
-    reopen the terminal tab to get a fresh spawn at the new size."""
+    The TUI repaints its current frame on SIGWINCH; our grid truncates/pads
+    and the TUI overwrites it. No scrollback reflow needed (the agents redraw
+    their own frame)."""
     with _REG_LOCK:
         term = _TERMINALS.get(vid)
     if term is None:
@@ -1550,10 +1549,7 @@ def _trigger_resize_for(vid):
         return
     try:
         cols, rows = _measure(view)
-        cur_cols, cur_rows = term._last_cols, term._last_rows
-        # Grow-only: apply only if both dims increased (or equal). Shrinking
-        # is what triggers the replay loop, so never shrink.
-        if cols >= cur_cols and rows >= cur_rows and (cols, rows) != (cur_cols, cur_rows):
+        if (cols, rows) != (term._last_cols, term._last_rows):
             term.resize(cols, rows)
     except Exception as e:
         print(f"[ai_terminal] on_change resize error: {e}")
@@ -1636,8 +1632,10 @@ def _terminal_view(window, name=None):
     vid = v.id()
 
     def _on_layout_setting_change():
-        # Grow-only resize on gutter/line_numbers/fold_buttons/margin toggles.
-        # See _trigger_resize_for -- shrink is never applied (replay loop).
+        # Genuine windowing-layer trigger (gutter/line_numbers/fold_buttons/
+        # margin toggle) -- safe to resize. The poller's auto-resize path
+        # (re-measuring viewport_extent after PTY output) is the feedback loop
+        # and is disabled; this is NOT the poller.
         sublime.set_timeout(lambda: _trigger_resize_for(vid), 0)
 
     for _key in ("gutter", "line_numbers", "fold_buttons", "margin"):
@@ -2554,15 +2552,10 @@ def _poll_loop():
             view = term.view
             if not view.is_valid():
                 continue
-            # Grow-only resize via the slow-path poller. See
-            # _trigger_resize_for for why shrink is never applied.
-            try:
-                cols, rows = _measure(view)
-                cur_cols, cur_rows = term._last_cols, term._last_rows
-                if cols >= cur_cols and rows >= cur_rows and (cols, rows) != (cur_cols, cur_rows):
-                    term.resize(cols, rows)
-            except Exception:
-                pass
+            # No automatic resize. Any resize (grow or shrink) triggers the
+            # TUI to rewrap/replay its content, and on a long conversation that
+            # replay loops forever via viewport_extent fluctuation. See
+            # _trigger_resize_for docstring. Resize happens at spawn only.
     except Exception as e:
         print(f"[ai_terminal] poll error: {e}")
     _poll_token = sublime.set_timeout(_poll_loop, _POLL_MS)
