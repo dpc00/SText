@@ -86,6 +86,13 @@
                 "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
             }
         },
+        "Vibe": {
+            "launch_command": ["vibe"],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
+            }
+        },
         "Ollama (Codex)": {
             "launch_command": ["ollama", "launch", "codex"],
             "spawn_env": { // needs more parameters at the moment mostly get from comments at old spawn env
