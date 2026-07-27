@@ -1598,11 +1598,24 @@ def _next_ai_name(window, prefix=None):
     return f"{pfx} {n}"
 
 
-def _terminal_view(window, name=None):
+def _terminal_view(window, name=None, wide_wrap=False):
     v = window.new_file()
     v.set_name(name or _next_ai_name(window))
     v.set_scratch(True)
-    v.settings().set("word_wrap", False)
+    # wide_wrap mode: give the PTY a huge cols so the agent never hard-wraps,
+    # and let ST soft-wrap the long lines visually. This sidesteps the
+    # resize<->replay loop entirely (no amount of viewport change ever makes
+    # the PTY cols wrong, since the PTY cols is fixed huge) AND lets the user
+    # resize the window freely without any resize plumbing. The cost is that
+    # ST's soft-wrap produces visual row growth (a long agent paragraph fills
+    # more rows than the PTY thinks it did), but for chat agents that emit
+    # single-line paragraphs this is exactly what we want -- ST wraps, not
+    # the agent. Gated per-profile so alt-screen TUIs (opencode) keep
+    # measured cols + word_wrap=False (their fixed-frame geometry needs it).
+    if wide_wrap:
+        v.settings().set("word_wrap", True)
+    else:
+        v.settings().set("word_wrap", False)
     v.settings().set("gutter", True)
     v.settings().set("line_numbers", True)
     v.settings().set("fold_buttons", True)
@@ -2049,10 +2062,12 @@ def _spawn(window, path, profile=None):
     if profile_data and isinstance(profile_data, dict):
         argv = profile_data.get("launch_command", _DEFAULT_LAUNCH_COMMAND)
         extra_env = profile_data.get("spawn_env", {})
+        wide_wrap = bool(profile_data.get("wide_wrap", False))
     else:
         # Fallback to legacy single command settings
         argv = _launch_command()
         extra_env = _spawn_env()
+        wide_wrap = False
         profile_name = "Legacy" if profile_name else None
 
     # Determine unique tab name
@@ -2066,9 +2081,18 @@ def _spawn(window, path, profile=None):
             pfx = profile_name
     tab_name = _next_ai_name(window, prefix=pfx)
 
-    view = _terminal_view(window, name=tab_name)
+    view = _terminal_view(window, name=tab_name, wide_wrap=wide_wrap)
     window.focus_view(view)
-    cols, rows = _measure(view)
+    if wide_wrap:
+        # Fixed huge cols: the agent never hard-wraps (ST soft-wraps instead),
+        # so a viewport resize can never make the PTY cols wrong, and the
+        # resize<->replay loop has nothing to feed on. 12000 is safely wider
+        # than any single agent paragraph; rows still measured normally so
+        # the TUI knows how many lines fit on screen.
+        cols, rows = _measure(view)
+        cols = 12000
+    else:
+        cols, rows = _measure(view)
     
     env = dict(os.environ)
     env.update(extra_env)
