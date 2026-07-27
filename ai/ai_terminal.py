@@ -1688,7 +1688,8 @@ def _terminal_view(window, name=None):
         # margin toggle) -- safe to resize. The poller's auto-resize path
         # (re-measuring viewport_extent after PTY output) is the feedback loop
         # and is disabled; this is NOT the poller.
-        sublime.set_timeout(lambda: _trigger_resize_for(vid), 0)
+        # sublime.set_timeout(lambda: _trigger_resize_for(vid), 0)
+        pass
 
     for _key in ("gutter", "line_numbers", "fold_buttons", "margin", "font_face", "font_size"):
         v.settings().add_on_change(_key, _on_layout_setting_change)
