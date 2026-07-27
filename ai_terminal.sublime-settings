@@ -81,7 +81,6 @@
         },
         "Kimi": {
             "launch_command": ["kimi"],
-            "wide_wrap": true,
             "spawn_env": {
                 "AI_TERMINAL_LOG_LINES": "1",
                 "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
@@ -89,7 +88,6 @@
         },
         "Vibe": {
             "launch_command": ["vibe"],
-            "wide_wrap": true,
             "spawn_env": {
                 "AI_TERMINAL_LOG_LINES": "1",
                 "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
