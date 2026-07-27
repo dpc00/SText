@@ -146,6 +146,13 @@
         "Bash (WSL)": {
             "launch_command": ["wsl.exe", "bash"],
             "spawn_env": {}
+        },
+        "Mock Agent (resize test)": {
+            "launch_command": ["python", "C:\\Users\\donal\\projects\\SText\\tests\\mock_agent_cli.py"],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+            }
         }
     },
 
