@@ -1778,7 +1778,6 @@ def _measure(view):
 # ─── debounced renderer ──────────────────────────────────────────────────────
 
 _RENDER_MS = 40
-_RESIZE_DEBOUNCE_MS = 3000
 
 
 def _schedule_render(term):
