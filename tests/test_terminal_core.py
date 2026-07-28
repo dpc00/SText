@@ -53,6 +53,20 @@ class TestColors(unittest.TestCase):
         self.assertIsNotNone(scope)
         self.assertTrue(scope.startswith("ai.fb."))
 
+    def test_reverse_default_is_visible_scope(self):
+        """TUI block cursor: reverse space on default colours must not be None."""
+        from ai.terminal.colors import REVERSE as R
+        attr = R  # reverse only, fg=0 bg=0
+        scope = scope_name_for(attr)
+        self.assertIsNotNone(scope)
+        # black-on-white after resolving defaults then swapping
+        self.assertEqual(scope, "ai.fb.1.16")
+
+    def test_reverse_colored_swaps(self):
+        from ai.terminal.colors import REVERSE as R
+        attr = pack_attr(fg=2, bg=0) | R  # red on default bg -> black on red
+        self.assertEqual(scope_name_for(attr), "ai.fb.1.2")
+
 
 class TestScreen(unittest.TestCase):
     def test_put_and_cursor(self):

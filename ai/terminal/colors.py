@@ -82,17 +82,31 @@ def xterm_hex(i):
 HEX = [None] + [xterm_hex(i) for i in range(256)]
 
 
+# 1-based palette ids used when SGR reverse hits "default" fg/bg (0).
+# Matches typical xterm: default fg ≈ white, default bg ≈ black.
+_DEFAULT_FG_ID = 16  # xterm 15 bright white
+_DEFAULT_BG_ID = 1   # xterm 0 black
+
+
 def scope_name_for(attr):
     """Map packed cell attr -> scope name, or None for default.
 
     Does NOT register the scope with Sublime. Pure mapping for tests/renderer.
+
+    Important: SGR reverse (bit REVERSE) with *default* colors must still
+    produce a scope. Swapping 0↔0 stays 0, and an early return of None made
+    TUI block cursors (reverse space on default colours) invisible.
     """
     if attr == 0:
         return None
     fg = attr & ATTR_FG_MASK
     bg = (attr & ATTR_BG_MASK) >> BG_SHIFT
     if attr & REVERSE:
-        fg, bg = bg, fg
+        # Resolve defaults *before* swap so reverse-of-default becomes
+        # black-on-white (visible block cursor), not (0,0) → no region.
+        f = fg if fg else _DEFAULT_FG_ID
+        b = bg if bg else _DEFAULT_BG_ID
+        fg, bg = b, f
     if attr & FAINT:
         r, g, b = XTERM256_RGB[fg - 1] if fg else (255, 255, 255)
         fg = quantize256(r // 2, g // 2, b // 2) + 1

@@ -649,24 +649,30 @@ def _flush_pending_rules():
 
 
 def _scope_for(attr):
-    """Map a packed cell attr to a precompiled scope, or None for default."""
+    """Map a packed cell attr to a precompiled scope, or None for default.
+
+    Reverse with default colours must not collapse to (0,0)/None — that made
+    Claude's reverse-video block cursor invisible (see terminal.colors).
+    """
     if attr == 0:
         return None
-    fg = attr & _ATTR_FG_MASK
-    bg = (attr & _ATTR_BG_MASK) >> _BG_SHIFT
-    if attr & _REVERSE:
-        fg, bg = bg, fg
-    if attr & _FAINT:
-        r, g, b = _XTERM256_RGB[fg - 1] if fg else (255, 255, 255)
-        fg = _quantize256(r // 2, g // 2, b // 2) + 1
-
-    if fg == 0 and bg == 0:
+    # Prefer the pure helper (keeps reverse-default logic in one place).
+    try:
+        from .terminal.colors import scope_name_for as _pure_scope
+    except ImportError:
+        from ai.terminal.colors import scope_name_for as _pure_scope
+    scope = _pure_scope(attr)
+    if scope is None:
         return None
-
-    scope = f"ai.fb.{fg}.{bg}"
+    # Register dynamic scheme rule if needed (ai.fb.<fg>.<bg>).
+    try:
+        # "ai.fb.1.16" -> fg=1, bg=16
+        parts = scope.split(".")
+        fg, bg = int(parts[2]), int(parts[3])
+    except (IndexError, ValueError):
+        return scope
     if scope not in _REGISTERED_SCOPES:
         _register_scope_async(fg, bg)
-
     return scope
 
 
