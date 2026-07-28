@@ -10,6 +10,7 @@ import unittest
 from ai.terminal import (
     Parser,
     Screen,
+    adjust_display_caret,
     build_text_and_regions,
     pack_attr,
     quantize256,
@@ -17,7 +18,6 @@ from ai.terminal import (
     translate_key,
 )
 from ai.terminal.colors import FAINT, REVERSE
-
 
 class TestKeys(unittest.TestCase):
     def test_enter_and_arrows(self):
@@ -149,6 +149,45 @@ class TestRender(unittest.TestCase):
         self.assertEqual(len(red_regs), 1)
         self.assertEqual(red_regs[0][1] - red_regs[0][0], 2)
 
+
+class TestDisplayCaret(unittest.TestCase):
+    def _claude_like_screen(self):
+        """Minimal Claude-style frame: prompt row + border + status footer."""
+        s = Screen(40, 12)
+        # row 4: prompt
+        s.grid[4][0] = ">"
+        s.grid[4][1] = "\u00a0"
+        for i, ch in enumerate("hi"):
+            s.grid[4][2 + i] = ch
+        # row 5: border
+        for c in range(s.cols):
+            s.grid[5][c] = "\u2500"
+        # row 8: status (where Claude parks the cursor)
+        for i, ch in enumerate("  Weekly: 22%"):
+            s.grid[8][i] = ch
+        return s
+
+    def test_pin_to_prompt_when_cursor_on_status(self):
+        s = self._claude_like_screen()
+        s.x, s.y = 20, 8  # parked on status
+        rows, cy, cx = s.render_cells()
+        cy2, cx2 = adjust_display_caret(s, cy, cx)
+        self.assertEqual(cy2, 4)
+        # after '>\\xa0hi' -> col 4
+        self.assertEqual(cx2, 4)
+
+    def test_trust_cursor_on_prompt(self):
+        s = self._claude_like_screen()
+        s.x, s.y = 4, 4
+        rows, cy, cx = s.render_cells()
+        cy2, cx2 = adjust_display_caret(s, cy, cx)
+        self.assertEqual((cy2, cx2), (cy, cx))
+
+    def test_no_prompt_no_adjust(self):
+        s = Screen(20, 5)
+        s.x, s.y = 3, 2
+        rows, cy, cx = s.render_cells()
+        self.assertEqual(adjust_display_caret(s, cy, cx), (cy, cx))
 
 if __name__ == "__main__":
     unittest.main()

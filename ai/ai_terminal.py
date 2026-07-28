@@ -1146,6 +1146,22 @@ def _terminal_view(window, name=None):
     # nonzero margin shows up as a horizontal scrollbar. Terminals don't need
     # text padding anyway. See _measure for the width calc.
     v.settings().set("margin", 0)
+    # Caret / font from ai_terminal.sublime-settings (view-scoped so the rest
+    # of the editor keeps the user's global prefs).
+    try:
+        ts = sublime.load_settings(_SETTINGS_NAME)
+        v.settings().set("block_caret", bool(ts.get("block_caret", True)))
+        caret_style = ts.get("caret_style", "blink")
+        if caret_style:
+            v.settings().set("caret_style", caret_style)
+        cew = ts.get("caret_extra_width", 2)
+        if cew is not None:
+            v.settings().set("caret_extra_width", int(cew))
+        font = ts.get("terminal_font")
+        if font:
+            v.settings().set("font_face", font)
+    except Exception:
+        v.settings().set("block_caret", True)
     # draw_centered=False and a pinned scroll_past_end=False isolate the
     # terminal from the user's global scroll_past_end preference (which they
     # may enable for code views). A fixed-height TUI has no use for
@@ -1286,8 +1302,15 @@ def _do_render(term):
         return
     # Read structured cells + TUI cursor under one lock acquisition so the caret
     # row (history offset + screen.y) matches the text we render this frame.
+    # Then adjust the *display* caret: Claude often CUP-parks the hardware
+    # cursor on the status footer; ST should still show the caret on `>`.
     with term._lock:
         rows, cy, cx = term.screen.render_cells()
+        try:
+            from .terminal.caret import adjust_display_caret
+        except ImportError:
+            from ai.terminal.caret import adjust_display_caret
+        cy, cx = adjust_display_caret(term.screen, cy, cx)
     term.screen.dirty = False
     text, regions = _build_text_and_regions(rows)
     view.run_command("ai_terminal_render",
