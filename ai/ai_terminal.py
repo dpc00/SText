@@ -5,13 +5,12 @@ ctypes against the Windows ConPTY (Pseudoconsole) API, plus a small cursor-aware
 ANSI renderer tailored to the subset Claude's ratatui TUI emits. Because all of
 the rendering/state code is ours, every bug is fixable here.
 
-Architecture (one file, mirroring ai_sdk.py):
-  _Pty     -- ConPTY wrapper (ctypes). Spawns the child, gives us a byte stream.
-  _Screen  -- single-buffer cursor-aware grid (cols x rows) of chars.
-  _Parser  -- minimal ANSI state machine feeding _Screen.
-  _Terminal-- owns a _Pty + _Screen + _Parser; registry keyed by view id.
-  renderer -- debounced, walks _Screen -> view text on the main thread.
-  listener -- forwards keystrokes from the view to the PTY; kills PTY on close.
+Architecture:
+  ai/terminal/  -- pure core (Screen, Parser, colours, keys, render) — unit-testable
+  _Pty          -- ConPTY wrapper (ctypes). Spawns the child, gives us a byte stream.
+  _Terminal     -- owns a _Pty + Screen + Parser; registry keyed by view id.
+  renderer      -- debounced, walks Screen -> view text on the main thread.
+  listener      -- forwards keystrokes from the view to the PTY; kills PTY on close.
 
 Commands (ST names):
   ai_terminal_open_here / ai_terminal_open_in_editor
@@ -389,114 +388,86 @@ class _WinptyPty:
             self._proc = None
 
 
-# ─── colour: 16-colour palette + SGR attr model ──────────────────────────────
-# The parser quantizes every SGR colour (16/256/truecolour) down to a 16-colour
-# id and packs (fg, bg, bold, reverse) into one int per cell. The renderer maps
-# each non-default cell to a scope in ai_terminal.sublime-color-scheme and
-# colours it via coalesced add_regions. 0 in fg/bg means "default" (no region).
-# Scope names match gen_color_scheme.py:
-#   ai.fb.<fg>.<bg>   (fg, bg in 0..256; 0=default)  -- single combined family
-# Claude's TUI emits truecolor (38;2;r;g;b); the parser quantizes to the xterm
-# 256 palette (216-cube + 24-step gray ramp + 16 ANSI) and maps every cell to
-# one ai.fb.<fg>.<bg> scope, defined over the full 257x257 matrix in the view's
-# ai_terminal.sublime-color-scheme. 256-level fidelity matches Terminus, so
-# muted truecolours stay muted instead of snapping to a vivid primary.
 
-# xterm 256 palette. ANSI 0-15 use the Terminus "true_black" vivid values
-# (themes/true_black.json) -- MUST match gen_color_scheme.py's _ANSI16 so
-# truecolour quantization picks the same index the scheme will render.
-# 16-231 cube + 232-255 gray ramp are standard xterm.
-_ANSI16_RGB = [
-    (0x00, 0x00, 0x00), (0xFF, 0x00, 0x00), (0x00, 0xFF, 0x00), (0xFF, 0xFF, 0x00),
-    (0x00, 0x00, 0xFF), (0xFF, 0x00, 0xFF), (0x00, 0xFF, 0xFF), (0xFF, 0xFF, 0xFF),
-    (0x80, 0x80, 0x80), (0xFF, 0x00, 0x00), (0x00, 0xFF, 0x00), (0xFF, 0xFF, 0x00),
-    (0x00, 0x00, 0xFF), (0xFF, 0x00, 0xFF), (0x00, 0xFF, 0xFF), (0xFF, 0xFF, 0xFF),
-]
+# ─── pure terminal core (testable without Sublime) ───────────────────────────
+# Screen, Parser, colours, keys, and text layout live in ai/terminal/*.
+# This file is the Sublime adapter: ConPTY, view I/O, commands, color-scheme.
 
-
-def _xterm256_rgb(n):
-    """xterm 256-colour index -> (r, g, b). 0-15=ANSI16, 16-231=6x6x6 cube,
-    232-255 = gray ramp."""
-    if n < 16:
-        return _ANSI16_RGB[n]
-    if n >= 232:
-        v = 8 + (n - 232) * 10
-        return (v, v, v)
-    m = n - 16
-    r, g, b = m // 36, (m // 6) % 6, m % 6
-    return (0 if r == 0 else 55 + r * 40,
-            0 if g == 0 else 55 + g * 40,
-            0 if b == 0 else 55 + b * 40)
-
-
-_XTERM256_RGB = [_xterm256_rgb(i) for i in range(256)]
-
-
-@lru_cache(maxsize=10000)
-def _quantize256(r, g, b):
-    """Nearest of the xterm 256 palette by squared distance -> 0..255.
-
-    Cached: the 256-step scan runs once per distinct colour, then it's an
-    O(1) lookup. Matches Terminus's @lru_cache on get_closest_color. This is
-    what keeps _scope_for's faint-dim path cheap -- without it the faint
-    thinking text cost a _quantize256 call per cell per frame (the 2s/keystroke
-    bug)."""
-    best, best_d = 0, 1 << 30
-    for i, (pr, pg, pb) in enumerate(_XTERM256_RGB):
-        d = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2
-        if d < best_d:
-            best, best_d = i, d
-    return best
-
-
-# Packed attr bit layout:
-#   fg       bits 0-8   (0=default, 1..256 = xterm 256 index 0..255)
-#   bg       bits 9-17  (0=default, 1..256 = xterm 256 index 0..255)
-#   bold     bit 18    (parsed, not rendered in v2 -- no bold scope family)
-#   reverse  bit 19
-_FG_SHIFT, _BG_SHIFT = 0, 9
-_ATTR_FG_MASK = 0x1FF
-_ATTR_BG_MASK = 0x1FF << _BG_SHIFT
-_BOLD = 1 << 18
-_REVERSE = 1 << 19
-# faint (SGR 2) is rendered by dimming the fg toward black at scope-map time --
-# Claude's "thinking" reasoning text is emitted as default-fg + \x1b[2m, so a
-# real terminal shows it gray; without this it falls back to default white.
-# Safe because _quantize256 is @lru_cache'd: the dim lookup is O(1) per colour.
-_FAINT = 1 << 20
-
-
-def _attr(fg=0, bg=0, flags=0):
-    return (fg << _FG_SHIFT) | (bg << _BG_SHIFT) | flags
-
-
-_BG_LUMA_THRESHOLD = 100
-
-_ANSI16_HEX = [
-    "#000000", "#FF0000", "#00FF00", "#FFFF00",
-    "#0000FF", "#FF00FF", "#00FFFF", "#FFFFFF",
-    "#808080", "#FF0000", "#00FF00", "#FFFF00",
-    "#0000FF", "#FF00FF", "#00FFFF", "#FFFFFF",
-]
-
-
-def _xterm_hex(i):
-    if i < 16:
-        return _ANSI16_HEX[i]
-    if i >= 232:
-        v = 8 + (i - 232) * 10
-        return "#%02X%02X%02X" % (v, v, v)
-    n = i - 16
-    r, g, b = n // 36, (n // 6) % 6, n % 6
-    return "#%02X%02X%02X" % (
-        0 if r == 0 else 55 + r * 40,
-        0 if g == 0 else 55 + g * 40,
-        0 if b == 0 else 55 + b * 40
+try:
+    from .terminal.colors import (
+        quantize256 as _quantize256,
+        pack_attr as _attr,
+        xterm256_rgb as _xterm256_rgb,
+        XTERM256_RGB as _XTERM256_RGB,
+        FG_SHIFT as _FG_SHIFT,
+        BG_SHIFT as _BG_SHIFT,
+        ATTR_FG_MASK as _ATTR_FG_MASK,
+        ATTR_BG_MASK as _ATTR_BG_MASK,
+        BOLD as _BOLD,
+        REVERSE as _REVERSE,
+        FAINT as _FAINT,
+        BG_LUMA_THRESHOLD as _BG_LUMA_THRESHOLD,
+        ANSI16_HEX as _ANSI16_HEX,
+        xterm_hex as _xterm_hex,
+        HEX as _HEX,
+        scope_name_for as _scope_name_for,
+        rstrip_cells as _rstrip_cells,
+        _ANSI16_RGB,
     )
+    from .terminal.screen import Screen as _Screen, BLANK as _BLANK
+    from .terminal.parser import Parser as _Parser
+    from .terminal.keys import (
+        KEY_MAP as _KEY_MAP,
+        APP_MODE_KEY_MAP as _APP_MODE_KEY_MAP,
+        CTRL_KEY_MAP as _CTRL_KEY_MAP,
+        ALT_KEY_MAP as _ALT_KEY_MAP,
+        SHIFT_KEY_MAP as _SHIFT_KEY_MAP,
+        get_key_code as _get_key_code,
+        get_ctrl_key_code as _get_ctrl_key_code,
+        get_alt_key_code as _get_alt_key_code,
+        get_shift_key_code as _get_shift_key_code,
+        translate_key as _translate_key,
+    )
+    from .terminal.render import build_text_and_regions as _build_text_and_regions_pure
+except ImportError:  # running outside User package tree (unit tests / scripts)
+    from ai.terminal.colors import (
+        quantize256 as _quantize256,
+        pack_attr as _attr,
+        xterm256_rgb as _xterm256_rgb,
+        XTERM256_RGB as _XTERM256_RGB,
+        FG_SHIFT as _FG_SHIFT,
+        BG_SHIFT as _BG_SHIFT,
+        ATTR_FG_MASK as _ATTR_FG_MASK,
+        ATTR_BG_MASK as _ATTR_BG_MASK,
+        BOLD as _BOLD,
+        REVERSE as _REVERSE,
+        FAINT as _FAINT,
+        BG_LUMA_THRESHOLD as _BG_LUMA_THRESHOLD,
+        ANSI16_HEX as _ANSI16_HEX,
+        xterm_hex as _xterm_hex,
+        HEX as _HEX,
+        scope_name_for as _scope_name_for,
+        rstrip_cells as _rstrip_cells,
+        _ANSI16_RGB,
+    )
+    from ai.terminal.screen import Screen as _Screen, BLANK as _BLANK
+    from ai.terminal.parser import Parser as _Parser
+    from ai.terminal.keys import (
+        KEY_MAP as _KEY_MAP,
+        APP_MODE_KEY_MAP as _APP_MODE_KEY_MAP,
+        CTRL_KEY_MAP as _CTRL_KEY_MAP,
+        ALT_KEY_MAP as _ALT_KEY_MAP,
+        SHIFT_KEY_MAP as _SHIFT_KEY_MAP,
+        get_key_code as _get_key_code,
+        get_ctrl_key_code as _get_ctrl_key_code,
+        get_alt_key_code as _get_alt_key_code,
+        get_shift_key_code as _get_shift_key_code,
+        translate_key as _translate_key,
+    )
+    from ai.terminal.render import build_text_and_regions as _build_text_and_regions_pure
 
 
-_HEX = [None] + [_xterm_hex(i) for i in range(256)]
-
+# ─── colour scheme registration (Sublime-specific) ───────────────────────────
 _SCHEME_LOCK = threading.Lock()
 _REGISTERED_SCOPES = set()
 _SCHEME_PATH = None  # Safely initialized inside _init_dynamic_color_scheme using sublime.packages_path()
@@ -684,15 +655,6 @@ def _scope_for(attr):
     return scope
 
 
-def _rstrip_cells(cells):
-    """Drop trailing (space, default-attr) cells. Coloured blanks are kept so a
-    row-wide background highlight survives the rstrip."""
-    end = len(cells)
-    while end > 0 and cells[end - 1] == (" ", 0):
-        end -= 1
-    return cells[:end]
-
-
 # ─── plugin settings (ai_terminal.sublime-settings) ──────────────────────────
 # User-tunable knobs read from a settings file so they can be changed without
 # editing source: scrollback history size (the minimap-fill knob -- retune by
@@ -820,490 +782,6 @@ def _on_settings_change():
 # Terminus gutter/width bugs.
 
 _BLANK = " "
-
-
-class _Screen:
-    def __init__(self, cols, rows):
-        self.cols = max(1, cols)
-        self.rows = max(1, rows)
-        self.x = 0
-        self.y = 0
-        self.grid = [[_BLANK] * self.cols for _ in range(self.rows)]
-        # Per-cell packed colour attr, parallel to grid. 0 = default (no region).
-        self.attrs = [[0] * self.cols for _ in range(self.rows)]
-        # Scrollback: rows that scroll off the top are captured here. The cap
-        # is a USER setting (ai_terminal.sublime-settings -> scrollback_history_size),
-        # default 300, retuned by eye against the minimap. FIXED in the sense
-        # that it does NOT auto-size on window resize (auto-sizing trimmed
-        # history on shrink and looked buggy; a large safety deque wasn't
-        # worth the memory) -- but the user can change the setting live and
-        # set_history_cap swaps the deque. 300 fills the minimap at font 14 /
-        # 685px viewport. Rendered above the active grid. Stored as rstripped
-        # [(ch, attr), ...] cell-lists so scrollback keeps its colour (a plain
-        # string would lose the attrs).
-        self.history = collections.deque(maxlen=_scrollback_size())
-        self.saved = (0, 0)
-        self.alt_screen = False
-        self.dirty = True
-
-    def resize(self, cols, rows):
-        cols, rows = max(1, cols), max(1, rows)
-        new = [[_BLANK] * cols for _ in range(rows)]
-        new_attrs = [[0] * cols for _ in range(rows)]
-        for r in range(min(rows, self.rows)):
-            srow = self.grid[r]
-            arow = self.attrs[r]
-            for c in range(min(cols, self.cols)):
-                new[r][c] = srow[c]
-                new_attrs[r][c] = arow[c]
-        self.grid = new
-        self.attrs = new_attrs
-        # Clip scrollback rows to the new width when the screen shrinks.
-        # history rows were captured at the OLD (wider) cols and are never
-        # re-wrapped, so without this they persist as lines wider than the
-        # current viewport -- making the ST layout wider than the view by
-        # the width difference and producing a spurious horizontal
-        # scrollbar (e.g. turning on the gutter shrank cols by 2 -> a
-        # 2-char horizontal scrollbar from stale scrollback). Rstrip after
-        # clipping to drop any trailing blanks revealed by the clip.
-        if cols < self.cols:
-            new_hist = collections.deque(maxlen=self.history.maxlen)
-            for row_cells in self.history:
-                new_hist.append(_rstrip_cells(row_cells[:cols]))
-            self.history = new_hist
-        self.cols, self.rows = cols, rows
-        self.x = min(self.x, cols - 1)
-        self.y = min(self.y, rows - 1)
-        self.dirty = True
-
-    def reset(self):
-        self.grid = [[_BLANK] * self.cols for _ in range(self.rows)]
-        self.attrs = [[0] * self.cols for _ in range(self.rows)]
-        self.history.clear()
-        self.x = self.y = 0
-        self.dirty = True
-
-    def set_history_cap(self, cap):
-        """Swap the scrollback deque to a new maxlen, preserving contents
-        (trims oldest if smaller). Called from the settings-change callback
-        when the user edits scrollback_history_size -- NOT from resize, so a
-        window shrink does not silently drop history (the bug that got
-        auto-sizing reverted)."""
-        _settings_debug_log(f"    [set_history_cap] ENTER: cap={cap}, current_maxlen={self.history.maxlen}, current_len={len(self.history)}")
-        try:
-            cap = max(0, int(cap))
-            if cap == self.history.maxlen:
-                _settings_debug_log("    [set_history_cap] RETURN: cap matches current maxlen, returning early.")
-                return
-            _settings_debug_log(f"    [set_history_cap] Swapping deque to new maxlen={cap}...")
-            self.history = collections.deque(self.history, maxlen=cap)
-            _settings_debug_log(f"    [set_history_cap] Swapped. New len={len(self.history)}, maxlen={self.history.maxlen}")
-        except Exception as e:
-            _settings_debug_log(f"    [set_history_cap] ERROR: {e}\n{traceback.format_exc()}")
-            raise
-
-    def _scroll_up(self):
-        popped = [(self.grid[0][c], self.attrs[0][c]) for c in range(self.cols)]
-        _settings_debug_log(f"    [_scroll_up] ENTER: len(history) before append={len(self.history)}")
-        try:
-            self.history.append(_rstrip_cells(popped))
-            _settings_debug_log(f"    [_scroll_up] SUCCESS: len(history) after append={len(self.history)}")
-        except Exception as e:
-            _settings_debug_log(f"    [_scroll_up] ERROR during append: {e}\n{traceback.format_exc()}")
-            raise
-        self.grid.pop(0)
-        self.attrs.pop(0)
-        self.grid.append([_BLANK] * self.cols)
-        self.attrs.append([0] * self.cols)
-
-    def _scroll_down(self):
-        self.grid.pop()
-        self.attrs.pop()
-        self.grid.insert(0, [_BLANK] * self.cols)
-        self.attrs.insert(0, [0] * self.cols)
-
-    def put_char(self, ch, attr=0):
-        if self.x >= self.cols:
-            self.x = 0
-            self._line_feed()
-        self.grid[self.y][self.x] = ch
-        self.attrs[self.y][self.x] = attr
-        self.x += 1
-        self.dirty = True
-
-    def _line_feed(self):
-        self.y += 1
-        if self.y >= self.rows:
-            self._scroll_up()
-            self.y = self.rows - 1
-
-    def lf(self):
-        self._line_feed()
-        self.dirty = True
-
-    def cr(self):
-        self.x = 0
-        self.dirty = True
-
-    def bs(self):
-        if self.x > 0:
-            self.x -= 1
-        self.dirty = True
-
-    def tab(self):
-        self.x = min(((self.x // 8) + 1) * 8, self.cols - 1)
-        self.dirty = True
-
-    def move_abs(self, r, c):
-        self.y = max(0, min(r, self.rows - 1))
-        self.x = max(0, min(c, self.cols - 1))
-        self.dirty = True
-
-    def move_rel(self, dy, dx):
-        self.y = max(0, min(self.y + dy, self.rows - 1))
-        self.x = max(0, min(self.x + dx, self.cols - 1))
-        self.dirty = True
-
-    def erase_display(self, n):
-        if n == 2 or n == 3:
-            self.grid = [[_BLANK] * self.cols for _ in range(self.rows)]
-            self.attrs = [[0] * self.cols for _ in range(self.rows)]
-            if n == 3:
-                # CSI 3J = erase scrollback (and screen); 2J leaves scrollback.
-                self.history.clear()
-        elif n == 0:
-            for c in range(self.x, self.cols):
-                self.grid[self.y][c] = _BLANK
-                self.attrs[self.y][c] = 0
-            for r in range(self.y + 1, self.rows):
-                self.grid[r] = [_BLANK] * self.cols
-                self.attrs[r] = [0] * self.cols
-        elif n == 1:
-            for r in range(0, self.y):
-                self.grid[r] = [_BLANK] * self.cols
-                self.attrs[r] = [0] * self.cols
-            for c in range(0, self.x + 1):
-                self.grid[self.y][c] = _BLANK
-                self.attrs[self.y][c] = 0
-        self.dirty = True
-
-    def erase_line(self, n):
-        row = self.grid[self.y]
-        arow = self.attrs[self.y]
-        if n == 0:
-            for c in range(self.x, self.cols):
-                row[c] = _BLANK
-                arow[c] = 0
-        elif n == 1:
-            for c in range(0, self.x + 1):
-                row[c] = _BLANK
-                arow[c] = 0
-        elif n == 2:
-            for c in range(self.cols):
-                row[c] = _BLANK
-                arow[c] = 0
-        self.dirty = True
-
-    def save_cursor(self):
-        self.saved = (self.x, self.y)
-        self.dirty = True
-
-    def restore_cursor(self):
-        self.x, self.y = self.saved
-        self.x = min(self.x, self.cols - 1)
-        self.y = min(self.y, self.rows - 1)
-        self.dirty = True
-
-    def render_cells(self):
-        """Return (rows, cy, cx) for rendering.
-
-        rows is a list of [(ch, attr), ...] cell-lists. Each grid row is
-        rstripped of trailing default-blank cells, EXCEPT the cursor row,
-        which keeps cells 0..x-1 and rstrips only the tail beyond the cursor --
-        mirroring the old snapshot rstrip so the caret col stays valid. cy/cx
-        are the cursor position in the rendered row space (history offset +
-        grid y when history is rendered; grid y otherwise).
-
-        NBSP normalization is left to the text builder.
-
-        Whether scrollback history is prepended depends on the renderer mode,
-        gated on self.alt_screen (set by DECSET/DECRST 1049):
-
-        - Classic main-screen renderer (alt_screen False, forced by
-          CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1): Claude Code writes
-          scrolling output to the primary buffer. pyte scrolls genuinely as
-          new output arrives, so history is REAL scrollback. Render
-          history + grid so the full conversation is visible and ST folding
-          works on real scrolling text. cy shifts by len(history) so the
-          caret lands on the right line.
-
-        - Fullscreen alt-screen renderer (alt_screen True, the default when
-          the env var is unset): Claude Code paints a fixed ~rows matrix on
-          the alt screen and redraws full frames in place, so any pyte scroll
-          pushes a row into history spuriously (e.g. on typing). Rendering
-          history + grid made the view grow past the viewport -> a "solid"
-          vertical scrollbar that shifts a line and covers the bottom status
-          row. Grid-only keeps the view exactly `self.rows` lines -> never
-          exceeds the viewport, never scrolls, no shift.
-        """
-        grid_rows = []
-        cy_in_grid = self.y
-        cx = self.x
-        for i in range(self.rows):
-            srow = self.grid[i]
-            arow = self.attrs[i]
-            if i == self.y:
-                # Cursor row: keep cells 0..x-1 verbatim, rstrip the tail. The
-                # cell at the cursor is usually an erase-blank; stripping it
-                # leaves the row ending at col x so the render clamp seats the
-                # caret at line end (see AiTerminalRenderCommand).
-                x = max(self.x, 0)
-                body = [(srow[c], arow[c]) for c in range(min(x, self.cols))]
-                tail = [(srow[c], arow[c]) for c in range(x, self.cols)]
-                grid_rows.append(body + _rstrip_cells(tail))
-            else:
-                cells = [(srow[c], arow[c]) for c in range(self.cols)]
-                grid_rows.append(_rstrip_cells(cells))
-        if self.alt_screen:
-            return grid_rows, cy_in_grid, cx
-        _settings_debug_log(f"    [render_cells] ENTER: listing self.history (len={len(self.history)})...")
-        try:
-            hist = list(self.history)
-            _settings_debug_log(f"    [render_cells] SUCCESS: listed {len(hist)} elements")
-        except Exception as e:
-            _settings_debug_log(f"    [render_cells] ERROR during list(self.history): {e}\n{traceback.format_exc()}")
-            raise
-        return hist + grid_rows, len(hist) + cy_in_grid, cx
-
-
-# ─── _Parser: minimal ANSI state machine (Claude ratatui subset) ─────────────
-
-_GROUND, _ESC, _CSI, _OSC = 0, 1, 2, 3
-
-
-class _Parser:
-    def __init__(self, screen):
-        self.s = screen
-        self.state = _GROUND
-        self.params = ""
-        # Current SGR state. _fg/_bg are 1-based colour ids (0=default);
-        # _flags holds _BOLD/_REVERSE (other styles are parsed but not rendered).
-        self._fg = 0
-        self._bg = 0
-        self._flags = 0
-
-    @property
-    def _cur_attr(self):
-        return _attr(self._fg, self._bg, self._flags)
-
-    def feed(self, text):
-        for ch in text:
-            self._step(ch)
-
-    def _step(self, ch):
-        st = self.state
-        o = ord(ch)
-        if st == _GROUND:
-            if ch == "\x1b":
-                self.state = _ESC
-            elif o == 0x0A or o == 0x0B or o == 0x0C:
-                self.s.lf()
-            elif ch == "\r":
-                self.s.cr()
-            elif ch == "\b":
-                self.s.bs()
-            elif ch == "\t":
-                self.s.tab()
-            elif o == 0x07:
-                pass  # BEL
-            elif o < 0x20 or o == 0x7F:
-                pass  # other C0 / DEL -- ignore
-            else:
-                self.s.put_char(ch, self._cur_attr)
-        elif st == _ESC:
-            if ch == "[":
-                self.state = _CSI
-                self.params = ""
-            elif ch == "]":
-                self.state = _OSC
-                self.params = ""
-            elif ch == "7":
-                self.s.save_cursor()
-                self.state = _GROUND
-            elif ch == "8":
-                self.s.restore_cursor()
-                self.state = _GROUND
-            elif ch == "D":  # IND
-                self.s.lf()
-                self.state = _GROUND
-            elif ch == "E":  # NEL
-                self.s.cr()
-                self.s.lf()
-                self.state = _GROUND
-            elif ch == "c":  # RIS
-                self.s.reset()
-                self._fg = self._bg = self._flags = 0
-                self.state = _GROUND
-            elif ch == "M":  # RI -- reverse index; rare, no-op for MVP
-                self.state = _GROUND
-            else:
-                self.state = _GROUND  # ESC =, ESC >, ESC ( etc -- consume
-        elif st == _CSI:
-            if 0x30 <= o <= 0x3F:  # parameter bytes
-                self.params += ch
-            elif 0x20 <= o <= 0x2F:  # intermediates -- ignore
-                pass
-            elif 0x40 <= o <= 0x7E:  # final byte
-                self._dispatch_csi(ch)
-                self.state = _GROUND
-            else:
-                self.state = _GROUND
-        elif st == _OSC:
-            # terminate on BEL or ST (ESC \)
-            if o == 0x07:
-                self.state = _GROUND
-            elif ch == "\\" and self.params.endswith("\x1b"):
-                self.state = _GROUND
-            else:
-                self.params += ch
-
-    def _ints(self, default=0):
-        priv = self.params.startswith("?")
-        raw = self.params.lstrip("?")
-        parts = raw.split(";") if raw else []
-        out = []
-        for p in parts:
-            out.append(int(p) if p.isdigit() else default)
-        return priv, out
-
-    def _parse_ext_color(self, p, j):
-        """Parse a 38/48 extended colour spec starting at p[j] -> 1-based xterm id.
-
-        ;5;N (256-colour) is taken directly (N is already a 256-palette index);
-        ;2;r;g;b (truecolour) is quantized to the nearest xterm 256 entry.
-        Returns 0 (default) on a malformed spec."""
-        if j >= len(p):
-            return 0
-        if p[j] == 5 and j + 1 < len(p):
-            n = p[j + 1]
-            if 0 <= n <= 255:
-                return n + 1
-            return 0
-        if p[j] == 2 and j + 3 < len(p):
-            return _quantize256(p[j + 1], p[j + 2], p[j + 3]) + 1
-        return 0
-
-    def _sgr(self, p):
-        """Apply an SGR parameter list to the current fg/bg/flags.
-
-        Only fg/bg/bold/reverse are rendered in v1; faint/italic/underline/
-        strike are parsed (so the stream stays in sync) but do not affect the
-        scope mapping."""
-        if not p:
-            p = [0]
-        i = 0
-        n = len(p)
-        while i < n:
-            c = p[i]
-            if c == 0:
-                self._fg = self._bg = self._flags = 0
-            elif c == 1:
-                self._flags |= _BOLD
-            elif c == 7:
-                self._flags |= _REVERSE
-            elif c == 2:
-                self._flags |= _FAINT
-            elif c == 22:
-                # normal intensity: clears both bold and faint
-                self._flags &= ~(_BOLD | _FAINT)
-            elif c == 21:
-                self._flags &= ~_BOLD
-            elif c == 27:
-                self._flags &= ~_REVERSE
-            elif 3 <= c <= 6 or c == 8 or c == 9 or c in (23, 24, 28, 29):
-                pass  # italic/underline/blink/conceal/strike + clears: parsed, not rendered
-            elif 30 <= c <= 37:
-                self._fg = c - 30 + 1
-            elif c == 38 and i + 1 < n:
-                self._fg = self._parse_ext_color(p, i + 1)
-                if p[i + 1] == 5 and i + 2 < n:
-                    i += 2
-                elif p[i + 1] == 2 and i + 4 < n:
-                    i += 4
-            elif c == 39:
-                self._fg = 0
-            elif 40 <= c <= 47:
-                self._bg = c - 40 + 1
-            elif c == 48 and i + 1 < n:
-                self._bg = self._parse_ext_color(p, i + 1)
-                if p[i + 1] == 5 and i + 2 < n:
-                    i += 2
-                elif p[i + 1] == 2 and i + 4 < n:
-                    i += 4
-            elif c == 49:
-                self._bg = 0
-            elif 90 <= c <= 97:
-                self._fg = c - 90 + 9
-            elif 100 <= c <= 107:
-                self._bg = c - 100 + 9
-            i += 1
-
-    def _dispatch_csi(self, final):
-        priv, p = self._ints()
-        s = self.s
-        if final == "m":  # SGR -- select graphic rendition (colour/style)
-            self._sgr(p)
-            return
-        if final in ("H", "f"):  # CUP / HVP
-            r = (p[0] if len(p) > 0 and p[0] else 1) - 1
-            c = (p[1] if len(p) > 1 and p[1] else 1) - 1
-            s.move_abs(r, c)
-        elif final == "A":
-            s.move_rel(-(p[0] if p and p[0] else 1), 0)
-        elif final == "B":
-            s.move_rel(p[0] if p and p[0] else 1, 0)
-        elif final == "C":
-            s.move_rel(0, p[0] if p and p[0] else 1)
-        elif final == "D":
-            s.move_rel(0, -(p[0] if p and p[0] else 1))
-        elif final == "J":
-            s.erase_display(p[0] if p else 0)
-        elif final == "K":
-            s.erase_line(p[0] if p else 0)
-        elif final == "X":  # ECH -- erase Ps chars from cursor (cursor does not move)
-            # ConPTY leans on ECH heavily to blank cells mid-row when a TUI frame
-            # shrinks a line; dropping it (the old "consumed-and-dropped" fallback)
-            # left stale cells visible -- e.g. the /slash-menu mash where the
-            # statusline and old menu items bled into the new filtered list.
-            n = max(0, p[0] if p else 1)
-            row = s.grid[s.y]
-            arow = s.attrs[s.y]
-            for c in range(s.x, min(s.x + n, s.cols)):
-                row[c] = _BLANK
-                arow[c] = 0
-            s.dirty = True
-        elif final == "G":  # CHA -- cursor horizontal absolute
-            s.move_abs(s.y, (p[0] if p and p[0] else 1) - 1)
-        elif final == "d":  # VPA -- vertical position absolute
-            s.move_abs((p[0] if p and p[0] else 1) - 1, s.x)
-        elif final == "s":
-            s.save_cursor()
-        elif final == "u":
-            s.restore_cursor()
-        elif final in ("h", "l"):  # set / reset mode (private: 1049/2004/mouse/sync)
-            if priv and "1049" in self.params:
-                if not _force_main_screen():
-                    s.alt_screen = (final == "h")
-            # all others consumed-and-dropped so the stream stays in sync
-        elif final == "S":  # SU -- Scroll Up
-            n = p[0] if p and p[0] else 1
-            for _ in range(n):
-                s._scroll_up()
-        elif final == "T":  # SD -- Scroll Down
-            n = p[0] if p and p[0] else 1
-            for _ in range(n):
-                s._scroll_down()
-        # P, @, L, M, r, and any other finals: consumed-and-dropped.
 
 
 # ─── _Terminal: per-view owner + registry ────────────────────────────────────
@@ -1812,33 +1290,13 @@ def _do_render(term):
 
 
 def _build_text_and_regions(rows):
-    """Flatten structured rows into the view text + a list of [begin, end, scope]
-    colour regions. Adjacent cells whose attr maps to the same scope are
-    coalesced into one region so add_regions stays cheap. NBSP (U+00A0) that
-    Claude emits to stop wrapping is normalized to a plain space here."""
-    parts = []
-    regs = []
-    offset = 0
-    for cells in rows:
-        run_scope = None
-        run_start = -1
-        for ch, attr in cells:
-            parts.append(ch)
-            scope = _scope_for(attr) if attr else None
-            if scope != run_scope:
-                if run_scope is not None:
-                    regs.append([run_start, offset, run_scope])
-                run_scope = scope
-                run_start = offset
-            offset += 1
-        if run_scope is not None:
-            regs.append([run_start, offset, run_scope])
-        parts.append("\n")
-        offset += 1
-    if parts and parts[-1] == "\n":
-        parts.pop()
-    text = "".join(parts).replace(" ", " ")
-    return text, regs
+    """Flatten structured rows into the view text + colour regions.
+
+    Delegates layout to the pure core; uses _scope_for so new scopes still
+    get registered into the dynamic color scheme.
+    """
+    return _build_text_and_regions_pure(rows, scope_for=_scope_for)
+
 
 
 # Per-view set of colour region keys added last frame, so we can erase stale
@@ -2147,8 +1605,8 @@ def _spawn(window, path, profile=None):
         sublime.error_message(f"ai_terminal: failed to start PTY:\n{e}")
         view.close()
         return
-    screen = _Screen(cols, rows)
-    parser = _Parser(screen)
+    screen = _Screen(cols, rows, history_cap=_scrollback_size())
+    parser = _Parser(screen, force_main_screen=_force_main_screen())
     term = _Terminal(view, pty, screen, parser, spawn_env=extra_env)
     with _REG_LOCK:
         _TERMINALS[view.id()] = term
@@ -2255,142 +1713,6 @@ class AiTerminalSendStringWindowCommand(sublime_plugin.WindowCommand):
         term = _Terminal.from_id(view.id())
         if term:
             term.send_string(string)
-
-
-# ─── key -> byte translation (ported from Terminus key.py) ───────────────────
-#
-# ST does NOT fire on_text_command for unbound printable keys: they take a direct
-# text-input path that bypasses the command system, so typed letters never
-# reached the PTY (they were inserted as stray text into the view and wiped by
-# the next render). The fix is the Terminus approach: Default.sublime-keymap
-# binds every printable/special key to ai_terminal_keypress (gated by
-# setting.ai_terminal_view), and this command translates the key name to the
-# terminal byte sequence the PTY expects.
-
-_KEY_MAP = {
-    "enter": "\r",
-    "backspace": "\x7f",
-    "tab": "\t",
-    "space": " ",
-    "escape": "\x1b",
-    "down": "\x1b[B",
-    "up": "\x1b[A",
-    "right": "\x1b[C",
-    "left": "\x1b[D",
-    "home": "\x1b[1~",
-    "end": "\x1b[4~",
-    "pageup": "\x1b[5~",
-    "pagedown": "\x1b[6~",
-    "delete": "\x1b[3~",
-    "insert": "\x1b[2~",
-    "f1": "\x1bOP",
-    "f2": "\x1bOQ",
-    "f3": "\x1bOR",
-    "f4": "\x1bOS",
-    "f5": "\x1b[15~",
-    "f6": "\x1b[17~",
-    "f7": "\x1b[18~",
-    "f8": "\x1b[19~",
-    "f9": "\x1b[20~",
-    "f10": "\x1b[21~",
-    "f12": "\x1b[24~",
-}
-
-_APP_MODE_KEY_MAP = {
-    "down": "\x1bOB",
-    "up": "\x1bOA",
-    "right": "\x1bOC",
-    "left": "\x1bOD",
-}
-
-_CTRL_KEY_MAP = {
-    "up": "\x1b[1;5A",
-    "down": "\x1b[1;5B",
-    "right": "\x1b[1;5C",
-    "left": "\x1b[1;5D",
-    "home": "\x1b[1;5~",
-    "end": "\x1b[4;5~",
-    "pageup": "\x1b[5;5~",
-    "pagedown": "\x1b[6;5~",
-    "insert": "\x1b[2;5~",
-    "delete": "\x1b[3;5~",
-    "@": "\x00",
-    "`": "\x00",
-    "[": "\x1b",
-    "{": "\x1b",
-    "\\": "\x1c",
-    "|": "\x1c",
-    "]": "\x1d",
-    "}": "\x1d",
-    "^": "\x1e",
-    "~": "\x1e",
-    "_": "\x1f",
-    "?": "\x7f",
-}
-
-_ALT_KEY_MAP = {
-    "up": "\x1b[1;3A",
-    "down": "\x1b[1;3B",
-    "right": "\x1b[1;3C",
-    "left": "\x1b[1;3D",
-}
-
-_SHIFT_KEY_MAP = {
-    "up": "\x1b[1;2A",
-    "down": "\x1b[1;2B",
-    "right": "\x1b[1;2C",
-    "left": "\x1b[1;2D",
-    "tab": "\x1b[Z",
-    "home": "\x1b[1;2~",
-    "end": "\x1b[4;2~",
-    "pageup": "\x1b[5;2~",
-    "pagedown": "\x1b[6;2~",
-    "insert": "\x1b[2;2~",
-    "delete": "\x1b[3;2~",
-}
-
-
-def _get_key_code(key, application_mode=False):
-    if application_mode and key in _APP_MODE_KEY_MAP:
-        return _APP_MODE_KEY_MAP[key]
-    if key in _KEY_MAP:
-        return _KEY_MAP[key]
-    return key
-
-
-def _get_ctrl_key_code(key):
-    key = key.lower()
-    if key in _CTRL_KEY_MAP:
-        return _CTRL_KEY_MAP[key]
-    if len(key) == 1 and "a" <= key <= "z":
-        return chr(ord(key) - ord("a") + 1)
-    return _get_key_code(key)
-
-
-def _get_alt_key_code(key):
-    key_lo = key.lower()
-    if key_lo in _ALT_KEY_MAP:
-        return _ALT_KEY_MAP[key_lo]
-    return "\x1b" + _get_key_code(key)
-
-
-def _get_shift_key_code(key):
-    key = key.lower()
-    if key in _SHIFT_KEY_MAP:
-        return _SHIFT_KEY_MAP[key]
-    if key in _KEY_MAP:
-        return _KEY_MAP[key]
-    return key.upper()
-
-
-def _translate_key(key, ctrl=False, alt=False, shift=False):
-    if ctrl:
-        return _get_ctrl_key_code(key)
-    if alt:
-        return _get_alt_key_code(key)
-    if shift:
-        return _get_shift_key_code(key)
-    return _get_key_code(key)
 
 
 def _scroll_to_bottom(view):
