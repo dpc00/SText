@@ -73,7 +73,7 @@
             "launch_command": ["ollama", "launch", "opencode", "--", "--mini"],
             "spawn_env": {
                 "AI_TERMINAL_LOG_LINES": "1",
-                // "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
                 // "ANTHROPIC_AUTH_TOKEN":"ollama",
                 // "ANTHROPIC_API_KEY":"",
                 // "ANTHROPIC_BASE_URL":"http://localhost:11434",
