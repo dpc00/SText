@@ -192,6 +192,19 @@ class TestDisplayCaret(unittest.TestCase):
         # '>\xa0hi' last non-blank at col 3 -> end 4
         self.assertEqual(cx2, 4)
 
+    def test_reject_wild_eol_cup_on_prompt(self):
+        s = self._claude_like_screen()
+        s.x, s.y = 39, 4  # CUP to EOL while "erasing" — not real input col
+        rows, cy, cx = s.render_cells()
+        adjust_display_caret(s, cy, cx)
+        # Must not remember 39
+        self.assertNotEqual(s.input_caret_x, 39)
+        s.x, s.y = 20, 8
+        rows, cy, cx = s.render_cells()
+        cy2, cx2 = adjust_display_caret(s, cy, cx)
+        self.assertEqual(cy2, 4)
+        self.assertEqual(cx2, 4)  # content end for '>\xa0hi'
+
     def test_pad_row_for_caret_extends_rstripped_prompt(self):
         s = self._claude_like_screen()
         s.x, s.y = 20, 8  # not on prompt -> prompt row fully rstripped

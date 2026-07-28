@@ -18,24 +18,40 @@ def find_prompt_row(screen):
     return found
 
 
-def prompt_caret_col(screen, prompt_y):
-    """Best-effort column for the prompt when we never saw a hardware CUP there.
-
-    Prefer the last hardware column recorded while the cursor was on the prompt
-    (`screen.input_caret_x`). Fall back to after the last non-blank cell.
-    """
-    ix = getattr(screen, "input_caret_x", None)
-    if ix is not None:
-        return min(max(int(ix), 0), screen.cols - 1)
+def _last_nonblank_col(screen, prompt_y):
+    """Index of last non-blank cell on the prompt row, or -1 if none."""
     row = screen.grid[prompt_y]
-    end = 0
+    last = -1
     for i, ch in enumerate(row):
         if ch not in (" ", "\u00a0"):
-            end = i + 1
-    # Empty prompt `> ` / `>\xa0` — seat caret just after the prompt marker.
+            last = i
+    return last
+
+
+def prompt_content_end(screen, prompt_y):
+    """Column after the last non-blank on the prompt (min 2 after `>`)."""
+    end = _last_nonblank_col(screen, prompt_y) + 1
+    row = screen.grid[prompt_y]
     if end < 2 and row and row[0] == ">":
         end = 2
     return min(max(end, 0), screen.cols - 1)
+
+
+def prompt_caret_col(screen, prompt_y):
+    """Best-effort ST caret column for the prompt row.
+
+    Prefer the last plausible hardware column recorded on the prompt
+    (`screen.input_caret_x`). Reject wild CUPs that jump to EOL (Claude does
+    that while erasing). Fall back to content end.
+    """
+    end = prompt_content_end(screen, prompt_y)
+    ix = getattr(screen, "input_caret_x", None)
+    if ix is not None:
+        ix = int(ix)
+        # Plausible = at or just after content (blank cell under block cursor).
+        if 0 <= ix <= end + 1:
+            return min(max(ix, 0), screen.cols - 1)
+    return end
 
 
 def adjust_display_caret(screen, cy, cx):
@@ -46,14 +62,16 @@ def adjust_display_caret(screen, cy, cx):
     display caret to the prompt row instead.
 
     Also records `screen.input_caret_x` whenever the hardware cursor is on the
-    prompt so a later status-bar park restores the exact column (not end-1).
+    prompt (only when the column is plausible for input text).
     """
     prompt_y = find_prompt_row(screen)
     if prompt_y is None:
         return cy, cx
+    end = prompt_content_end(screen, prompt_y)
     # Remember the real input column while Claude has the cursor on `>`.
     if screen.y == prompt_y:
-        screen.input_caret_x = screen.x
+        if screen.x <= end + 1:
+            screen.input_caret_x = screen.x
         return cy, cx
     # Input box is: prompt row, then a border row, then status. Anything below
     # the border is "parked on status" — snap back to the prompt.
