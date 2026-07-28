@@ -416,6 +416,45 @@ def _mark_tool_done(sid, tool_use_id, name, err, ts=None, response=None):
             return
 
 
+# Grok CLI posts camelCase envelopes (hookEventName, sessionId, …). Claude Code
+# and our historical clients use snake_case. Map known aliases once so handlers
+# only read snake_case keys.
+_CAMEL_TO_SNAKE = {
+    "hookEventName": "hook_event_name",
+    "eventType": "event_type",
+    "sessionId": "session_id",
+    "toolName": "tool_name",
+    "toolInput": "tool_input",
+    "toolUseId": "tool_use_id",
+    "toolResponse": "tool_response",
+    "lastAssistantMessage": "last_assistant_message",
+    "stopReason": "stop_reason",
+    "notificationType": "notification_type",
+    "permissionMode": "permission_mode",
+    "workspaceRoot": "workspace_root",
+}
+
+
+def _normalize_event_keys(ev):
+    """Copy camelCase Grok fields onto snake_case aliases (in place)."""
+    if not isinstance(ev, dict):
+        return ev
+    for camel, snake in _CAMEL_TO_SNAKE.items():
+        if camel in ev and snake not in ev:
+            ev[snake] = ev[camel]
+    # Nested session info sometimes carries the id only.
+    if not ev.get("session_id"):
+        info = ev.get("session_info") or ev.get("sessionInfo") or {}
+        if isinstance(info, dict):
+            ev["session_id"] = (
+                info.get("session_id")
+                or info.get("sessionId")
+                or ev.get("sessionId")
+                or "_"
+            )
+    return ev
+
+
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -430,8 +469,10 @@ class H(http.server.BaseHTTPRequestHandler):
                 ev = {"_raw": body.decode("utf-8", "replace")}
             recv = _ts()
 
+            _normalize_event_keys(ev)
+
             # Normalize raw Gemini CLI events
-            event_type = ev.get("hook_event_name") or ev.get("event_type")        
+            event_type = ev.get("hook_event_name") or ev.get("event_type")
             if event_type:
                 # Map event types to SText log server names
                 if event_type == "BeforeAgent":
@@ -464,13 +505,22 @@ class H(http.server.BaseHTTPRequestHandler):
                 elif event_type == "Notification":
                     ev["hook_event_name"] = "Notification"
                     ev["message"] = ev.get("message") or ""
-                    ev["notification_type"] = ev.get("notification_type") or ""   
+                    ev["notification_type"] = ev.get("notification_type") or ""
                 else:
+                    # Grok/Claude event names already match; lower-case variants too.
+                    if event_type and event_type[0].islower():
+                        # e.g. "user_prompt_submit" / "stop" from some runners
+                        parts = event_type.replace("-", "_").split("_")
+                        event_type = "".join(p[:1].upper() + p[1:] for p in parts if p)
                     ev["hook_event_name"] = event_type
 
             # Fill session_id
-            if "session_id" not in ev:
-                ev["session_id"] = ev.get("session_id") or ev.get("session_info", {}).get("session_id") or "_"
+            if not ev.get("session_id"):
+                ev["session_id"] = (
+                    ev.get("sessionId")
+                    or (ev.get("session_info") or {}).get("session_id")
+                    or "_"
+                )
 
             name = ev.get("hook_event_name", "")
             sid = ev.get("session_id", "_")

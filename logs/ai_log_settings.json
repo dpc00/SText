@@ -1,4 +1,5 @@
 {
+  "_comment": "Claude Code / HTTP agents: type=http to 9511. Grok rejects http:// HTTP hooks (SSRF https-only) — use ~/.grok/hooks/ai-log.json command → ai_log_hook_forward.py.",
   "hooks": {
     "UserPromptSubmit":     [{"hooks": [{"type": "http", "url": "http://127.0.0.1:9511/event", "timeout": 5}]}],
     "PreToolUse":           [{"matcher": ".*", "hooks": [{"type": "http", "url": "http://127.0.0.1:9511/event", "timeout": 5}]}],
