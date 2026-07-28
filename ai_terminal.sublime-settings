@@ -1,243 +1,26 @@
 {
-    // ai_terminal — ConPTY terminal for Sublime Text (currently Claude Code).
-    // Edit this file to retune without source edits; changes apply live
-    // (no plugin reload needed): the history deque is swapped in place and
-    // the resize poller picks up new column bounds within ~750ms.
-
-    // Number of lines kept in scrollback history (the `history` deque).
-    // This is the minimap-fill knob: at font 14 / 685px viewport, 300 fills
-    // the minimap. Retune by eye against the minimap when you change the
-    // window height or font size. Decreasing it may improve performance.
-    // Live: changing this swaps the live deque (trims oldest if smaller).
-    "scrollback_history_size": 300,
-
-    // Toggles the PTY backend on Windows.
-    // "conpty" -- Windows native CreatePseudoConsole API.
-    // "winpty" -- Symmetrical winpty PTY backend. Use this to confirm or isolate
-    // whether the random conversation replays are a ConPTY-specific issue.
-    "windows_pty_backend": "conpty",
-
-    // Host ST caret is ALWAYS off for terminal views (see _terminal_view).
-    // Claude/OpenCode paint the cursor with reverse fg/bg (SGR 7) in the cell
-    // stream — same model as Terminus. Do not turn on block_caret; a visible
-    // host caret becomes a second cursor and looks like an off-by-one.
-    // These keys are ignored if present (kept for documentation only):
-    // "block_caret": false,
-    // "caret_style": "solid",
-    // "caret_extra_width": 0,
-
-    // Font for the terminal view only (overrides the global font_face for
-    // ai_terminal tabs). Must be a monospace font with full box-drawing
-    // (U+2500-U+257F), block-element (U+2580-U+259F), and miscellaneous
-    // TUI symbol coverage (U+23BF, U+23F8, U+2733, U+273B, U+2802, U+2B1D).
-    // "Cascadia Code" ships with Windows 10+ and has all of these.
-    // Set to null to inherit the global font_face.
-    "terminal_font": "Cascadia Code",
-
-    // Floor and ceiling on the auto-sized terminal width in characters.
-    // cols is computed from the viewport width; min_columns is the lower
-    // bound, max_columns caps it (null = no cap). The renderer's no-horizontal-
-    // scrollbar math (cols = int(usable_w/cw) - 3) still applies inside these
-    // bounds. Live: the resize poller picks up new bounds within ~750ms.
-    "min_columns": 20,
-    "max_columns": null,
-
-    // Ignore the TUI's alt-screen (DECSET 1049) toggle so our renderer keeps
-    // real ST scrollback. Default true = scrollback on. Set false to let a
-    // TUI take over the view with a fixed fullscreen matrix (loses scrollback).
-    "force_main_screen": true,
-
-    // The default profile to run if no profile name is explicitly requested
-    "default_profile": "Ollama (OpenCode)",
-
-    // Configured terminal/shell profiles for SText.
-    // This allows SText to work as a multi-console terminal launcher.
-    "profiles": {
-        "Ollama (Claude)": {
-            "launch_command": ["ollama", "launch", "claude"],
-            "spawn_env": { // needs more parameters at the moment mostly get from comments at old spawn env
-                "AI_TERMINAL_LOG_LINES": "1",
-                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
-                // "ANTHROPIC_AUTH_TOKEN":"ollama",
-                // "ANTHROPIC_API_KEY":"",
-                // "ANTHROPIC_BASE_URL":"http://localhost:11434",
-                "ANTHROPIC_MODEL": "glm-5.2:cloud",
-                // "ANTHROPIC_VERTEX_PROJECT_ID": "project-67efc385-8bb5-493f-a81",
-                // "CLAUDE_CODE_USE_VERTEX": "1",
-                // "CLOUD_ML_REGION": "global",
-                // "GOOGLE_CLOUD_LOCATION":"global",
-                // "GOOGLE_CLOUD_PROJECT":"project-67efc385-8bb5-493f-a81",
-                // "GOOGLE_PROJECT_NUMBER":"782908338549",
-            }
-        },
-        "Ollama (OpenCode)": {
-            "launch_command": ["ollama", "launch", "opencode"],
-            "spawn_env": { // needs more parameters at the moment mostly get from comments at old spawn env
-                "AI_TERMINAL_LOG_LINES": "1",
-                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
-                // "ANTHROPIC_AUTH_TOKEN":"ollama",
-                // "ANTHROPIC_API_KEY":"",
-                // "ANTHROPIC_BASE_URL":"http://localhost:11434",
-                // "ANTHROPIC_MODEL": "claude-sonnet-5",
-                // "ANTHROPIC_VERTEX_PROJECT_ID": "project-67efc385-8bb5-493f-a81",
-                // "CLAUDE_CODE_USE_VERTEX": "1",
-                // "CLOUD_ML_REGION": "global",
-                // "GOOGLE_CLOUD_LOCATION":"global",
-                // "GOOGLE_CLOUD_PROJECT":"project-67efc385-8bb5-493f-a81",
-                // "GOOGLE_PROJECT_NUMBER":"782908338549",
-            }
-        },
-        "Ollama (OpenCode Mini)": {
-            "launch_command": ["ollama", "launch", "opencode", "--", "--mini"],
-            "spawn_env": {
-                "AI_TERMINAL_LOG_LINES": "1",
-                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
-                // "ANTHROPIC_AUTH_TOKEN":"ollama",
-                // "ANTHROPIC_API_KEY":"",
-                // "ANTHROPIC_BASE_URL":"http://localhost:11434",
-            }
-        },
-        "Qwen": {
-            "launch_command": ["qwen"],
-            "spawn_env": {
-                "AI_TERMINAL_LOG_LINES": "1",
-                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
-            }
-        },
-        "OpenClaw": {
-            "launch_command": ["openclaw"],
-            "spawn_env": {
-                "AI_TERMINAL_LOG_LINES": "1",
-                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
-            }
-        },
-        "Mimo": {
-            "launch_command": ["mimo"],
-            "spawn_env": {
-                "AI_TERMINAL_LOG_LINES": "1",
-                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
-            }
-        },
-        "Kimi": {
-            "launch_command": ["kimi"],
-            "spawn_env": {
-                "AI_TERMINAL_LOG_LINES": "1",
-                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
-            }
-        },
-        // Plain Claude Code (no browser). Prefer this for caret/TUI debugging —
-        // --chrome changes the UI and was introduced as a single malformed
-        // argv token ["claude --chrome"] in a pybak on 2026-07-27.
-        "Claude": {
-            "launch_command": ["claude"],
-            "spawn_env": {
-                "AI_TERMINAL_LOG_LINES": "1",
-                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
-            }
-        },
-        "Claude --chrome": {
-            "launch_command": ["claude", "--chrome"],
-            "spawn_env": {
-                "AI_TERMINAL_LOG_LINES": "1",
-                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
-            }
-        },
-        "JCode": {
-            "launch_command": ["jcode"],
-            "spawn_env": {
-                "AI_TERMINAL_LOG_LINES": "1",
-                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
-            }
-        },
-        "Vibe": {
-            "launch_command": ["vibe"],
-            "spawn_env": {
-                "AI_TERMINAL_LOG_LINES": "1",
-                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
-            }
-        },
-        "Codex": {
-            "launch_command": ["codex"],
-            "spawn_env": {
-                "AI_TERMINAL_LOG_LINES": "1",
-                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
-            }
-        },
-        "Grok Build": {
-            // --minimal is required for scrollback-native UI.
-            // --no-alt-screen alone is not enough (still looks like plain grok).
-            // Color: host NO_COLOR/TERM=dumb is stripped in _spawn via
-            // sanitize_pty_env — do not rely on spawn_env alone for that.
-            "launch_command": ["grok"],
-            "spawn_env": {
-                "AI_TERMINAL_LOG_LINES": "1",
-            }
-        },
-        "Ollama (Codex)": {
-            "launch_command": ["ollama", "launch", "codex"],
-            "spawn_env": { // needs more parameters at the moment mostly get from comments at old spawn env
-                "AI_TERMINAL_LOG_LINES": "1",
-                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
-                // "ANTHROPIC_AUTH_TOKEN":"ollama",
-                // "ANTHROPIC_API_KEY":"",
-                // "ANTHROPIC_BASE_URL":"http://localhost:11434",
-                // "ANTHROPIC_MODEL": "claude-sonnet-5",
-                // "ANTHROPIC_VERTEX_PROJECT_ID": "project-67efc385-8bb5-493f-a81",
-                // "CLAUDE_CODE_USE_VERTEX": "1",
-                // "CLOUD_ML_REGION": "global",
-                // "GOOGLE_CLOUD_LOCATION":"global",
-                // "GOOGLE_CLOUD_PROJECT":"project-67efc385-8bb5-493f-a81",
-                // "GOOGLE_PROJECT_NUMBER":"782908338549",
-            }
-        },
-        "Gemini": {
-            "launch_command": ["gemini.cmd"],
-            "spawn_env": {
-                "AI_TERMINAL_LOG_LINES": "1",
-                "GEMINI_PROMPT_QUEUE": "false",
-                "GEMINI_API_KEY": "",
-                "GEMINI_SYSTEM_MD":"C:\\Users\\donal\\projects\\SText\\ai_sdk_prompt.md",
-            }
-        },
-        // "Claude --chrome": {
-        //     "launch_command": ["claude", "--chrome"],
-        //     "spawn_env": {
-        //         "AI_TERMINAL_LOG_LINES": "1",
-        //         "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
-        //         "CLAUDE_CODE_AI_TERMINAL_SENTINEL": "propagated",
-        //         // "OLLAMA_MODEL":"glm-5.2:cloud"
-        //     }
-        // },
-        "Command Prompt": {
-            "launch_command": ["cmd.exe"],
-            "spawn_env": {}
-        },
-        "PowerShell": {
-            "launch_command": ["powershell.exe"],
-            "spawn_env": {}
-        },
-        "Bash": {
-            "launch_command": ["bash"],
-            "spawn_env": {}
-        },
-        "Bash (WSL)": {
-            "launch_command": ["wsl.exe", "bash"],
-            "spawn_env": {}
-        },
-        "Mock Agent (resize test)": {
-            "launch_command": ["python", "C:\\Users\\donal\\projects\\SText\\tests\\mock_agent_cli.py"],
-            "spawn_env": {
-                "AI_TERMINAL_LOG_LINES": "1",
-                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
-            }
-        }
-    },
-
     // Path for the color-scheme-scope diagnostic log. The plugin appends scope-
     // registration and flush events here. Edit to redirect, or set null to disable
     // color-scheme logging entirely. Changes take effect after plugin reload.
     "color_scheme_log_path": "~/data/logs/developer_diagnostics_and_runtime_server_error_logs/color_scheme.log",
-
+    // Files whose content is appended to the system prompt on every bridge
+    // startup. Each is read and prepended with its basename as a markdown
+    // header, then joined with '---'. This is how the AI gets its working
+    // context: agents.md (the lobby), router.md (project map), and the
+    // project's CLAUDE.md (project-specific rules). Edit this list to add
+    // or remove context. Restart the bridge to pick up changes.
+    "context_files": [
+        // "C:\\Users\\donal\\agents.md",
+        // "C:\\Users\\donal\\router.md",
+        // "C:\\Users\\donal\\projects\\SText\\agents.md",
+        // "C:\\Users\\donal\\projects\\SText\\CLAUDE.md"
+    ],
+    // The default profile to run if no profile name is explicitly requested
+    "default_profile": "Ollama (OpenCode)",
+    // Ignore the TUI's alt-screen (DECSET 1049) toggle so our renderer keeps
+    // real ST scrollback. Default true = scrollback on. Set false to let a
+    // TUI take over the view with a fixed fullscreen matrix (loses scrollback).
+    "force_main_screen": true,
     // Legacy fallback keys (fully supported for backward compatibility)
     // argv list used to spawn the terminal program. Default runs Claude Code
     // via the Ollama local proxy (127.0.0.1:11434, glm-5.2:cloud). Swap to e.g.
@@ -245,10 +28,316 @@
     //   ["cmd", "/c", "opencode"]            -- OpenCode instead of Claude Code
     //   ["cmd", "/c", "claude"]              -- Claude Code on Windows (native cmd shim)
     // Applied on the next _spawn: close and reopen the ai_terminal tab to pick up.
-    "launch_command": ["cmd.exe"],
-
+    "launch_command": [
+        "cmd.exe"
+    ],
+    "max_columns": null,
+    // Floor and ceiling on the auto-sized terminal width in characters.
+    // cols is computed from the viewport width; min_columns is the lower
+    // bound, max_columns caps it (null = no cap). The renderer's no-horizontal-
+    // scrollbar math (cols = int(usable_w/cw) - 3) still applies inside these
+    // bounds. Live: the resize poller picks up new bounds within ~750ms.
+    "min_columns": 20,
+    // Configured terminal/shell profiles for SText.
+    // This allows SText to work as a multi-console terminal launcher.
+    "profiles": {
+        "Bash": {
+            "launch_command": [
+                "bash"
+            ],
+            "spawn_env": {}
+        },
+        "Claude": {
+            "launch_command": [
+                "claude"
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+            }
+        },
+        "Claude --chrome": {
+            "launch_command": [
+                "claude",
+                "--chrome"
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_AI_TERMINAL_SENTINEL": "propagated",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+                // "OLLAMA_MODEL":"glm-5.2:cloud"
+            }
+        },
+        "Claude →⇢⇨ Ollama": {
+            "launch_command": [
+                "ollama",
+                "launch",
+                "claude"
+            ],
+            "spawn_env": { // needs more parameters at the moment mostly get from comments at old spawn env
+                "AI_TERMINAL_LOG_LINES": "1",
+                // "ANTHROPIC_AUTH_TOKEN":"ollama",
+                // "ANTHROPIC_API_KEY":"",
+                // "ANTHROPIC_BASE_URL":"http://localhost:11434",
+                "ANTHROPIC_MODEL": "glm-5.2:cloud",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+                // "ANTHROPIC_VERTEX_PROJECT_ID": "project-67efc385-8bb5-493f-a81",
+                // "CLAUDE_CODE_USE_VERTEX": "1",
+                // "CLOUD_ML_REGION": "global",
+                // "GOOGLE_CLOUD_LOCATION":"global",
+                // "GOOGLE_CLOUD_PROJECT":"project-67efc385-8bb5-493f-a81",
+                // "GOOGLE_PROJECT_NUMBER":"782908338549",
+            }
+        },
+        "Claude →⇢⇨ Ollama --chrome": {
+            "launch_command": [
+                "ollama",
+                "launch",
+                "claude",
+                "--",
+                "--chrome"
+            ],
+            "spawn_env": { // needs more parameters at the moment mostly get from comments at old spawn env
+                "AI_TERMINAL_LOG_LINES": "1",
+                // "ANTHROPIC_AUTH_TOKEN":"ollama",
+                // "ANTHROPIC_API_KEY":"",
+                // "ANTHROPIC_BASE_URL":"http://localhost:11434",
+                "ANTHROPIC_MODEL": "glm-5.2:cloud",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+                // "ANTHROPIC_VERTEX_PROJECT_ID": "project-67efc385-8bb5-493f-a81",
+                // "CLAUDE_CODE_USE_VERTEX": "1",
+                // "CLOUD_ML_REGION": "global",
+                // "GOOGLE_CLOUD_LOCATION":"global",
+                // "GOOGLE_CLOUD_PROJECT":"project-67efc385-8bb5-493f-a81",
+                // "GOOGLE_PROJECT_NUMBER":"782908338549",
+            }
+        },
+        "Codex": {
+            "launch_command": [
+                "codex"
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+            }
+        },
+        "Codex →⇢⇨ Ollama": {
+            "launch_command": [
+                "ollama",
+                "launch",
+                "codex"
+            ],
+            "spawn_env": { // needs more parameters at the moment mostly get from comments at old spawn env
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+                // "ANTHROPIC_AUTH_TOKEN":"ollama",
+                // "ANTHROPIC_API_KEY":"",
+                // "ANTHROPIC_BASE_URL":"http://localhost:11434",
+                // "ANTHROPIC_MODEL": "claude-sonnet-5",
+                // "ANTHROPIC_VERTEX_PROJECT_ID": "project-67efc385-8bb5-493f-a81",
+                // "CLAUDE_CODE_USE_VERTEX": "1",
+                // "CLOUD_ML_REGION": "global",
+                // "GOOGLE_CLOUD_LOCATION":"global",
+                // "GOOGLE_CLOUD_PROJECT":"project-67efc385-8bb5-493f-a81",
+                // "GOOGLE_PROJECT_NUMBER":"782908338549",
+            }
+        },
+        "Dos Console": {
+            "launch_command": [
+                "cmd.exe"
+            ],
+            "spawn_env": {}
+        },
+        "Gemini": {
+            "launch_command": [
+                "gemini.cmd"
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "GEMINI_API_KEY": "",
+                "GEMINI_PROMPT_QUEUE": "false",
+                "GEMINI_SYSTEM_MD": "C:\\Users\\donal\\projects\\SText\\ai_sdk_prompt.md"
+            }
+        },
+        "Grok Build": {
+            "launch_command": [
+                "grok"
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1"
+            }
+        },
+        "JCode": {
+            "launch_command": [
+                "jcode"
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+            }
+        },
+        "Kimi": {
+            "launch_command": [
+                "kimi"
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+            }
+        },
+        "Mimo": {
+            "launch_command": [
+                "mimo"
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+            }
+        },
+        "OpenClaw": {
+            "launch_command": [
+                "openclaw"
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+            }
+        },
+        "OpenClaw →⇢⇨ Ollama": {
+            "launch_command": [
+                "openclaw"
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+            }
+        },
+        "OpenCode": {
+            "launch_command": [
+                "opencode",
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+                // "ANTHROPIC_AUTH_TOKEN":"ollama",
+                // "ANTHROPIC_API_KEY":"",
+                // "ANTHROPIC_BASE_URL":"http://localhost:11434",
+            }
+        },
+        "OpenCode --mini": {
+            "launch_command": [
+                "opencode",
+                "--mini"
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+                // "ANTHROPIC_AUTH_TOKEN":"ollama",
+                // "ANTHROPIC_API_KEY":"",
+                // "ANTHROPIC_BASE_URL":"http://localhost:11434",
+            }
+        },
+        "OpenCode →⇢⇨ Ollama": {
+            "launch_command": [
+                "ollama",
+                "launch",
+                "opencode"
+            ],
+            "spawn_env": { // needs more parameters at the moment mostly get from comments at old spawn env
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+                // "ANTHROPIC_AUTH_TOKEN":"ollama",
+                // "ANTHROPIC_API_KEY":"",
+                // "ANTHROPIC_BASE_URL":"http://localhost:11434",
+                // "ANTHROPIC_MODEL": "claude-sonnet-5",
+                // "ANTHROPIC_VERTEX_PROJECT_ID": "project-67efc385-8bb5-493f-a81",
+                // "CLAUDE_CODE_USE_VERTEX": "1",
+                // "CLOUD_ML_REGION": "global",
+                // "GOOGLE_CLOUD_LOCATION":"global",
+                // "GOOGLE_CLOUD_PROJECT":"project-67efc385-8bb5-493f-a81",
+                // "GOOGLE_PROJECT_NUMBER":"782908338549",
+            }
+        },
+        "OpenCode →⇢⇨ Ollama --mini": {
+            "launch_command": [
+                "ollama",
+                "launch",
+                "opencode",
+                "--",
+                "--mini"
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+                // "ANTHROPIC_AUTH_TOKEN":"ollama",
+                // "ANTHROPIC_API_KEY":"",
+                // "ANTHROPIC_BASE_URL":"http://localhost:11434",
+            }
+        },
+        "PowerShell": {
+            "launch_command": [
+                "powershell.exe"
+            ],
+            "spawn_env": {}
+        },
+        "Qwen": {
+            "launch_command": [
+                "qwen"
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+            }
+        },
+        "Qwen →⇢⇨ Ollama": {
+            "launch_command": [
+                "ollama",
+                "launch",
+                "qwen"
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+            }
+        },
+        "Testing Agent": {
+            "launch_command": [
+                "python",
+                "C:\\Users\\donal\\projects\\SText\\tests\\mock_agent_cli.py"
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+            }
+        },
+        "Vibe": {
+            "launch_command": [
+                "vibe"
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+            }
+        },
+        "WSL Bash": {
+            "launch_command": [
+                "wsl.exe",
+                "bash"
+            ],
+            "spawn_env": {}
+        }
+    },
+    // ai_terminal — ConPTY terminal for Sublime Text (currently Claude Code).
+    // Edit this file to retune without source edits; changes apply live
+    // (no plugin reload needed): the history deque is swapped in place and
+    // the resize poller picks up new column bounds within ~750ms.
+    // Number of lines kept in scrollback history (the `history` deque).
+    // This is the minimap-fill knob: at font 14 / 685px viewport, 300 fills
+    // the minimap. Retune by eye against the minimap when you change the
+    // window height or font size. Decreasing it may improve performance.
+    // Live: changing this swaps the live deque (trims oldest if smaller).
+    "scrollback_history_size": 300,
     // claude --model gemini-2.5-pro
-
     // Env vars applied to the spawned terminal process (merged on top of
     // os.environ). Swap or add agent-specific vars here without editing the
     // plugin. Applied on the next _spawn: close and reopen the ai_terminal
@@ -287,23 +376,29 @@
         // "GOOGLE_CLOUD_PROJECT":"project-67efc385-8bb5-493f-a81",
         // "GOOGLE_PROJECT_NUMBER":"782908338549",
     },
-
-    // Files whose content is appended to the system prompt on every bridge
-    // startup. Each is read and prepended with its basename as a markdown
-    // header, then joined with '---'. This is how the AI gets its working
-    // context: agents.md (the lobby), router.md (project map), and the
-    // project's CLAUDE.md (project-specific rules). Edit this list to add
-    // or remove context. Restart the bridge to pick up changes.
-    "context_files": [
-        // "C:\\Users\\donal\\agents.md",
-        // "C:\\Users\\donal\\router.md",
-        // "C:\\Users\\donal\\projects\\SText\\agents.md",
-        // "C:\\Users\\donal\\projects\\SText\\CLAUDE.md"
-    ],
-
     // Path to a markdown file whose contents are prepended to the system
     // prompt (above the context files). Edit the file directly to change
     // the wrapper text — the file is plain markdown, no JSON escaping.
     // Default location is ai_sdk_prompt.md alongside this settings file.
-    "system_prompt_wrapper_file": "C:\\Users\\donal\\projects\\SText\\ai_sdk_prompt.md"
+    "system_prompt_wrapper_file": "C:\\Users\\donal\\projects\\SText\\ai_sdk_prompt.md",
+    // Host ST caret is ALWAYS off for terminal views (see _terminal_view).
+    // Claude/OpenCode paint the cursor with reverse fg/bg (SGR 7) in the cell
+    // stream — same model as Terminus. Do not turn on block_caret; a visible
+    // host caret becomes a second cursor and looks like an off-by-one.
+    // These keys are ignored if present (kept for documentation only):
+    // "block_caret": false,
+    // "caret_style": "solid",
+    // "caret_extra_width": 0,
+    // Font for the terminal view only (overrides the global font_face for
+    // ai_terminal tabs). Must be a monospace font with full box-drawing
+    // (U+2500-U+257F), block-element (U+2580-U+259F), and miscellaneous
+    // TUI symbol coverage (U+23BF, U+23F8, U+2733, U+273B, U+2802, U+2B1D).
+    // "Cascadia Code" ships with Windows 10+ and has all of these.
+    // Set to null to inherit the global font_face.
+    "terminal_font": "Cascadia Code",
+    // Toggles the PTY backend on Windows.
+    // "conpty" -- Windows native CreatePseudoConsole API.
+    // "winpty" -- Symmetrical winpty PTY backend. Use this to confirm or isolate
+    // whether the random conversation replays are a ConPTY-specific issue.
+    "windows_pty_backend": "conpty"
 }
