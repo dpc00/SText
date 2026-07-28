@@ -428,7 +428,10 @@ try:
         get_shift_key_code as _get_shift_key_code,
         translate_key as _translate_key,
     )
-    from .terminal.render import build_text_and_regions as _build_text_and_regions_pure
+    from .terminal.render import (
+        build_text_and_regions as _build_text_and_regions_pure,
+        paint_host_cursor as _paint_host_cursor,
+    )
 except ImportError as _term_imp_err:
     # Unit tests / scripts outside Packages/User use top-level `ai.*`.
     # Do NOT hide a real missing-name error behind "No module named 'ai'".
@@ -467,7 +470,10 @@ except ImportError as _term_imp_err:
             get_shift_key_code as _get_shift_key_code,
             translate_key as _translate_key,
         )
-        from ai.terminal.render import build_text_and_regions as _build_text_and_regions_pure
+        from ai.terminal.render import (
+            build_text_and_regions as _build_text_and_regions_pure,
+            paint_host_cursor as _paint_host_cursor,
+        )
     except ImportError:
         raise _term_imp_err
 
@@ -1471,12 +1477,14 @@ def _do_render(term):
     term._render_pending = False
     if not term.screen.dirty:
         return
-    # Read structured cells + PTY cursor under one lock. The ST selection is
-    # placed at the PTY cursor for scroll/copy bookkeeping only — the host
-    # caret is invisible (TUI reverse-video is the real cursor).
+    # Read structured cells + PTY cursor under one lock. Host ST caret is
+    # invisible (scheme caret = bg) so Claude reverse-video cursors are not
+    # doubled. paint_host_cursor adds reverse on the PTY cell when the app
+    # did not (Grok --minimal / plain shells) so the insertion point shows.
     with term._lock:
         rows, cy, cx = term.screen.render_cells()
     term.screen.dirty = False
+    rows = _paint_host_cursor(rows, cy, cx)
     text, regions = _build_text_and_regions(rows)
     view.run_command("ai_terminal_render",
                      {"text": text, "cursor": [cy, cx], "regions": regions})

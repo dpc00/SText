@@ -2,7 +2,32 @@
 
 Pure Python — no Sublime imports.
 """
-from .colors import scope_name_for
+from .colors import REVERSE, scope_name_for
+
+
+def paint_host_cursor(rows, cy, cx):
+    """Ensure a reverse-video cell at the PTY cursor for host visibility.
+
+    The ST host caret is forced invisible (scheme caret = background) so
+    Claude/ratatui reverse-video cursors are not doubled. Apps that never
+    SGR-reverse the cursor cell (Grok --minimal, plain shells) then show
+    no insertion point until a keystroke. Paint a synthetic reverse cell
+    only when the cursor cell is not already reverse.
+    """
+    if rows is None or cy is None or cx is None:
+        return rows
+    if cy < 0 or cx < 0 or cy >= len(rows):
+        return rows
+    rows = list(rows)
+    row = list(rows[cy])
+    # Cursor often sits past rstripped trailing spaces; pad so the cell exists.
+    while len(row) <= cx:
+        row.append((" ", 0))
+    ch, attr = row[cx]
+    if not (attr & REVERSE):
+        row[cx] = (ch, attr | REVERSE)
+    rows[cy] = row
+    return rows
 
 
 def build_text_and_regions(rows, scope_for=None):
