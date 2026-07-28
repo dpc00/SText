@@ -550,17 +550,82 @@ def _init_dynamic_color_scheme():
         _color_scheme_log(msg)
 
 
-def _save_color_scheme(scheme_data):
-    # We want to write to both the workspace path and the Packages/User path
+def _scheme_disk_paths():
+    """All on-disk scheme paths we may read/write (never rely only on _SCHEME_PATH).
+
+    Hot-reload resets module globals so _SCHEME_PATH can be None while the
+    User scheme file still exists. Flush used to treat that as 'no file' and
+    rewrite BASE+pending only — wiping thousands of rules (peak was 5275).
+    """
     paths = []
     if _SCHEME_PATH:
         paths.append(_SCHEME_PATH)
     try:
-        user_path = os.path.join(sublime.packages_path(), "User", "ai_terminal.sublime-color-scheme")
+        user_path = os.path.join(
+            sublime.packages_path(), "User", "ai_terminal.sublime-color-scheme"
+        )
         if user_path not in paths:
             paths.append(user_path)
     except Exception:
         pass
+    # Repo backup copy (SText) when running in a known layout
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        # .../Packages/User/ai/ai_terminal.py -> .../Packages/User/
+        user_dir = os.path.dirname(here)
+        repo_guess = os.path.join(user_dir, "ai_terminal.sublime-color-scheme")
+        if os.path.isfile(repo_guess) and repo_guess not in paths:
+            paths.append(repo_guess)
+    except Exception:
+        pass
+    return paths
+
+
+def _load_scheme_from_disk():
+    """Load the largest valid scheme on disk (most rules wins)."""
+    best = None
+    best_n = -1
+    best_path = None
+    for p in _scheme_disk_paths():
+        if not p or not os.path.isfile(p):
+            continue
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            n = len(data.get("rules") or [])
+            if n > best_n:
+                best, best_n, best_path = data, n, p
+        except Exception as e:
+            _color_scheme_log(f"[load] ERROR reading {p}: {e}")
+    if best is not None:
+        _color_scheme_log(f"[load] Using {best_path} with {best_n} rules")
+    return best
+
+
+def _save_color_scheme(scheme_data):
+    # Never write a scheme that would shrink the on-disk rule set by a lot.
+    # Guards against hot-reload / partial-state flushes.
+    try:
+        existing = _load_scheme_from_disk()
+        if existing is not None:
+            old_n = len(existing.get("rules") or [])
+            new_n = len(scheme_data.get("rules") or [])
+            # Allow growth and small churn; block catastrophic shrinks.
+            if old_n >= 50 and new_n < max(10, old_n // 2):
+                msg = (
+                    f"[save] REFUSED wipe: disk has {old_n} rules, "
+                    f"refusing to write {new_n}"
+                )
+                print(f"[ai_terminal] {msg}")
+                _color_scheme_log(msg)
+                return
+    except Exception as e:
+        _color_scheme_log(f"[save] guard error: {e}")
+
+    paths = _scheme_disk_paths()
+    if not paths:
+        _color_scheme_log("[save] ERROR: no scheme paths available")
+        return
 
     for p in paths:
         try:
@@ -571,6 +636,7 @@ def _save_color_scheme(scheme_data):
             os.replace(temp_path, p)
         except Exception as e:
             print(f"[ai_terminal] Error writing color scheme file to {p}: {e}")
+            _color_scheme_log(f"[save] ERROR writing {p}: {e}")
 
 
 def _register_scope_async(fg, bg):
@@ -581,7 +647,10 @@ def _register_scope_async(fg, bg):
         if scope in _REGISTERED_SCOPES:
             return
         _REGISTERED_SCOPES.add(scope)
-        _color_scheme_log(f"[register] Encountered new scope: {scope} (Memory registered count: {len(_REGISTERED_SCOPES)})")
+        _color_scheme_log(
+            f"[register] Encountered new scope: {scope} "
+            f"(Memory registered count: {len(_REGISTERED_SCOPES)})"
+        )
         
         # Calculate colors
         fh = _HEX[fg] if fg < len(_HEX) else None
@@ -608,7 +677,7 @@ def _register_scope_async(fg, bg):
 
 
 def _flush_pending_rules():
-    global _WRITE_PENDING, _PENDING_RULES
+    global _WRITE_PENDING, _PENDING_RULES, _SCHEME_PATH
     with _SCHEME_LOCK:
         _WRITE_PENDING = False
         if not _PENDING_RULES:
@@ -616,34 +685,54 @@ def _flush_pending_rules():
         rules_to_add = list(_PENDING_RULES)
         _PENDING_RULES.clear()
 
-    # Read the existing scheme from disk (or use BASE if we can't read it)
-    scheme_data = None
-    if _SCHEME_PATH and os.path.exists(_SCHEME_PATH):
-        try:
-            with open(_SCHEME_PATH, "r", encoding="utf-8") as f:
-                scheme_data = json.load(f)
-        except Exception as e:
-            msg = f"[flush] ERROR: Reading color scheme for flush failed: {e}"
-            print(f"[ai_terminal] {msg}")
-            _color_scheme_log(msg)
+    # Always re-resolve path (survives importlib.reload clearing globals).
+    try:
+        _SCHEME_PATH = os.path.join(
+            sublime.packages_path(), "User", "ai_terminal.sublime-color-scheme"
+        )
+    except Exception:
+        pass
+
+    scheme_data = _load_scheme_from_disk()
 
     if not scheme_data:
-        # Crucial safety check: if the file actually exists on disk, do NOT overwrite it
-        # with a blank base scheme as that would destroy all previously compiled rules!
-        if _SCHEME_PATH and os.path.exists(_SCHEME_PATH):
-            msg = "[flush] CRITICAL SAFETY: Aborting write to prevent wiping existing color scheme on disk."
+        # Only create empty base if no scheme file exists anywhere we know.
+        any_exists = any(os.path.isfile(p) for p in _scheme_disk_paths())
+        if any_exists:
+            msg = (
+                "[flush] CRITICAL SAFETY: scheme file(s) exist but unreadable; "
+                "aborting write to avoid wipe."
+            )
             print(f"[ai_terminal] {msg}")
             _color_scheme_log(msg)
+            # Put pending rules back so a later flush can retry.
+            with _SCHEME_LOCK:
+                _PENDING_RULES = rules_to_add + _PENDING_RULES
             return
         scheme_data = dict(_BASE_SCHEME)
         scheme_data["rules"] = []
 
-    # Append new rules
-    scheme_data.setdefault("rules", []).extend(rules_to_add)
+    # Merge by scope name (dedupe) then append new.
+    by_scope = {}
+    for r in scheme_data.get("rules") or []:
+        sc = r.get("scope")
+        if sc:
+            by_scope[sc] = r
+    for r in rules_to_add:
+        sc = r.get("scope")
+        if sc:
+            by_scope[sc] = r
+    scheme_data["rules"] = list(by_scope.values())
+    # Keep host caret invisible
+    g = scheme_data.setdefault("globals", {})
+    bg = g.get("background", "#000000")
+    g["caret"] = bg
 
-    # Save to disk
     _save_color_scheme(scheme_data)
-    msg = f"[flush] SUCCESS: Flushed {len(rules_to_add)} dynamic rules to disk. Total rules: {len(scheme_data.get('rules', []))}"
+    msg = (
+        f"[flush] SUCCESS: Flushed {len(rules_to_add)} dynamic rules to disk. "
+        f"Total rules: {len(scheme_data.get('rules', []))}"
+    )
     print(f"[ai_terminal] {msg}")
     _color_scheme_log(msg)
 
