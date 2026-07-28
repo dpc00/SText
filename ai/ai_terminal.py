@@ -428,6 +428,7 @@ try:
         get_shift_key_code as _get_shift_key_code,
         translate_key as _translate_key,
     )
+    from .terminal.pty_env import sanitize_pty_env as _sanitize_pty_env
     from .terminal.render import (
         HOST_CURSOR_SCOPE as _HOST_CURSOR_SCOPE,
         build_text_and_regions as _build_text_and_regions_pure,
@@ -472,6 +473,7 @@ except ImportError as _term_imp_err:
             get_shift_key_code as _get_shift_key_code,
             translate_key as _translate_key,
         )
+        from ai.terminal.pty_env import sanitize_pty_env as _sanitize_pty_env
         from ai.terminal.render import (
             HOST_CURSOR_SCOPE as _HOST_CURSOR_SCOPE,
             build_text_and_regions as _build_text_and_regions_pure,
@@ -1831,8 +1833,10 @@ def _spawn(window, path, profile=None):
     window.focus_view(view)
     cols, rows = _measure(view)
     
-    env = dict(os.environ)
-    env.update(extra_env)
+    # Host (ST plugin host / agent shells) often has NO_COLOR=1, FORCE_COLOR=0,
+    # TERM=dumb — Grok doctor then reports color=none. Sanitize before spawn;
+    # profile spawn_env still wins for any key it sets.
+    env = _sanitize_pty_env(os.environ, extra_env)
 
     backend = s.get("windows_pty_backend", "conpty")
     if backend == "winpty":

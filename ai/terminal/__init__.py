@@ -6,6 +6,7 @@ ai.ai_terminal which wires these into ConPTY + view rendering.
 from .colors import pack_attr, quantize256, scope_name_for, rstrip_cells
 from .keys import translate_key
 from .parser import Parser
+from .pty_env import sanitize_pty_env
 from .render import (
     HOST_CURSOR_SCOPE,
     build_text_and_regions,
@@ -28,4 +29,5 @@ __all__ = [
     "cell_needs_host_cursor",
     "cursor_text_offset",
     "HOST_CURSOR_SCOPE",
+    "sanitize_pty_env",
 ]

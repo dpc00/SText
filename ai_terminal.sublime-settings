@@ -164,10 +164,10 @@
             }
         },
         "Grok Build": {
-            // --no-alt-screen: main buffer (not DECSET 1049).
-            // --minimal: scrollback-native UI (the visible change).
-            // force_main_screen=true already ignores alt-screen on the host,
-            // so --no-alt-screen alone looks identical to plain `grok`.
+            // --minimal is required for scrollback-native UI.
+            // --no-alt-screen alone is not enough (still looks like plain grok).
+            // Color: host NO_COLOR/TERM=dumb is stripped in _spawn via
+            // sanitize_pty_env — do not rely on spawn_env alone for that.
             "launch_command": ["grok", "--no-alt-screen", "--minimal"],
             "spawn_env": {
                 "AI_TERMINAL_LOG_LINES": "1",

@@ -17,6 +17,7 @@ from ai.terminal import (
     pack_attr,
     paint_host_cursor,
     quantize256,
+    sanitize_pty_env,
     scope_name_for,
     translate_key,
 )
@@ -206,6 +207,35 @@ class TestHostCursor(unittest.TestCase):
         self.assertTrue(out[0][1][1] & REVERSE)
         self.assertEqual(out[0][0][1], 0)
         self.assertEqual(HOST_CURSOR_SCOPE, "ai.terminal.host_cursor")
+
+
+class TestSanitizePtyEnv(unittest.TestCase):
+    def test_strips_no_color_and_fixes_dumb_term(self):
+        out = sanitize_pty_env({
+            "NO_COLOR": "1",
+            "FORCE_COLOR": "0",
+            "TERM": "dumb",
+            "PATH": "C:\\bin",
+        })
+        self.assertNotIn("NO_COLOR", out)
+        self.assertEqual(out["FORCE_COLOR"], "1")
+        self.assertEqual(out["TERM"], "xterm-256color")
+        self.assertEqual(out["COLORTERM"], "truecolor")
+        self.assertEqual(out["PATH"], "C:\\bin")
+
+    def test_profile_overrides_win(self):
+        out = sanitize_pty_env(
+            {"TERM": "dumb", "NO_COLOR": "1"},
+            {"TERM": "xterm-kitty", "AI_TERMINAL_LOG_LINES": "1"},
+        )
+        self.assertEqual(out["TERM"], "xterm-kitty")
+        self.assertEqual(out["AI_TERMINAL_LOG_LINES"], "1")
+        self.assertNotIn("NO_COLOR", out)
+
+    def test_keeps_good_term(self):
+        out = sanitize_pty_env({"TERM": "xterm-256color", "COLORTERM": "truecolor"})
+        self.assertEqual(out["TERM"], "xterm-256color")
+        self.assertEqual(out["COLORTERM"], "truecolor")
 
 
 if __name__ == "__main__":
