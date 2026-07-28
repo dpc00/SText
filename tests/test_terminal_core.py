@@ -170,17 +170,28 @@ class TestDisplayCaret(unittest.TestCase):
 
     def test_pin_to_prompt_when_cursor_on_status(self):
         s = self._claude_like_screen()
-        # First place cursor on prompt so we remember column 5 (after 'hi' + pad).
-        s.x, s.y = 5, 4
+        # '>\xa0hi' content_end = 4. Hardware often sits at 4 (blank under cursor).
+        s.x, s.y = 4, 4
         rows, cy, cx = s.render_cells()
-        adjust_display_caret(s, cy, cx)
-        self.assertEqual(s.input_caret_x, 5)
-        # Then Claude parks on status — restore remembered column, not end-1.
+        cy2, cx2 = adjust_display_caret(s, cy, cx)
+        self.assertEqual(s.input_caret_x, 4)
+        self.assertEqual(cx2, 4)
+        # Then Claude parks on status — restore remembered column.
         s.x, s.y = 20, 8
         rows, cy, cx = s.render_cells()
         cy2, cx2 = adjust_display_caret(s, cy, cx)
         self.assertEqual(cy2, 4)
-        self.assertEqual(cx2, 5)
+        self.assertEqual(cx2, 4)
+
+    def test_clamp_hardware_x_past_content(self):
+        """Hardware x one past content must not push ST caret one to the right."""
+        s = self._claude_like_screen()
+        # content_end for '>\xa0hi' is 4; claim hardware at 5
+        s.x, s.y = 5, 4
+        rows, cy, cx = s.render_cells()
+        cy2, cx2 = adjust_display_caret(s, cy, cx)
+        self.assertEqual(cx2, 4)
+        self.assertEqual(s.input_caret_x, 4)
 
     def test_pin_fallback_without_memory(self):
         s = self._claude_like_screen()
@@ -216,11 +227,12 @@ class TestDisplayCaret(unittest.TestCase):
 
     def test_trust_cursor_on_prompt(self):
         s = self._claude_like_screen()
-        s.x, s.y = 4, 4
+        s.x, s.y = 3, 4  # on the 'i' / mid content — content_end is 4
         rows, cy, cx = s.render_cells()
         cy2, cx2 = adjust_display_caret(s, cy, cx)
-        self.assertEqual((cy2, cx2), (cy, cx))
-        self.assertEqual(s.input_caret_x, 4)
+        self.assertEqual(cy2, cy)
+        self.assertEqual(cx2, 3)
+        self.assertEqual(s.input_caret_x, 3)
 
     def test_no_prompt_no_adjust(self):
         s = Screen(20, 5)

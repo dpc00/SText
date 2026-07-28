@@ -40,17 +40,18 @@ def prompt_content_end(screen, prompt_y):
 def prompt_caret_col(screen, prompt_y):
     """Best-effort ST caret column for the prompt row.
 
-    Prefer the last plausible hardware column recorded on the prompt
-    (`screen.input_caret_x`). Reject wild CUPs that jump to EOL (Claude does
-    that while erasing). Fall back to content end.
+    Prefer the last hardware column recorded on the prompt, clamped to the
+    content end (after last non-blank). Allowing end+1 was the 'one off to the
+    right' bug: a trailing blank under the TUI cursor plus rstrip/pad made ST
+    sit one past the real insert point. Fall back to content end.
     """
     end = prompt_content_end(screen, prompt_y)
     ix = getattr(screen, "input_caret_x", None)
     if ix is not None:
         ix = int(ix)
-        # Plausible = at or just after content (blank cell under block cursor).
-        if 0 <= ix <= end + 1:
-            return min(max(ix, 0), screen.cols - 1)
+        if 0 <= ix:
+            # Never past content end — ST insert point is after last glyph.
+            return min(max(ix, 0), end, screen.cols - 1)
     return end
 
 
@@ -62,7 +63,7 @@ def adjust_display_caret(screen, cy, cx):
     display caret to the prompt row instead.
 
     Also records `screen.input_caret_x` whenever the hardware cursor is on the
-    prompt (only when the column is plausible for input text).
+    prompt (clamped to content end so erase-CUPs to EOL are ignored).
     """
     prompt_y = find_prompt_row(screen)
     if prompt_y is None:
@@ -70,9 +71,14 @@ def adjust_display_caret(screen, cy, cx):
     end = prompt_content_end(screen, prompt_y)
     # Remember the real input column while Claude has the cursor on `>`.
     if screen.y == prompt_y:
-        if screen.x <= end + 1:
-            screen.input_caret_x = screen.x
-        return cy, cx
+        # Clamp to content end: hardware x may sit on a blank after the text
+        # (or briefly at EOL during repaint). ST wants the insert gap after the
+        # last glyph, which is `end`, not end+1.
+        screen.input_caret_x = min(screen.x, end)
+        # When on the prompt, also clamp the *returned* display col so a frame
+        # where x is one past content doesn't show one-off before we park.
+        hist = 0 if screen.alt_screen else len(screen.history)
+        return hist + prompt_y, screen.input_caret_x
     # Input box is: prompt row, then a border row, then status. Anything below
     # the border is "parked on status" — snap back to the prompt.
     if screen.y <= prompt_y + 1:
