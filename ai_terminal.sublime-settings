@@ -168,7 +168,7 @@
             // --no-alt-screen alone is not enough (still looks like plain grok).
             // Color: host NO_COLOR/TERM=dumb is stripped in _spawn via
             // sanitize_pty_env — do not rely on spawn_env alone for that.
-            "launch_command": ["grok", "--no-alt-screen", "--minimal"],
+            "launch_command": ["grok"],
             "spawn_env": {
                 "AI_TERMINAL_LOG_LINES": "1",
             }

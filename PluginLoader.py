@@ -130,7 +130,9 @@ def _find_system_python():
 # reloads and brief process death — without it, agent hooks spool and the ST log
 # tab looks "aborted" mid-session.
 _AI_LOG_PORT = 9511
-_AI_LOG_KEEPALIVE_MS = 30_000
+# Keep the gap short: when the server dies, hooks spool and the daily log
+# looks "aborted". 5s is enough to avoid thrash; 30s left multi-turn holes.
+_AI_LOG_KEEPALIVE_MS = 5_000
 _ai_log_keepalive_scheduled = False
 
 
@@ -177,32 +179,43 @@ def _start_ai_log_server():
     # Do NOT assign_pid into the ST job: package reloads / job teardown kill
     # job members and abort the daily log. This process is intentionally
     # independent; keepalive restarts it if it dies while ST is open.
-    # CREATE_BREAKAWAY_FROM_JOB (0x01000000) when allowed; always NEW_GROUP + NO_WINDOW.
-    flags = subprocess.CREATE_NO_WINDOW | 0x00000200  # NEW_PROCESS_GROUP
-    if sys.platform == "win32":
-        flags |= 0x01000000  # CREATE_BREAKAWAY_FROM_JOB (best-effort)
-    try:
-        proc = subprocess.Popen(
-            [python_exe, script],
-            creationflags=flags,
-            startupinfo=si,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            close_fds=True,
-        )
-    except OSError as e:
-        # BREAKAWAY may be denied; retry without it.
-        print(f"PluginLoader: ai_log_server spawn retry ({e})")
-        proc = subprocess.Popen(
-            [python_exe, script],
-            creationflags=subprocess.CREATE_NO_WINDOW | 0x00000200,
-            startupinfo=si,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            close_fds=True,
-        )
+    #
+    # Windows flags (best-effort stack; strip until CreateProcess accepts):
+    #   CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+    #   | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB
+    CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+    DETACHED_PROCESS = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+    CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+    flag_attempts = [
+        CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB,
+        CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB,
+        CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS,
+        CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
+        CREATE_NO_WINDOW,
+    ]
+    # Server rebinds its own stderr/stdout to DIAG_DIR files; DEVNULL here only
+    # prevents a console window / inherited pipe from the ST process.
+    last_err = None
+    proc = None
+    for flags in flag_attempts:
+        try:
+            proc = subprocess.Popen(
+                [python_exe, script],
+                creationflags=flags if sys.platform == "win32" else 0,
+                startupinfo=si if sys.platform == "win32" else None,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                close_fds=True,
+            )
+            break
+        except OSError as e:
+            last_err = e
+            continue
+    if proc is None:
+        print(f"PluginLoader: ai_log_server spawn failed: {last_err}")
+        return False
     print(f"PluginLoader: ai_log_server started (pid={proc.pid})")
     return True
 

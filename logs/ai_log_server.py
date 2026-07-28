@@ -23,13 +23,37 @@ os.makedirs(OUT, exist_ok=True)
 DIAG_DIR = r"C:\Users\donal\data\logs\developer_diagnostics_and_runtime_server_error_logs"
 os.makedirs(DIAG_DIR, exist_ok=True)
 
-# Daemon-safe: under pythonw (no console) sys.stdout/stderr are None and
-# print() raises. Redirect to a devnull so the server never crashes on a
-# stray print, and capture uncaught exceptions to a file for debugging.
-if sys.stdout is None:
-    sys.stdout = open(os.devnull, "w")
-if sys.stderr is None:
-    sys.stderr = open(os.path.join(DIAG_DIR, "server_error.log"), "a", encoding="utf-8")
+# Daemon-safe I/O: PluginLoader spawns us with stdout/stderr=DEVNULL (or
+# pythonw leaves them None). print()/flush() on a broken or NUL handle has
+# been seen to raise OSError [Errno 22] Invalid argument and kill the whole
+# process — which is exactly the "log halted for no reason" failure mode.
+# Always bind non-interactive streams to real files under DIAG_DIR.
+def _isatty(stream):
+    try:
+        return stream is not None and hasattr(stream, "isatty") and stream.isatty()
+    except Exception:
+        return False
+
+
+def _rebind_stdio():
+    err_path = os.path.join(DIAG_DIR, "server_error.log")
+    out_path = os.path.join(DIAG_DIR, "server_runtime.log")
+    if not _isatty(sys.stderr):
+        try:
+            sys.stderr = open(err_path, "a", encoding="utf-8", errors="replace")
+        except OSError:
+            pass
+    if not _isatty(sys.stdout):
+        try:
+            sys.stdout = open(out_path, "a", encoding="utf-8", errors="replace")
+        except OSError:
+            try:
+                sys.stdout = open(os.devnull, "w")
+            except OSError:
+                pass
+
+
+_rebind_stdio()
 
 _lock = threading.Lock()
 # session_id -> turn buffer
@@ -835,19 +859,44 @@ class H(http.server.BaseHTTPRequestHandler):
                 pass
 
 
+def _safe_log(msg):
+    """Best-effort banner/heartbeat; never raise (stdout death used to abort serve)."""
+    line = f"{datetime.datetime.now().isoformat(timespec='seconds')} {msg}\n"
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream is None:
+                continue
+            stream.write(line)
+            stream.flush()
+            return
+        except Exception:
+            continue
+    try:
+        with open(os.path.join(DIAG_DIR, "server_runtime.log"), "a", encoding="utf-8", errors="replace") as f:
+            f.write(line)
+    except OSError:
+        pass
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=PORT, help="Port to listen on")
     args = parser.parse_args()
 
+    # Rebind again after import in case parent closed inherited handles.
+    _rebind_stdio()
     socketserver.TCPServer.allow_reuse_address = True
     try:
         with socketserver.ThreadingTCPServer(("127.0.0.1", args.port), H) as s:
-            sys.stdout.write(f"ai_log_server on 127.0.0.1:{args.port} -> {OUT}\n")
-            sys.stdout.flush()
+            _safe_log(f"ai_log_server listening 127.0.0.1:{args.port} pid={os.getpid()} -> {OUT}")
             s.serve_forever()
     except Exception:
         import traceback
-        with open(os.path.join(DIAG_DIR, "server_error.log"), "a", encoding="utf-8") as f:
-            f.write(traceback.format_exc() + "\n")
+        try:
+            with open(os.path.join(DIAG_DIR, "server_error.log"), "a", encoding="utf-8", errors="replace") as f:
+                f.write(traceback.format_exc() + "\n")
+        except OSError:
+            pass
+        # Re-raise only after logging so a failed bind is visible to the spawner.
+        raise SystemExit(1)
