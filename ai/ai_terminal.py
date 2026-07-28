@@ -1302,18 +1302,11 @@ def _do_render(term):
         return
     # Read structured cells + TUI cursor under one lock acquisition so the caret
     # row (history offset + screen.y) matches the text we render this frame.
-    # Then adjust the *display* caret: Claude often CUP-parks the hardware
-    # cursor on the status footer; ST should still show the caret on `>`.
-    # Pad the prompt line so rstrip doesn't eat the blank under-cursor cell
-    # (that was the 'one column off' bug when parked on the footer).
+    # Faithful to the PTY cursor (Terminus-style). Do not invent a display
+    # caret — if Claude parks the hardware cursor on the status bar, ST shows
+    # it there. Heuristic "pin to prompt" was a wrong diagnosis of off-by-one.
     with term._lock:
         rows, cy, cx = term.screen.render_cells()
-        try:
-            from .terminal.caret import adjust_display_caret, pad_row_for_caret
-        except ImportError:
-            from ai.terminal.caret import adjust_display_caret, pad_row_for_caret
-        cy, cx = adjust_display_caret(term.screen, cy, cx)
-        rows = pad_row_for_caret(rows, cy, cx)
     term.screen.dirty = False
     text, regions = _build_text_and_regions(rows)
     view.run_command("ai_terminal_render",

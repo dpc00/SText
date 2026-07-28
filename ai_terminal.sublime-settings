@@ -52,6 +52,23 @@
     // Configured terminal/shell profiles for SText.
     // This allows SText to work as a multi-console terminal launcher.
     "profiles": {
+        "Ollama (Claude)": {
+            "launch_command": ["ollama", "launch", "claude"],
+            "spawn_env": { // needs more parameters at the moment mostly get from comments at old spawn env
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
+                // "ANTHROPIC_AUTH_TOKEN":"ollama",
+                // "ANTHROPIC_API_KEY":"",
+                // "ANTHROPIC_BASE_URL":"http://localhost:11434",
+                "ANTHROPIC_MODEL": "glm-5.2:cloud",
+                // "ANTHROPIC_VERTEX_PROJECT_ID": "project-67efc385-8bb5-493f-a81",
+                // "CLAUDE_CODE_USE_VERTEX": "1",
+                // "CLOUD_ML_REGION": "global",
+                // "GOOGLE_CLOUD_LOCATION":"global",
+                // "GOOGLE_CLOUD_PROJECT":"project-67efc385-8bb5-493f-a81",
+                // "GOOGLE_PROJECT_NUMBER":"782908338549",
+            }
+        },
         "Ollama (OpenCode)": {
             "launch_command": ["ollama", "launch", "opencode"],
             "spawn_env": { // needs more parameters at the moment mostly get from comments at old spawn env
@@ -79,7 +96,7 @@
                 // "ANTHROPIC_BASE_URL":"http://localhost:11434",
             }
         },
-        "QWen": {
+        "Qwen": {
             "launch_command": ["qwen"],
             "spawn_env": {
                 "AI_TERMINAL_LOG_LINES": "1",
@@ -107,8 +124,18 @@
                 "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
             }
         },
+        // Plain Claude Code (no browser). Prefer this for caret/TUI debugging —
+        // --chrome changes the UI and was introduced as a single malformed
+        // argv token ["claude --chrome"] in a pybak on 2026-07-27.
         "Claude": {
-            "launch_command": ["claude --chrome"],
+            "launch_command": ["claude"],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
+            }
+        },
+        "Claude --chrome": {
+            "launch_command": ["claude", "--chrome"],
             "spawn_env": {
                 "AI_TERMINAL_LOG_LINES": "1",
                 "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
