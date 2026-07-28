@@ -27,7 +27,10 @@ os.makedirs(DIAG_DIR, exist_ok=True)
 # pythonw leaves them None). print()/flush() on a broken or NUL handle has
 # been seen to raise OSError [Errno 22] Invalid argument and kill the whole
 # process — which is exactly the "log halted for no reason" failure mode.
-# Always bind non-interactive streams to real files under DIAG_DIR.
+#
+# Only rebind when *running as the server* (__main__). Importing this module
+# from SublimeREPL / tests / tools must not steal the caller's stdio (that
+# made REPL print() vanish into DIAG_DIR after `import ai_log_server`).
 def _isatty(stream):
     try:
         return stream is not None and hasattr(stream, "isatty") and stream.isatty()
@@ -51,9 +54,6 @@ def _rebind_stdio():
                 sys.stdout = open(os.devnull, "w")
             except OSError:
                 pass
-
-
-_rebind_stdio()
 
 _lock = threading.Lock()
 # session_id -> turn buffer

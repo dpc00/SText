@@ -1,4 +1,13 @@
 [
+	{"caption": "SublimeREPL: Python (SText cwd)", "command": "repl_open", "args": {
+		"type": "subprocess",
+		"encoding": "utf8",
+		"cmd": ["python", "-i", "-u"],
+		"cwd": "C:\\Users\\donal\\projects\\SText",
+		"syntax": "Packages/Python/Python.tmLanguage",
+		"external_id": "python",
+		"extend_env": {"PYTHONIOENCODING": "utf-8"}
+	}},
 	{"caption": "AI (SDK): Clear", "command": "ai_sdk_clear"},
 	{"caption": "AI (SDK): Open Here", "command": "ai_sdk_open_here"},
 	{"caption": "AI (SDK): Open in Editor", "command": "ai_sdk_open_in_editor"},
