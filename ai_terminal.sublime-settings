@@ -79,6 +79,27 @@
                 // "ANTHROPIC_BASE_URL":"http://localhost:11434",
             }
         },
+        "QWen": {
+            "launch_command": ["qwen"],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
+            }
+        },
+        "OpenClaw": {
+            "launch_command": ["openclaw"],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
+            }
+        },
+        "Mimo": {
+            "launch_command": ["mimo"],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
+            }
+        },
         "Kimi": {
             "launch_command": ["kimi"],
             "spawn_env": {
@@ -86,8 +107,29 @@
                 "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
             }
         },
+        "Claude": {
+            "launch_command": ["claude --chrome"],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
+            }
+        },
+        "JCode": {
+            "launch_command": ["jcode"],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
+            }
+        },
         "Vibe": {
             "launch_command": ["vibe"],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
+            }
+        },
+        "Codex": {
+            "launch_command": ["codex"],
             "spawn_env": {
                 "AI_TERMINAL_LOG_LINES": "1",
                 "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
@@ -110,18 +152,15 @@
                 // "GOOGLE_PROJECT_NUMBER":"782908338549",
             }
         },
-        // "Gemini": {
-        //     "launch_command": ["gemini.cmd"],
-        //     "spawn_env": {
-        //         "AI_TERMINAL_LOG_LINES": "1",
-        //         "GEMINI_PROMPT_QUEUE": "false",
-        //         "GEMINI_API_KEY": "",
-        //         "GOOGLE_CLOUD_LOCATION":"global",
-        //         "GOOGLE_CLOUD_PROJECT":"project-67efc385-8bb5-493f-a81",
-        //         "GOOGLE_PROJECT_NUMBER":"782908338549",
-        //         "GEMINI_SYSTEM_MD":"C:\\Users\\donal\\projects\\SText\\ai_sdk_prompt.md",
-        //     }
-        // },
+        "Gemini": {
+            "launch_command": ["gemini.cmd"],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "GEMINI_PROMPT_QUEUE": "false",
+                "GEMINI_API_KEY": "",
+                "GEMINI_SYSTEM_MD":"C:\\Users\\donal\\projects\\SText\\ai_sdk_prompt.md",
+            }
+        },
         // "Claude --chrome": {
         //     "launch_command": ["claude", "--chrome"],
         //     "spawn_env": {
