@@ -37,21 +37,34 @@ def prompt_content_end(screen, prompt_y):
     return min(max(end, 0), screen.cols - 1)
 
 
-def prompt_caret_col(screen, prompt_y):
-    """Best-effort ST caret column for the prompt row.
+def display_col_on_prompt(screen, prompt_y):
+    """Map hardware cursor on the prompt row to an ST insert column.
 
-    Prefer the last hardware column recorded on the prompt, clamped to the
-    content end (after last non-blank). Allowing end+1 was the 'one off to the
-    right' bug: a trailing blank under the TUI cursor plus rstrip/pad made ST
-    sit one past the real insert point. Fall back to content end.
+    Rules:
+      - mid-line (x < last glyph): use x
+      - on last glyph (x == last): use content end (after last glyph)
+        Claude/ConPTY often reports the cursor *on* the final character of the
+        input while the insert point is after it — that was the persistent
+        one-column-left off-by-one.
+      - past last glyph (x > last): clamp to content end (ignore EOL erase CUPs)
     """
+    last = _last_nonblank_col(screen, prompt_y)
+    end = prompt_content_end(screen, prompt_y)
+    x = screen.x
+    if last < 0:
+        return min(max(x, 2), end, screen.cols - 1)
+    if x < last:
+        return x
+    # x == last (on final glyph) or x > last (blank/EOL) → after content
+    return end
+
+
+def prompt_caret_col(screen, prompt_y):
+    """Best-effort ST caret column for the prompt row when parked on status."""
     end = prompt_content_end(screen, prompt_y)
     ix = getattr(screen, "input_caret_x", None)
-    if ix is not None:
-        ix = int(ix)
-        if 0 <= ix:
-            # Never past content end — ST insert point is after last glyph.
-            return min(max(ix, 0), end, screen.cols - 1)
+    if ix is not None and 0 <= int(ix) <= end:
+        return min(max(int(ix), 0), end)
     return end
 
 
@@ -61,29 +74,20 @@ def adjust_display_caret(screen, cy, cx):
     cy/cx are already in rendered-row space (history prepended when not alt).
     When the hardware cursor sits below the input box (status footer), pin the
     display caret to the prompt row instead.
-
-    Also records `screen.input_caret_x` whenever the hardware cursor is on the
-    prompt (clamped to content end so erase-CUPs to EOL are ignored).
     """
     prompt_y = find_prompt_row(screen)
     if prompt_y is None:
         return cy, cx
-    end = prompt_content_end(screen, prompt_y)
-    # Remember the real input column while Claude has the cursor on `>`.
+    hist = 0 if screen.alt_screen else len(screen.history)
+    # Remember / use the real input column while Claude has the cursor on `>`.
     if screen.y == prompt_y:
-        # Clamp to content end: hardware x may sit on a blank after the text
-        # (or briefly at EOL during repaint). ST wants the insert gap after the
-        # last glyph, which is `end`, not end+1.
-        screen.input_caret_x = min(screen.x, end)
-        # When on the prompt, also clamp the *returned* display col so a frame
-        # where x is one past content doesn't show one-off before we park.
-        hist = 0 if screen.alt_screen else len(screen.history)
-        return hist + prompt_y, screen.input_caret_x
+        disp = display_col_on_prompt(screen, prompt_y)
+        screen.input_caret_x = disp
+        return hist + prompt_y, disp
     # Input box is: prompt row, then a border row, then status. Anything below
     # the border is "parked on status" — snap back to the prompt.
     if screen.y <= prompt_y + 1:
         return cy, cx
-    hist = 0 if screen.alt_screen else len(screen.history)
     return hist + prompt_y, prompt_caret_col(screen, prompt_y)
 
 

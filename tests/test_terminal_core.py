@@ -184,7 +184,7 @@ class TestDisplayCaret(unittest.TestCase):
         self.assertEqual(cx2, 4)
 
     def test_clamp_hardware_x_past_content(self):
-        """Hardware x one past content must not push ST caret one to the right."""
+        """Hardware x past content clamps to content end."""
         s = self._claude_like_screen()
         # content_end for '>\xa0hi' is 4; claim hardware at 5
         s.x, s.y = 5, 4
@@ -192,6 +192,15 @@ class TestDisplayCaret(unittest.TestCase):
         cy2, cx2 = adjust_display_caret(s, cy, cx)
         self.assertEqual(cx2, 4)
         self.assertEqual(s.input_caret_x, 4)
+
+    def test_cursor_on_last_glyph_seats_after_it(self):
+        """Hardware on final input char → ST caret after that char (not on it)."""
+        s = self._claude_like_screen()
+        # 'i' is last glyph at col 3; content_end 4
+        s.x, s.y = 3, 4
+        rows, cy, cx = s.render_cells()
+        cy2, cx2 = adjust_display_caret(s, cy, cx)
+        self.assertEqual(cx2, 4)
 
     def test_pin_fallback_without_memory(self):
         s = self._claude_like_screen()
@@ -225,14 +234,15 @@ class TestDisplayCaret(unittest.TestCase):
         padded = pad_row_for_caret(rows, cy2, 5)
         self.assertGreaterEqual(len(padded[cy2]), 5)
 
-    def test_trust_cursor_on_prompt(self):
+    def test_trust_cursor_mid_prompt(self):
         s = self._claude_like_screen()
-        s.x, s.y = 3, 4  # on the 'i' / mid content — content_end is 4
+        # 'h' at col 2 — mid content (last glyph is 'i' at 3)
+        s.x, s.y = 2, 4
         rows, cy, cx = s.render_cells()
         cy2, cx2 = adjust_display_caret(s, cy, cx)
         self.assertEqual(cy2, cy)
-        self.assertEqual(cx2, 3)
-        self.assertEqual(s.input_caret_x, 3)
+        self.assertEqual(cx2, 2)
+        self.assertEqual(s.input_caret_x, 2)
 
     def test_no_prompt_no_adjust(self):
         s = Screen(20, 5)
