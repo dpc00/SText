@@ -126,54 +126,103 @@ def _find_system_python():
     return None
 
 
-def _start_ai_log_server():
-    import os
-    import shutil
-    import socket
-    import subprocess
+# Daily-log HTTP server (hooks → ~/data/logs/<date>.md). Must survive package
+# reloads and brief process death — without it, agent hooks spool and the ST log
+# tab looks "aborted" mid-session.
+_AI_LOG_PORT = 9511
+_AI_LOG_KEEPALIVE_MS = 30_000
+_ai_log_keepalive_scheduled = False
 
-    port = 9511
+
+def _ai_log_port_free(port=None):
+    import socket
+
+    port = _AI_LOG_PORT if port is None else port
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(0.25)
     try:
         sock.bind(("127.0.0.1", port))
         sock.close()
+        return True
     except OSError:
-        return
+        try:
+            sock.close()
+        except OSError:
+            pass
+        return False
+
+
+def _start_ai_log_server():
+    import os
+    import subprocess
+
+    if not _ai_log_port_free():
+        return False
 
     script = os.path.join(
         os.path.dirname(__file__), "logs", "ai_log_server.py"
     )
     if not os.path.exists(script):
         print(f"PluginLoader: ai_log_server.py not found at {script}")
-        return
+        return False
 
     python_exe = _find_system_python()
     if not python_exe:
         print("PluginLoader: no system python found; ai_log_server not started")
-        return
+        return False
 
     si = subprocess.STARTUPINFO()
     si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     si.wShowWindow = subprocess.SW_HIDE
+    # Do NOT assign_pid into the ST job: package reloads / job teardown kill
+    # job members and abort the daily log. This process is intentionally
+    # independent; keepalive restarts it if it dies while ST is open.
+    # CREATE_BREAKAWAY_FROM_JOB (0x01000000) when allowed; always NEW_GROUP + NO_WINDOW.
+    flags = subprocess.CREATE_NO_WINDOW | 0x00000200  # NEW_PROCESS_GROUP
+    if sys.platform == "win32":
+        flags |= 0x01000000  # CREATE_BREAKAWAY_FROM_JOB (best-effort)
     try:
-        from User.winutil._job import assign_pid
-    except Exception:
-        assign_pid = None
-    proc = subprocess.Popen(
-        [python_exe, script],
-        creationflags=subprocess.CREATE_NO_WINDOW,
-        startupinfo=si,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-    )
-    if assign_pid:
-        try:
-            assign_pid(proc.pid)
-        except Exception:
-            pass
+        proc = subprocess.Popen(
+            [python_exe, script],
+            creationflags=flags,
+            startupinfo=si,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except OSError as e:
+        # BREAKAWAY may be denied; retry without it.
+        print(f"PluginLoader: ai_log_server spawn retry ({e})")
+        proc = subprocess.Popen(
+            [python_exe, script],
+            creationflags=subprocess.CREATE_NO_WINDOW | 0x00000200,
+            startupinfo=si,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            close_fds=True,
+        )
     print(f"PluginLoader: ai_log_server started (pid={proc.pid})")
+    return True
+
+
+def _ai_log_keepalive_tick():
+    """If :9511 is free, restart the log server (hooks fail-open into spool otherwise)."""
+    global _ai_log_keepalive_scheduled
+    try:
+        if _ai_log_port_free():
+            if _start_ai_log_server():
+                print("PluginLoader: ai_log_server restarted by keepalive")
+    except Exception as e:
+        print(f"PluginLoader: ai_log keepalive error: {e}")
+    try:
+        import sublime
+
+        sublime.set_timeout(_ai_log_keepalive_tick, _AI_LOG_KEEPALIVE_MS)
+        _ai_log_keepalive_scheduled = True
+    except Exception:
+        _ai_log_keepalive_scheduled = False
 
 
 def plugin_loaded():
@@ -181,16 +230,26 @@ def plugin_loaded():
     # Subfolder modules' own lifecycle hooks never fire after the reorg, so every
     # submodule that defines plugin_loaded() must be invoked here by delegation.
     import importlib
+    import sublime
+
     for mod_name in _PLUGIN_LOADED_MODULES:
         try:
             importlib.import_module(mod_name).plugin_loaded()
         except Exception as e:
             print(f"PluginLoader: {mod_name}.plugin_loaded failed: {e}")
     _start_ai_log_server()
+    # Arm keepalive once per process; reloads re-enter plugin_loaded and re-arm.
+    global _ai_log_keepalive_scheduled
+    if not _ai_log_keepalive_scheduled:
+        sublime.set_timeout(_ai_log_keepalive_tick, _AI_LOG_KEEPALIVE_MS)
+        _ai_log_keepalive_scheduled = True
 
 
 def plugin_unloaded():
     import importlib
+
+    global _ai_log_keepalive_scheduled
+    _ai_log_keepalive_scheduled = False
     for mod_name in _PLUGIN_UNLOADED_MODULES:
         try:
             importlib.import_module(mod_name).plugin_unloaded()
