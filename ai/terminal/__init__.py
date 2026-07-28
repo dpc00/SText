@@ -6,7 +6,13 @@ ai.ai_terminal which wires these into ConPTY + view rendering.
 from .colors import pack_attr, quantize256, scope_name_for, rstrip_cells
 from .keys import translate_key
 from .parser import Parser
-from .render import build_text_and_regions, paint_host_cursor
+from .render import (
+    HOST_CURSOR_SCOPE,
+    build_text_and_regions,
+    cell_needs_host_cursor,
+    cursor_text_offset,
+    paint_host_cursor,
+)
 from .screen import Screen
 
 __all__ = [
@@ -19,4 +25,7 @@ __all__ = [
     "translate_key",
     "build_text_and_regions",
     "paint_host_cursor",
+    "cell_needs_host_cursor",
+    "cursor_text_offset",
+    "HOST_CURSOR_SCOPE",
 ]

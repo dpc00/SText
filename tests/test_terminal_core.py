@@ -8,9 +8,12 @@ from __future__ import annotations
 import unittest
 
 from ai.terminal import (
+    HOST_CURSOR_SCOPE,
     Parser,
     Screen,
     build_text_and_regions,
+    cell_needs_host_cursor,
+    cursor_text_offset,
     pack_attr,
     paint_host_cursor,
     quantize256,
@@ -174,26 +177,35 @@ class TestHostCursor(unittest.TestCase):
     def test_paints_reverse_when_absent(self):
         """Grok-style: cursor past rstripped blanks, no reverse cell."""
         rows = [[(">", 0), (" ", 0), ("h", 0), ("i", 0)]]
-        out = paint_host_cursor(rows, 0, 4)  # insert point after "hi"
+        self.assertTrue(cell_needs_host_cursor(rows, 0, 4))
+        out, painted = paint_host_cursor(rows, 0, 4)  # insert point after "hi"
+        self.assertTrue(painted)
         self.assertEqual(len(out[0]), 5)
         ch, attr = out[0][4]
         self.assertEqual(ch, " ")
         self.assertTrue(attr & REVERSE)
         text, regs = build_text_and_regions(out)
         self.assertTrue(any(r[2] == "ai.fb.1.16" for r in regs))
+        off = cursor_text_offset(out, 0, 4)
+        self.assertEqual(off, 4)
+        self.assertEqual(text[off], " ")
 
     def test_leaves_existing_reverse(self):
         """Claude-style: app already reverse-painted the cursor cell."""
         rows = [[("x", REVERSE)]]
-        out = paint_host_cursor(rows, 0, 0)
+        self.assertFalse(cell_needs_host_cursor(rows, 0, 0))
+        out, painted = paint_host_cursor(rows, 0, 0)
+        self.assertFalse(painted)
         self.assertEqual(out[0][0], ("x", REVERSE))
 
     def test_mid_line_reverses_char(self):
         rows = [[("a", 0), ("b", 0), ("c", 0)]]
-        out = paint_host_cursor(rows, 0, 1)
+        out, painted = paint_host_cursor(rows, 0, 1)
+        self.assertTrue(painted)
         self.assertEqual(out[0][1][0], "b")
         self.assertTrue(out[0][1][1] & REVERSE)
         self.assertEqual(out[0][0][1], 0)
+        self.assertEqual(HOST_CURSOR_SCOPE, "ai.terminal.host_cursor")
 
 
 if __name__ == "__main__":

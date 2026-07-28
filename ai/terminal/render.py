@@ -4,6 +4,25 @@ Pure Python — no Sublime imports.
 """
 from .colors import REVERSE, scope_name_for
 
+# Baked into the ST color scheme (see ai_terminal._HOST_CURSOR_SCOPE). Used when
+# the host synthesizes a cursor so visibility does not depend on dynamic
+# ai.fb.* registration / flush races.
+HOST_CURSOR_SCOPE = "ai.terminal.host_cursor"
+
+
+def cell_needs_host_cursor(rows, cy, cx):
+    """True when the PTY cursor cell is not already SGR-reverse (app cursor)."""
+    if rows is None or cy is None or cx is None:
+        return False
+    if cy < 0 or cx < 0 or cy >= len(rows):
+        return False
+    row = rows[cy]
+    if cx >= len(row):
+        # Past rstripped blanks — shell/Grok insertion point.
+        return True
+    _ch, attr = row[cx]
+    return not bool(attr & REVERSE)
+
 
 def paint_host_cursor(rows, cy, cx):
     """Ensure a reverse-video cell at the PTY cursor for host visibility.
@@ -13,21 +32,40 @@ def paint_host_cursor(rows, cy, cx):
     SGR-reverse the cursor cell (Grok --minimal, plain shells) then show
     no insertion point until a keystroke. Paint a synthetic reverse cell
     only when the cursor cell is not already reverse.
+
+    Returns (rows, host_painted). host_painted is True when this function
+    synthesized the cursor (caller should also tag HOST_CURSOR_SCOPE).
     """
     if rows is None or cy is None or cx is None:
-        return rows
+        return rows, False
     if cy < 0 or cx < 0 or cy >= len(rows):
-        return rows
+        return rows, False
     rows = list(rows)
     row = list(rows[cy])
     # Cursor often sits past rstripped trailing spaces; pad so the cell exists.
     while len(row) <= cx:
         row.append((" ", 0))
     ch, attr = row[cx]
-    if not (attr & REVERSE):
-        row[cx] = (ch, attr | REVERSE)
+    if attr & REVERSE:
+        rows[cy] = row
+        return rows, False
+    row[cx] = (ch, attr | REVERSE)
     rows[cy] = row
-    return rows
+    return rows, True
+
+
+def cursor_text_offset(rows, cy, cx):
+    """Byte/char offset of (cy, cx) in build_text_and_regions output, or None."""
+    if rows is None or cy is None or cx is None:
+        return None
+    if cy < 0 or cx < 0 or cy >= len(rows):
+        return None
+    if cx >= len(rows[cy]):
+        return None
+    off = 0
+    for i in range(cy):
+        off += len(rows[i]) + 1  # +1 newline
+    return off + cx
 
 
 def build_text_and_regions(rows, scope_for=None):

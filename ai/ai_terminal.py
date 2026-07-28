@@ -429,7 +429,9 @@ try:
         translate_key as _translate_key,
     )
     from .terminal.render import (
+        HOST_CURSOR_SCOPE as _HOST_CURSOR_SCOPE,
         build_text_and_regions as _build_text_and_regions_pure,
+        cursor_text_offset as _cursor_text_offset,
         paint_host_cursor as _paint_host_cursor,
     )
 except ImportError as _term_imp_err:
@@ -471,7 +473,9 @@ except ImportError as _term_imp_err:
             translate_key as _translate_key,
         )
         from ai.terminal.render import (
+            HOST_CURSOR_SCOPE as _HOST_CURSOR_SCOPE,
             build_text_and_regions as _build_text_and_regions_pure,
+            cursor_text_offset as _cursor_text_offset,
             paint_host_cursor as _paint_host_cursor,
         )
     except ImportError:
@@ -482,6 +486,13 @@ except ImportError as _term_imp_err:
 _SCHEME_LOCK = threading.Lock()
 _REGISTERED_SCOPES = set()
 _SCHEME_PATH = None  # Safely initialized inside _init_dynamic_color_scheme using sublime.packages_path()
+# Permanent high-contrast block for host-synthesized cursors (Grok --minimal,
+# plain shells). Must not depend on dynamic ai.fb.* registration.
+_HOST_CURSOR_RULE = {
+    "scope": "ai.terminal.host_cursor",
+    "background": "#CCCCCC",
+    "foreground": "#000000",
+}
 _BASE_SCHEME = {
     "name": "AI Terminal",
     "variables": {},
@@ -497,7 +508,7 @@ _BASE_SCHEME = {
         "gutter": "#000000",
         "gutter_foreground": "#808080",
     },
-    "rules": []
+    "rules": [dict(_HOST_CURSOR_RULE)],
 }
 _PENDING_RULES = []
 _WRITE_PENDING = False
@@ -513,6 +524,30 @@ def _color_scheme_log(message):
             f.write(f"[{ts}] [{t_name}] {message}\n")
     except Exception:
         pass
+
+
+def _ensure_host_cursor_rule(scheme_data):
+    """Guarantee the permanent host-cursor scope exists in scheme rules.
+
+    Returns True if scheme_data was mutated.
+    """
+    if not isinstance(scheme_data, dict):
+        return False
+    rules = scheme_data.setdefault("rules", [])
+    scope = _HOST_CURSOR_RULE["scope"]
+    for r in rules:
+        if r.get("scope") == scope:
+            # Keep contrast high even if an older rule was muted.
+            changed = False
+            if r.get("background") != _HOST_CURSOR_RULE["background"]:
+                r["background"] = _HOST_CURSOR_RULE["background"]
+                changed = True
+            if r.get("foreground") != _HOST_CURSOR_RULE["foreground"]:
+                r["foreground"] = _HOST_CURSOR_RULE["foreground"]
+                changed = True
+            return changed
+    rules.append(dict(_HOST_CURSOR_RULE))
+    return True
 
 
 def _init_dynamic_color_scheme():
@@ -535,18 +570,26 @@ def _init_dynamic_color_scheme():
                     for r in rules:
                         if "scope" in r:
                             _REGISTERED_SCOPES.add(r["scope"])
+                dirty = False
                 # Keep host caret invisible even on schemes written before this rule.
                 g = data.setdefault("globals", {})
                 bg = g.get("background", "#000000")
                 if g.get("caret") != bg:
                     g["caret"] = bg
-                    _save_color_scheme(data)
+                    dirty = True
                     _color_scheme_log(f"[init] Forced host caret invisible (matched bg {bg}).")
+                if _ensure_host_cursor_rule(data):
+                    dirty = True
+                    _color_scheme_log("[init] Ensured ai.terminal.host_cursor rule.")
+                if dirty:
+                    _save_color_scheme(data)
+                _REGISTERED_SCOPES.add(_HOST_CURSOR_RULE["scope"])
             msg = f"[init] Initialized. Loaded {len(_REGISTERED_SCOPES)} registered scope rules from disk ({size} bytes)."
             print(f"[ai_terminal] {msg}")
             _color_scheme_log(msg)
         else:
             _save_color_scheme(_BASE_SCHEME)
+            _REGISTERED_SCOPES.add(_HOST_CURSOR_RULE["scope"])
             msg = "[init] Created fresh dynamic color scheme file."
             print(f"[ai_terminal] {msg}")
             _color_scheme_log(msg)
@@ -803,6 +846,7 @@ def _flush_pending_rules():
     g = scheme_data.setdefault("globals", {})
     bg = g.get("background", "#000000")
     g["caret"] = bg
+    _ensure_host_cursor_rule(scheme_data)
 
     _save_color_scheme(scheme_data)
     msg = (
@@ -1481,11 +1525,18 @@ def _do_render(term):
     # invisible (scheme caret = bg) so Claude reverse-video cursors are not
     # doubled. paint_host_cursor adds reverse on the PTY cell when the app
     # did not (Grok --minimal / plain shells) so the insertion point shows.
+    # Also tag ai.terminal.host_cursor (baked into the scheme) so visibility
+    # does not depend on dynamic ai.fb.* flush timing.
     with term._lock:
         rows, cy, cx = term.screen.render_cells()
     term.screen.dirty = False
-    rows = _paint_host_cursor(rows, cy, cx)
+    rows, host_painted = _paint_host_cursor(rows, cy, cx)
     text, regions = _build_text_and_regions(rows)
+    if host_painted:
+        off = _cursor_text_offset(rows, cy, cx)
+        if off is not None and 0 <= off < len(text):
+            regions = list(regions)
+            regions.append([off, off + 1, _HOST_CURSOR_SCOPE])
     view.run_command("ai_terminal_render",
                      {"text": text, "cursor": [cy, cx], "regions": regions})
 
