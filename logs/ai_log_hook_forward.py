@@ -81,11 +81,33 @@ def _drain() -> None:
             continue
 
 
+def _tag_agent(raw: bytes) -> bytes:
+    """Stamp agent=Grok so the daily log labels Grok turns (not Claude).
+
+    Claude Code posts HTTP hooks directly and never hits this forwarder.
+    ai_log_server defaults unlabeled turns to Claude for that path.
+    """
+    try:
+        obj = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        return raw
+    if not isinstance(obj, dict):
+        return raw
+    # Do not overwrite an explicit agent from the client.
+    if not obj.get("agent") and not obj.get("agentName"):
+        obj["agent"] = "Grok"
+    try:
+        return json.dumps(obj, ensure_ascii=False).encode("utf-8")
+    except (TypeError, ValueError):
+        return raw
+
+
 def main() -> int:
     raw = sys.stdin.buffer.read()
     if not raw.strip():
         return 0
-    # Pass through as-is; ai_log_server normalizes camelCase / vendor variants.
+    raw = _tag_agent(raw)
+    # Pass through; ai_log_server normalizes camelCase / vendor variants.
     if _post(raw):
         _drain()
     else:

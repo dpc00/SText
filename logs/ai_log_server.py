@@ -217,8 +217,86 @@ def _short(s, n=100):
     return s if len(s) <= n else s[:n - 3] + "…"
 
 
+def _normalize_agent_label(v):
+    """Map vendor/source strings to a short display label."""
+    if not isinstance(v, str):
+        return None
+    raw = v.strip()
+    if not raw:
+        return None
+    low = raw.lower().replace(" ", "-").replace("_", "-")
+    mapping = {
+        "grok": "Grok",
+        "grok-build": "Grok",
+        "grok-cli": "Grok",
+        "xai": "Grok",
+        "claude": "Claude",
+        "claude-code": "Claude",
+        "anthropic": "Claude",
+        "gemini": "Gemini",
+        "gemini-cli": "Gemini",
+        "cursor": "Cursor",
+        "codex": "Codex",
+        "opencode": "OpenCode",
+    }
+    if low in mapping:
+        return mapping[low]
+    # Keep short custom labels; truncate long garbage.
+    return raw[:32] if len(raw) <= 32 else raw[:29] + "…"
+
+
+def _detect_agent(ev):
+    """Best-effort agent label from envelope fields or vendor event shapes."""
+    if not isinstance(ev, dict):
+        return None
+    for k in (
+        "agent",
+        "agent_name",
+        "agentName",
+        "client",
+        "client_name",
+        "clientName",
+        "source",
+        "app",
+        "vendor",
+    ):
+        label = _normalize_agent_label(ev.get(k))
+        if label:
+            return label
+    # Gemini CLI uses BeforeAgent / AfterTool / etc.
+    et = ev.get("hook_event_name") or ev.get("event_type") or ""
+    if et in ("BeforeAgent", "AfterAgent", "BeforeTool", "AfterTool",
+              "BeforeModel", "AfterModel", "BeforeToolSelection"):
+        return "Gemini"
+    return None
+
+
+def _is_permission_noise(name, ev):
+    """True for tool-permission prompts that spam the daily log."""
+    if name in ("PermissionRequest",):
+        return True
+    if name != "Notification":
+        return False
+    nt = str(ev.get("notification_type") or ev.get("notificationType") or "").lower()
+    if nt in (
+        "permission_prompt",
+        "permission-prompt",
+        "permissionprompt",
+        "permission_request",
+        "permission-request",
+        "permissionrequest",
+    ):
+        return True
+    msg = str(ev.get("message") or "").lower()
+    if "permission" in msg and ("request" in msg or "prompt" in msg):
+        return True
+    return False
+
+
 def _summarize_event(name, ev):
     """One-line summary of an ambient event's payload, or None to skip the .md line."""
+    if _is_permission_noise(name, ev):
+        return None
     if name == "MessageDisplay":
         # skip streaming chunks; render only the final per-message delta
         if not ev.get("final"):
@@ -355,15 +433,18 @@ def _flush_turn(sid, path=None):
     if sess.get("prompt"):
         out.append(sess["prompt"])
     out.append("")
-    # Claude section starts at the earliest tool or ambient event
+    # Agent section starts at the earliest tool or ambient event
     ts_cands = []
     if sess.get("first_tool_ts"):
         ts_cands.append(sess["first_tool_ts"])
     for e in sess.get("extras", []):
         if e.get("ts"):
             ts_cands.append(e["ts"])
-    claude_ts = min(ts_cands) if ts_cands else start
-    out.append(f"### {claude_ts.strftime('%H:%M:%S')}  Claude")
+    agent_ts = min(ts_cands) if ts_cands else start
+    # Default Claude: historical HTTP hooks from Claude Code omit agent.
+    # Grok's command forwarder injects agent="Grok".
+    agent_label = sess.get("agent") or "Claude"
+    out.append(f"### {agent_ts.strftime('%H:%M:%S')}  {agent_label}")
     # merge tool calls and ambient extras by timestamp so the log is chronological
     tools = sess.get("tools", [])
     extras = sess.get("extras", [])
@@ -467,6 +548,8 @@ _CAMEL_TO_SNAKE = {
     "userPrompt": "prompt",
     "promptText": "prompt",
     "stopHookActive": "stop_hook_active",
+    "agentName": "agent",
+    "clientName": "client",
 }
 
 
@@ -566,12 +649,14 @@ class H(http.server.BaseHTTPRequestHandler):
                     ev["hook_event_name"] = "UserPromptSubmit"
                     if "prompt" not in ev:
                         ev["prompt"] = ev.get("prompt", "")
+                    ev.setdefault("agent", "Gemini")
                 elif event_type == "BeforeTool":
                     ev["hook_event_name"] = "PreToolUse"
                     tool_call = ev.get("tool_call") or {}
                     ev["tool_name"] = ev.get("tool_name") or tool_call.get("name") or "?"
                     ev["tool_input"] = ev.get("tool_input") or tool_call.get("args")
                     ev["tool_use_id"] = ev.get("tool_use_id") or tool_call.get("id")
+                    ev.setdefault("agent", "Gemini")
                 elif event_type == "AfterTool":
                     tool_call = ev.get("tool_call") or {}
                     tool_response = ev.get("tool_response") or {}
@@ -579,6 +664,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     ev["hook_event_name"] = "PostToolUseFailure" if is_error else "PostToolUse"
                     ev["tool_name"] = ev.get("tool_name") or tool_call.get("name") or "?"
                     ev["tool_use_id"] = ev.get("tool_use_id") or tool_call.get("id")
+                    ev.setdefault("agent", "Gemini")
                 elif event_type == "AfterAgent":
                     ev["hook_event_name"] = "Stop"
                     ev["last_assistant_message"] = (
@@ -589,6 +675,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         or ""
                     )
                     ev["stop_reason"] = ev.get("stop_reason") or ""
+                    ev.setdefault("agent", "Gemini")
                 elif event_type == "Notification":
                     ev["hook_event_name"] = "Notification"
                     ev["message"] = ev.get("message") or ""
@@ -611,6 +698,15 @@ class H(http.server.BaseHTTPRequestHandler):
 
             name = ev.get("hook_event_name", "")
             sid = ev.get("session_id", "_")
+            agent = _detect_agent(ev)
+            # Drop permission-prompt spam early (still 200 so hooks fail-open).
+            if name in ("Notification", "PermissionRequest") and _is_permission_noise(name, ev):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(b"{}")
+                return
             # Dedup: drop identical ambient events (same sid+name within 1s).
             # Tool events (PreToolUse/PostToolUse) are NOT deduped -- they carry
             # unique tool_use_ids and parallel calls can share a name+second.
@@ -629,6 +725,10 @@ class H(http.server.BaseHTTPRequestHandler):
                         return
                     _recent_events[dedup_key] = now
             with _lock:
+                def _touch_agent(s):
+                    if agent and s is not None and not s.get("agent"):
+                        s["agent"] = agent
+
                 if name == "UserPromptSubmit":
                     if sid in _sessions:
                         _flush_turn(sid)
@@ -637,9 +737,14 @@ class H(http.server.BaseHTTPRequestHandler):
                         "start": recv,
                         "tools": [],
                         "extras": [],
+                        "agent": agent or "Claude",
                     }
                 elif name == "PreToolUse":
-                    s = _sessions.setdefault(sid, {"prompt": "", "start": recv, "tools": [], "extras": []})
+                    s = _sessions.setdefault(
+                        sid,
+                        {"prompt": "", "start": recv, "tools": [], "extras": [], "agent": agent or "Claude"},
+                    )
+                    _touch_agent(s)
                     s.setdefault("first_tool_ts", recv)
                     s["tools"].append({
                         "name": ev.get("tool_name", "?"),
@@ -648,11 +753,16 @@ class H(http.server.BaseHTTPRequestHandler):
                         "id": ev.get("tool_use_id"),
                     })
                 elif name == "PostToolUse":
+                    s = _sessions.get(sid)
+                    _touch_agent(s)
                     _mark_tool_done(sid, ev.get("tool_use_id"), ev.get("tool_name", "?"), False, response=ev.get("tool_response"))
                 elif name == "PostToolUseFailure":
+                    s = _sessions.get(sid)
+                    _touch_agent(s)
                     _mark_tool_done(sid, ev.get("tool_use_id"), ev.get("tool_name", "?"), True, response=ev.get("tool_response"))
                 elif name == "AfterModel":
                     s = _sessions.get(sid)
+                    _touch_agent(s)
                     if s is not None:
                         resp = ev.get("llm_response") or {}
                         try:
@@ -676,6 +786,7 @@ class H(http.server.BaseHTTPRequestHandler):
                             pass
                 elif name == "Stop":
                     s = _sessions.get(sid)
+                    _touch_agent(s)
                     if s:
                         s["stop_ts"] = recv
                         msg = ev.get("last_assistant_message") or ev.get("prompt_response") or ev.get("message") or ev.get("response") or ""
@@ -692,9 +803,10 @@ class H(http.server.BaseHTTPRequestHandler):
                     # or write standalone if no turn is currently open
                     text = _summarize_event(name, ev)
                     if text is None:
-                        pass  # e.g. non-final MessageDisplay — archived in jsonl only
+                        pass  # e.g. non-final MessageDisplay / permission noise
                     else:
                         s = _sessions.get(sid)
+                        _touch_agent(s)
                         if s is not None:
                             s["extras"].append({
                                 "ts": recv,
