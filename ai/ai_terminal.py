@@ -1142,8 +1142,8 @@ def _on_settings_change():
         _settings_debug_log(f"ERROR: _scrollback_size failed: {e}\n{traceback.format_exc()}")
         return
 
-    with _REG_LOCK:
-        terms = list(_TERMINALS.values())
+    with _term_lock():
+        terms = list(_term_registry().values())
     _settings_debug_log(f"Found {len(terms)} active terminal(s)")
 
     for t in terms:
@@ -1172,9 +1172,33 @@ _BLANK = " "
 
 
 # ─── _Terminal: per-view owner + registry ────────────────────────────────────
+#
+# Registry MUST live on sys, not only as a module global. Hot-reload / re-exec
+# of this file (PluginLoader, importlib.reload, or agents replacing
+# sys.modules['User.ai.ai_terminal'] with a new module object) would otherwise
+# create a second empty dict while the already-registered Command classes still
+# close over the first one. New tabs spawn into dict B; keypress looks in dict A
+# → silent dead keyboard ("Bash 2 not taking keystrokes").
+def _term_registry():
+    """Process-global {view_id: _Terminal}. Survives module reload / re-bind."""
+    reg = getattr(sys, "_stext_ai_terminals", None)
+    if not isinstance(reg, dict):
+        reg = {}
+        sys._stext_ai_terminals = reg
+    return reg
 
-_TERMINALS = {}
-_REG_LOCK = threading.Lock()
+
+def _term_lock():
+    lock = getattr(sys, "_stext_ai_terminals_lock", None)
+    if lock is None:
+        lock = threading.Lock()
+        sys._stext_ai_terminals_lock = lock
+    return lock
+
+
+# Module-level aliases (same objects as on sys after first import).
+_TERMINALS = _term_registry()
+_REG_LOCK = _term_lock()
 
 
 class _ProcessProxy:
@@ -1234,8 +1258,8 @@ class _Terminal:
 
     @classmethod
     def from_id(cls, view_id):
-        with _REG_LOCK:
-            return _TERMINALS.get(view_id)
+        with _term_lock():
+            return _term_registry().get(view_id)
 
     def start(self):
         # Recording patch: asciicast v3. Recording is on if
@@ -1476,8 +1500,8 @@ def _layout_tick():
     global _WATCHER_TOKEN
     _WATCHER_TOKEN = None
     try:
-        with _REG_LOCK:
-            terms = list(_TERMINALS.values())
+        with _term_lock():
+            terms = list(_term_registry().values())
         for term in terms:
             if term._watcher is None:
                 continue
@@ -1869,8 +1893,8 @@ class AiTerminalViewListener(sublime_plugin.ViewEventListener):
         if term._watcher is not None:
             term._watcher.dispose()
             term._watcher = None
-        with _REG_LOCK:
-            _TERMINALS.pop(self.view.id(), None)
+        with _term_lock():
+            _term_registry().pop(self.view.id(), None)
         threading.Thread(target=term.kill, daemon=True).start()
 
     # ─── pre-empt ST's internal view.show on focus/hover ───────────────────
@@ -2242,8 +2266,8 @@ def _spawn(window, path, profile=None):
     screen = _Screen(cols, rows, history_cap=_scrollback_size())
     parser = _Parser(screen, force_main_screen=_force_main_screen())
     term = _Terminal(view, pty, screen, parser, spawn_env=extra_env)
-    with _REG_LOCK:
-        _TERMINALS[view.id()] = term
+    with _term_lock():
+        _term_registry()[view.id()] = term
     term.start()
 
 
@@ -2402,6 +2426,20 @@ class AiTerminalKeypressCommand(sublime_plugin.TextCommand):
             return
         term = _Terminal.from_id(self.view.id())
         if term is None:
+            # View still tagged as a terminal but PTY owner is gone (reload /
+            # orphaned tab). Without this log, keys appear to "do nothing".
+            if self.view.settings().get(_VIEW_SETTING):
+                print(
+                    f"[ai_terminal] keypress dropped: no PTY for view "
+                    f"{self.view.id()} ({self.view.name()!r}) — tab is orphaned; "
+                    f"close it and open a new terminal"
+                )
+            return
+        if not term.pty.is_alive():
+            print(
+                f"[ai_terminal] keypress dropped: PTY dead for "
+                f"{self.view.name()!r} (view {self.view.id()})"
+            )
             return
         # Ctrl+C / Ctrl+X with an active text selection copies/cuts it instead
         # of sending SIGINT (\x03) / cut (\x18) to the PTY. No selection ->
@@ -2579,8 +2617,8 @@ def _poll_loop():
     global _poll_token
     _poll_token = None
     try:
-        with _REG_LOCK:
-            items = list(_TERMINALS.items())
+        with _term_lock():
+            items = list(_term_registry().items())
         for _vid, term in items:
             view = term.view
             if not view.is_valid():
@@ -2614,7 +2652,7 @@ _clamp_token = None
 def _clamp_vp_loop():
     global _clamp_token
     try:
-        for _vid, term in list(_TERMINALS.items()):
+        for _vid, term in list(_term_registry().items()):
             v = term.view
             if not v or not v.is_valid():
                 continue
