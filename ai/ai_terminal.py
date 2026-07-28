@@ -28,6 +28,8 @@ import codecs
 import collections
 import json
 import os
+import shutil
+import subprocess
 import threading
 import time
 import traceback
@@ -90,7 +92,9 @@ if os.name == "nt":
             _fields_ = [("hProcess", HANDLE), ("hThread", HANDLE),
                         ("dwProcessId", DWORD), ("dwThreadId", DWORD)]
 
-        _k32 = windll.kernel32
+        # use_last_error=True so ctypes.get_last_error() works after CreateProcessW.
+        # windll.kernel32 does not preserve last-error (reports 0 on failure).
+        _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
         # Set argtypes/restype on EVERY function -- without these ctypes truncates
         # 64-bit HANDLEs to c_int and ConPTY silently corrupts.
         _k32.CreatePipe.argtypes = [POINTER(HANDLE), POINTER(HANDLE),
@@ -159,7 +163,9 @@ class _Pty:
         self._attr_list = None
         self._heap_buf = None
         self._alive = True
-        self._cmdline = " ".join(argv)
+        # list2cmdline quotes paths with spaces; plain " ".join does not and
+        # also cannot launch npm .cmd shims without prior _resolve_launch_argv.
+        self._cmdline = subprocess.list2cmdline(self.argv)
         self._cwd = cwd or None
         self._env = env
         self._cols = cols
@@ -227,7 +233,9 @@ class _Pty:
                                  envbuf, cwd, byref(si), byref(pi))
         if not ok:
             err = ctypes.get_last_error()
-            raise OSError(f"CreateProcessW failed (GetLastError {err})")
+            raise OSError(
+                f"CreateProcessW failed (GetLastError {err}) for cmdline: {self._cmdline!r}"
+            )
         self._hProcess = pi.hProcess
         self._hThread = pi.hThread
         self.pid = pi.dwProcessId
@@ -946,6 +954,107 @@ def _launch_command():
     if not isinstance(cmd, list) or not all(isinstance(a, str) for a in cmd):
         return _DEFAULT_LAUNCH_COMMAND
     return list(cmd)
+
+
+def _refresh_path_env(env):
+    """Rebuild Path from HKLM+HKCU registry and merge with the process Path.
+
+    Sublime Text inherits PATH at launch. `setx` / installer PATH edits only
+    hit the registry, so a long-lived ST process can miss npm / agent bins.
+    Child PTYs get the refreshed Path so menu launches keep working.
+    """
+    if os.name != "nt" or not isinstance(env, dict):
+        return env
+    try:
+        import winreg
+    except ImportError:
+        return env
+
+    parts = []
+    for root, subkey in (
+        (
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ),
+        (winreg.HKEY_CURRENT_USER, "Environment"),
+    ):
+        try:
+            with winreg.OpenKey(root, subkey) as key:
+                raw, typ = winreg.QueryValueEx(key, "Path")
+        except OSError:
+            continue
+        if typ == getattr(winreg, "REG_EXPAND_SZ", 2):
+            raw = os.path.expandvars(raw)
+        if raw:
+            parts.extend(str(raw).split(";"))
+
+    current = (env.get("Path") or env.get("PATH") or "").split(";")
+    seen = set()
+    merged = []
+    for p in parts + current:
+        p = (p or "").strip().rstrip("\\")
+        if not p:
+            continue
+        k = p.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        merged.append(p)
+    if not merged:
+        return env
+    out = dict(env)
+    out["Path"] = ";".join(merged)
+    out["PATH"] = out["Path"]
+    return out
+
+
+def _resolve_launch_argv(argv, env=None):
+    """Resolve bare command names for CreateProcessW / winpty.
+
+    CreateProcess only auto-appends ``.exe``. npm global shims are ``.cmd``,
+    so bare names like ``opencode`` fail with ERROR_FILE_NOT_FOUND (2) — and
+    without use_last_error the plugin used to report GetLastError 0.
+
+    Resolve via ``shutil.which`` (PATHEXT + PATH), then wrap ``.cmd``/``.bat``
+    with ``cmd.exe /c`` and ``.ps1`` with PowerShell.
+    """
+    argv = [str(a) for a in (argv or [])]
+    if not argv:
+        return argv
+
+    search_path = None
+    if env:
+        search_path = env.get("Path") or env.get("PATH")
+
+    exe0 = argv[0]
+    if os.path.isabs(exe0) and os.path.isfile(exe0):
+        resolved = exe0
+    else:
+        resolved = shutil.which(exe0, path=search_path)
+        if not resolved:
+            npm = "yes" if search_path and "npm" in search_path.lower() else "no"
+            raise FileNotFoundError(
+                f"command not found on PATH: {exe0!r} "
+                f"(PATH contains npm dir: {npm}). "
+                "Fix User PATH or restart Sublime Text after setx/installers."
+            )
+
+    rest = argv[1:]
+    low = resolved.lower()
+    if low.endswith((".cmd", ".bat")):
+        # /d skips AutoRun; list2cmdline will quote paths with spaces.
+        return ["cmd.exe", "/d", "/c", resolved, *rest]
+    if low.endswith(".ps1"):
+        return [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            resolved,
+            *rest,
+        ]
+    return [resolved, *rest]
 
 
 def _spawn_env():
@@ -1838,6 +1947,17 @@ def _spawn(window, path, profile=None):
     # TERM=dumb — Grok doctor then reports color=none. Sanitize before spawn;
     # profile spawn_env still wins for any key it sets.
     env = _sanitize_pty_env(os.environ, extra_env)
+    # Pick up PATH changes from setx/installers without requiring an ST restart.
+    env = _refresh_path_env(env)
+
+    try:
+        argv = _resolve_launch_argv(argv, env)
+    except FileNotFoundError as e:
+        sublime.error_message(f"ai_terminal: {e}")
+        view.close()
+        return
+
+    print(f"[ai_terminal] launch argv: {argv!r}")
 
     backend = s.get("windows_pty_backend", "conpty")
     if backend == "winpty":
