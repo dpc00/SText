@@ -1008,6 +1008,47 @@ def _refresh_path_env(env):
     return out
 
 
+# Windows App Execution Alias: installing WSL puts a 0-byte bash.exe stub on
+# PATH ahead of Git Bash. Prefer a real Git install when resolving bare "bash".
+_GIT_BASH_CANDIDATES = (
+    r"C:\Program Files\Git\bin\bash.exe",
+    r"C:\Program Files\Git\usr\bin\bash.exe",
+    r"C:\Program Files (x86)\Git\bin\bash.exe",
+)
+
+
+def _is_wsl_bash_stub(path):
+    """True for the WindowsApps WSL bash launcher (not a real shell binary)."""
+    if not path:
+        return False
+    low = os.path.normcase(path)
+    if "\\windowsapps\\bash.exe" in low or "/windowsapps/bash.exe" in low:
+        return True
+    try:
+        # App Execution Aliases are often 0-byte reparse points.
+        if os.path.isfile(path) and os.path.getsize(path) == 0:
+            return "windowsapps" in low
+    except OSError:
+        pass
+    return False
+
+
+def _prefer_git_bash(resolved, search_path=None):
+    """If *resolved* is the WSL bash stub, return Git Bash when installed."""
+    if not _is_wsl_bash_stub(resolved):
+        return resolved
+    for cand in _GIT_BASH_CANDIDATES:
+        if os.path.isfile(cand):
+            return cand
+    # Last resort: any non-stub bash later on PATH (shutil.which only returns first).
+    if search_path:
+        for entry in search_path.split(os.pathsep):
+            cand = os.path.join(entry, "bash.exe")
+            if os.path.isfile(cand) and not _is_wsl_bash_stub(cand):
+                return cand
+    return resolved
+
+
 def _resolve_launch_argv(argv, env=None):
     """Resolve bare command names for CreateProcessW / winpty.
 
@@ -1017,6 +1058,9 @@ def _resolve_launch_argv(argv, env=None):
 
     Resolve via ``shutil.which`` (PATHEXT + PATH), then wrap ``.cmd``/``.bat``
     with ``cmd.exe /c`` and ``.ps1`` with PowerShell.
+
+    Bare ``bash`` skips the WSL WindowsApps stub in favour of Git Bash when
+    present (WSL is the separate ``WSL Bash`` profile via wsl.exe).
     """
     argv = [str(a) for a in (argv or [])]
     if not argv:
@@ -1038,6 +1082,8 @@ def _resolve_launch_argv(argv, env=None):
                 f"(PATH contains npm dir: {npm}). "
                 "Fix User PATH or restart Sublime Text after setx/installers."
             )
+        if os.path.basename(exe0).lower() in ("bash", "bash.exe"):
+            resolved = _prefer_git_bash(resolved, search_path)
 
     rest = argv[1:]
     low = resolved.lower()

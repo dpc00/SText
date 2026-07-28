@@ -42,8 +42,11 @@
     // This allows SText to work as a multi-console terminal launcher.
     "profiles": {
         "Bash": {
+            // Pin Git Bash — bare "bash" resolves to the WSL App Execution
+            // Alias (WindowsApps\\bash.exe, 0-byte stub) which precedes Git on PATH.
             "launch_command": [
-                "bash"
+                "C:\\Program Files\\Git\\bin\\bash.exe",
+                "-l"
             ],
             "spawn_env": {}
         },
@@ -320,9 +323,9 @@
             }
         },
         "WSL Bash": {
+            // Explicit wsl.exe — do not use bare "bash" (WindowsApps stub).
             "launch_command": [
-                "wsl.exe",
-                "bash"
+                "C:\\Windows\\System32\\wsl.exe"
             ],
             "spawn_env": {}
         }
