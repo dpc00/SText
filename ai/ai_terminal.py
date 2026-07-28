@@ -1888,21 +1888,235 @@ class AiTerminalKeyInterceptor(sublime_plugin.EventListener):
 # ─── commands ────────────────────────────────────────────────────────────────
 
 
+# Markers that mean "this directory is a project root" (Claude / agents care).
+# Checked after `.git`; first hit walking *up* from a file wins (nearest root).
+_PROJECT_MARKERS = (
+    "CLAUDE.md",
+    "Claude.md",
+    "AGENTS.md",
+    "Agents.md",
+    "package.json",
+    "pyproject.toml",
+    "Cargo.toml",
+    "go.mod",
+    "Gemfile",
+    "composer.json",
+)
+
+
+def _norm_path(path):
+    return os.path.normcase(os.path.abspath(path))
+
+
+def _containing_window_folder(window, path):
+    """Deepest window.folders() entry that contains path, or None."""
+    if not window or not path:
+        return None
+    path_n = _norm_path(path)
+    best = None
+    best_len = -1
+    for folder in window.folders() or []:
+        folder_n = _norm_path(folder)
+        if path_n == folder_n or path_n.startswith(folder_n + os.sep):
+            if len(folder_n) > best_len:
+                best = folder
+                best_len = len(folder_n)
+    return best
+
+
+def _has_git(path):
+    """True if path is a git work tree (dir) or gitfile (submodule)."""
+    if not path or not os.path.isdir(path):
+        return False
+    git = os.path.join(path, ".git")
+    return os.path.isdir(git) or os.path.isfile(git)
+
+
+def _has_project_markers(path):
+    if not path or not os.path.isdir(path):
+        return False
+    return any(os.path.exists(os.path.join(path, m)) for m in _PROJECT_MARKERS)
+
+
+def _looks_like_project_root(path):
+    return _has_git(path) or _has_project_markers(path)
+
+
+def _nearest_project_root(path, stop_at=None):
+    """Walk up from path; return nearest project root for agent cwd.
+
+    Prefers a `.git` directory (real repo) over markdown/package markers so an
+    umbrella folder like ~/projects that only has CLAUDE.md/AGENTS.md does not
+    win over nested repos (SText, finance, …). Stops at *stop_at* (inclusive)
+    when given — typically the containing window folder.
+    """
+    if not path:
+        return None
+    cur = os.path.abspath(path if os.path.isdir(path) else os.path.dirname(path))
+    if not cur:
+        return None
+    stop = os.path.abspath(stop_at) if stop_at else None
+    stop_n = _norm_path(stop) if stop else None
+    start = cur
+    marker_hit = None
+
+    while True:
+        if _has_git(cur):
+            return cur
+        if marker_hit is None and _has_project_markers(cur):
+            marker_hit = cur
+        at_stop = bool(stop_n and _norm_path(cur) == stop_n)
+        parent = os.path.dirname(cur)
+        if at_stop or parent == cur:
+            return marker_hit or (stop if at_stop else None) or start
+        if stop_n:
+            parent_n = _norm_path(parent)
+            # Do not walk above the window-folder boundary.
+            if not (parent_n == stop_n or stop_n.startswith(parent_n + os.sep)
+                    or parent_n.startswith(stop_n + os.sep)):
+                return marker_hit or stop or start
+            if len(parent_n) < len(stop_n) and not stop_n.startswith(parent_n + os.sep):
+                return marker_hit or stop or start
+        cur = parent
+
+
+def _child_project_dirs(folder, limit=80):
+    """Immediate subdirs worth offering as agent cwd.
+
+    Prefers git-backed children. Marker-only dirs (CLAUDE.md / AGENTS.md with
+    no .git) are used only when the parent has no git children — so an umbrella
+    like ~/projects is not re-listed under ~ just because it has a layer-1 map.
+    """
+    git_kids = []
+    marker_kids = []
+    try:
+        names = sorted(os.listdir(folder), key=str.lower)
+    except OSError:
+        return []
+    for name in names:
+        if name.startswith("."):
+            continue
+        child = os.path.join(folder, name)
+        if not os.path.isdir(child):
+            continue
+        if _has_git(child):
+            git_kids.append(child)
+        elif _has_project_markers(child):
+            marker_kids.append(child)
+    chosen = git_kids if git_kids else marker_kids
+    return chosen[:limit]
+
+
+def _cwd_candidates(window):
+    """Folders the user can sensibly launch an agent into.
+
+    Umbrella sidebar roots (e.g. ~/projects with many nested repos) expand to
+    those children. The umbrella itself is only listed when it is a real git
+    repo (monorepo) — a CLAUDE.md at the projects map layer is not enough.
+    """
+    folders = list(window.folders() or []) if window else []
+    if not folders:
+        return []
+    candidates = []
+    seen = set()
+
+    def _add(p):
+        n = _norm_path(p)
+        if n in seen:
+            return
+        seen.add(n)
+        candidates.append(p)
+
+    for folder in folders:
+        children = _child_project_dirs(folder)
+        if children:
+            for child in children:
+                _add(child)
+            # Monorepo root: also offer the folder itself.
+            if _has_git(folder):
+                _add(folder)
+        else:
+            _add(folder)
+    return candidates
+
+
+def _sole_auto_cwd(folders):
+    """Return a single unambiguous cwd, or None to force a picker.
+
+    A lone window folder is only auto-used when it is a real git repo, or when
+    it has no nested project children. Umbrella maps (CLAUDE.md + many repos)
+    always return None so the user picks the real project.
+    """
+    if len(folders) != 1:
+        return None
+    folder = folders[0]
+    if _child_project_dirs(folder):
+        return folder if _has_git(folder) else None
+    return folder
+
+
 def _resolve_editor_path(view):
+    """cwd for editor/context launches: nearest project root for the file."""
+    window = view.window()
     path = view.file_name()
     if path:
-        return os.path.dirname(path)
-    window = view.window()
+        boundary = _containing_window_folder(window, path)
+        return _nearest_project_root(path, stop_at=boundary)
     folders = window.folders() if window else []
-    return folders[0] if folders else None
+    return _sole_auto_cwd(folders or [])
 
 
 def _resolve_here_path(window, paths):
+    """cwd for sidebar / Tools-menu launches.
+
+    Priority:
+      1. Explicit sidebar paths (dir as-is; file -> its project root)
+      2. Active view's nearest project root
+      3. Sole unambiguous window folder
+      4. None → caller should offer a picker (never silently use umbrella dirs)
+    """
     if paths:
         path = paths[0]
-        return path if os.path.isdir(path) else os.path.dirname(path)
-    folders = window.folders()
-    return folders[0] if folders else None
+        if os.path.isdir(path):
+            return path
+        boundary = _containing_window_folder(window, path)
+        return _nearest_project_root(path, stop_at=boundary)
+
+    view = window.active_view() if window else None
+    if view and view.file_name():
+        boundary = _containing_window_folder(window, view.file_name())
+        return _nearest_project_root(view.file_name(), stop_at=boundary)
+
+    folders = window.folders() if window else []
+    return _sole_auto_cwd(folders or [])
+
+
+def _pick_cwd_then(window, on_path):
+    """Resolve cwd or show a quick panel of project candidates, then call on_path."""
+    path = _resolve_here_path(window, [])
+    if path:
+        on_path(path)
+        return
+
+    candidates = _cwd_candidates(window)
+    if not candidates:
+        sublime.status_message("Ai terminal: no folder resolved")
+        return
+    if len(candidates) == 1:
+        on_path(candidates[0])
+        return
+
+    labels = []
+    for c in candidates:
+        base = os.path.basename(c.rstrip("\\/")) or c
+        labels.append([base, c])
+
+    def on_done(idx):
+        if idx < 0:
+            return
+        on_path(candidates[idx])
+
+    window.show_quick_panel(labels, on_done)
 
 
 def _spawn(window, path, profile=None):
@@ -1957,6 +2171,7 @@ def _spawn(window, path, profile=None):
         view.close()
         return
 
+    print(f"[ai_terminal] launch cwd: {path!r}")
     print(f"[ai_terminal] launch argv: {argv!r}")
 
     backend = s.get("windows_pty_backend", "conpty")
@@ -1989,36 +2204,59 @@ def _spawn(window, path, profile=None):
 class AiTerminalOpenHereCommand(sublime_plugin.WindowCommand):
     """Open a Claude TUI terminal in the chosen directory.
 
+    Resolves cwd from sidebar selection, else the active file's nearest
+    project root (.git / CLAUDE.md / …), else a quick-panel of project
+    folders — never silently falls back to an umbrella sidebar root
+    like ~/projects.
+
     Menu: Side Bar.sublime-menu — "Open Ai Terminal here..."
+          Main.sublime-menu → Tools → Ai Terminal → profiles
     Command palette: "Ai: Open Terminal Here"
     """
 
     def run(self, paths=None, profile=None):
-        path = _resolve_here_path(self.window, paths or [])
-        if not path:
-            sublime.status_message("Ai terminal: no folder resolved")
+        paths = paths or []
+        if paths:
+            path = _resolve_here_path(self.window, paths)
+            if not path:
+                sublime.status_message("Ai terminal: no folder resolved")
+                return
+            _spawn(self.window, path, profile=profile)
             return
-        _spawn(self.window, path, profile=profile)
+
+        def on_path(path):
+            _spawn(self.window, path, profile=profile)
+
+        _pick_cwd_then(self.window, on_path)
 
     def is_visible(self, paths=None):
         return True
 
 
 class AiTerminalOpenInEditorCommand(sublime_plugin.TextCommand):
-    """Open a Claude TUI terminal in this file's directory.
+    """Open a Claude TUI terminal in the active file's project root.
+
+    Uses the nearest project root containing the file (not the bare
+    file directory, and not the umbrella window folder).
 
     Menu: Context.sublime-menu / Tab Context.sublime-menu — "Open Ai Terminal here..."
     Command palette: "Ai: Open Terminal in Editor"
     """
 
     def run(self, edit, profile=None):
+        window = self.view.window()
         path = _resolve_editor_path(self.view)
-        if not path:
+        if path and window:
+            _spawn(window, path, profile=profile)
+            return
+        if not window:
             sublime.status_message("Ai terminal: no folder resolved")
             return
-        window = self.view.window()
-        if window:
-            _spawn(window, path, profile=profile)
+
+        def on_path(p):
+            _spawn(window, p, profile=profile)
+
+        _pick_cwd_then(window, on_path)
 
 
 class AiTerminalSelectProfileCommand(sublime_plugin.WindowCommand):
