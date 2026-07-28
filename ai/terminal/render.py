@@ -25,16 +25,20 @@ def cell_needs_host_cursor(rows, cy, cx):
 
 
 def paint_host_cursor(rows, cy, cx):
-    """Ensure a reverse-video cell at the PTY cursor for host visibility.
+    """Ensure a drawable cell at the PTY cursor for host visibility.
 
     The ST host caret is forced invisible (scheme caret = background) so
     Claude/ratatui reverse-video cursors are not doubled. Apps that never
     SGR-reverse the cursor cell (Grok --minimal, plain shells) then show
-    no insertion point until a keystroke. Paint a synthetic reverse cell
-    only when the cursor cell is not already reverse.
+    no insertion point until a keystroke.
 
-    Returns (rows, host_painted). host_painted is True when this function
-    synthesized the cursor (caller should also tag HOST_CURSOR_SCOPE).
+    Host synthesis must NOT OR REVERSE onto the cell: reverse-of-default
+    maps to ai.fb.1.16 (DEFAULT_FG_ID=16 bright white), which raced with
+    and often won over the permanent host_cursor rule. Pad the cell if
+    needed and leave attrs alone; the caller tags HOST_CURSOR_SCOPE only.
+
+    Returns (rows, host_painted). host_painted is True when the caller
+    should apply HOST_CURSOR_SCOPE (no app reverse on the cursor cell).
     """
     if rows is None or cy is None or cx is None:
         return rows, False
@@ -42,15 +46,14 @@ def paint_host_cursor(rows, cy, cx):
         return rows, False
     rows = list(rows)
     row = list(rows[cy])
-    # Cursor often sits past rstripped trailing spaces; pad so the cell exists.
+    # Cursor often sits past rstripped trailing spaces; pad so the cell exists
+    # for cursor_text_offset + a one-cell host_cursor region.
     while len(row) <= cx:
         row.append((" ", 0))
-    ch, attr = row[cx]
-    if attr & REVERSE:
-        rows[cy] = row
-        return rows, False
-    row[cx] = (ch, attr | REVERSE)
+    _ch, attr = row[cx]
     rows[cy] = row
+    if attr & REVERSE:
+        return rows, False
     return rows, True
 
 

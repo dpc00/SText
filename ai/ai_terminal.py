@@ -1525,10 +1525,11 @@ def _do_render(term):
         return
     # Read structured cells + PTY cursor under one lock. Host ST caret is
     # invisible (scheme caret = bg) so Claude reverse-video cursors are not
-    # doubled. paint_host_cursor adds reverse on the PTY cell when the app
-    # did not (Grok --minimal / plain shells) so the insertion point shows.
-    # Also tag ai.terminal.host_cursor (baked into the scheme) so visibility
-    # does not depend on dynamic ai.fb.* flush timing.
+    # doubled. When the app did not SGR-reverse the cursor cell (Grok
+    # --minimal / plain shells), pad the cell and tag only
+    # ai.terminal.host_cursor — do not synthesize reverse/ai.fb.1.16 (that
+    # white block raced with the permanent host rule and looked like a
+    # "stuck on 16" cursor).
     with term._lock:
         rows, cy, cx = term.screen.render_cells()
     term.screen.dirty = False

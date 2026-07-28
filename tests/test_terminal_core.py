@@ -175,8 +175,8 @@ class TestRender(unittest.TestCase):
 
 
 class TestHostCursor(unittest.TestCase):
-    def test_paints_reverse_when_absent(self):
-        """Grok-style: cursor past rstripped blanks, no reverse cell."""
+    def test_pads_without_reverse_when_absent(self):
+        """Grok-style: cursor past rstripped blanks — pad only, no ai.fb.1.16."""
         rows = [[(">", 0), (" ", 0), ("h", 0), ("i", 0)]]
         self.assertTrue(cell_needs_host_cursor(rows, 0, 4))
         out, painted = paint_host_cursor(rows, 0, 4)  # insert point after "hi"
@@ -184,12 +184,15 @@ class TestHostCursor(unittest.TestCase):
         self.assertEqual(len(out[0]), 5)
         ch, attr = out[0][4]
         self.assertEqual(ch, " ")
-        self.assertTrue(attr & REVERSE)
+        # Must not synthesize reverse → ai.fb.1.16; host_cursor scope alone.
+        self.assertFalse(attr & REVERSE)
+        self.assertEqual(attr, 0)
         text, regs = build_text_and_regions(out)
-        self.assertTrue(any(r[2] == "ai.fb.1.16" for r in regs))
+        self.assertFalse(any(r[2] == "ai.fb.1.16" for r in regs))
         off = cursor_text_offset(out, 0, 4)
         self.assertEqual(off, 4)
         self.assertEqual(text[off], " ")
+        self.assertEqual(HOST_CURSOR_SCOPE, "ai.terminal.host_cursor")
 
     def test_leaves_existing_reverse(self):
         """Claude-style: app already reverse-painted the cursor cell."""
@@ -199,12 +202,13 @@ class TestHostCursor(unittest.TestCase):
         self.assertFalse(painted)
         self.assertEqual(out[0][0], ("x", REVERSE))
 
-    def test_mid_line_reverses_char(self):
+    def test_mid_line_marks_host_without_mutating_attr(self):
         rows = [[("a", 0), ("b", 0), ("c", 0)]]
         out, painted = paint_host_cursor(rows, 0, 1)
         self.assertTrue(painted)
         self.assertEqual(out[0][1][0], "b")
-        self.assertTrue(out[0][1][1] & REVERSE)
+        self.assertFalse(out[0][1][1] & REVERSE)
+        self.assertEqual(out[0][1][1], 0)
         self.assertEqual(out[0][0][1], 0)
         self.assertEqual(HOST_CURSOR_SCOPE, "ai.terminal.host_cursor")
 
