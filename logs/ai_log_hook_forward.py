@@ -6,6 +6,11 @@ other agents POST directly to http://127.0.0.1:9511/event. This command hook
 reads the event envelope from stdin and POSTs it to the same endpoint so Grok
 sessions land in ~/data/logs/<date>.md like everyone else.
 
+When the log server is down, events are spooled under ~/data/logs/.hook_spool/
+and drained on the next successful POST so UserPromptSubmit is not lost (empty
+"You" sections were caused by PreToolUse recreating a session after a dropped
+prompt event).
+
 Usage (from ~/.grok/hooks/*.json):
   { "type": "command", "command": "python .../ai_log_hook_forward.py", "timeout": 5 }
 
@@ -14,12 +19,66 @@ Exit 0 always (fail-open): a down log server must not block the agent.
 from __future__ import annotations
 
 import json
+import os
 import sys
+import time
 import urllib.error
 import urllib.request
+import uuid
 
 URL = "http://127.0.0.1:9511/event"
-TIMEOUT = 4.0
+TIMEOUT = 2.5  # stay under Grok's default 5s hook budget
+SPOOL = os.path.join(os.path.expanduser("~"), "data", "logs", ".hook_spool")
+MAX_DRAIN = 40
+
+
+def _post(data: bytes) -> bool:
+    req = urllib.request.Request(
+        URL,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            resp.read()
+        return True
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return False
+
+
+def _spool(data: bytes) -> None:
+    try:
+        os.makedirs(SPOOL, exist_ok=True)
+        name = f"{time.time():.6f}_{uuid.uuid4().hex[:8]}.json"
+        path = os.path.join(SPOOL, name)
+        with open(path, "wb") as f:
+            f.write(data)
+    except OSError:
+        pass
+
+
+def _drain() -> None:
+    try:
+        names = sorted(os.listdir(SPOOL))
+    except OSError:
+        return
+    for name in names[:MAX_DRAIN]:
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(SPOOL, name)
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+            if _post(data):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            else:
+                break  # server still down; keep remaining spool
+        except OSError:
+            continue
 
 
 def main() -> int:
@@ -27,18 +86,10 @@ def main() -> int:
     if not raw.strip():
         return 0
     # Pass through as-is; ai_log_server normalizes camelCase / vendor variants.
-    req = urllib.request.Request(
-        URL,
-        data=raw,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            resp.read()
-    except (urllib.error.URLError, TimeoutError, OSError):
-        # Fail open: missing log server is not an agent failure.
-        return 0
+    if _post(raw):
+        _drain()
+    else:
+        _spool(raw)
     return 0
 
 

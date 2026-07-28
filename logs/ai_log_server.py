@@ -9,6 +9,7 @@ This is the "correct" logging path: data straight from the agent's mouth.
 import datetime
 import json
 import os
+import re
 import sys
 import time
 import threading
@@ -72,26 +73,42 @@ def _md_header_if_new():
 
 
 def _map_tool_name(name):
-    # Exact Claude Code matches
+    # Claude Code + Grok Build + common aliases (see ~/.grok/docs hooks)
     mapping = {
         "run_shell_command": "Bash",
+        "run_terminal_command": "Bash",
         "read_file": "Read",
         "replace": "Edit",
+        "search_replace": "Edit",
         "write_file": "Write",
+        "write": "Write",
         "glob": "Glob",
+        "list_dir": "Glob",
         "grep_search": "Grep",
+        "grep": "Grep",
         "web_fetch": "WebFetch",
+        "web_search": "WebSearch",
         "google_web_search": "WebSearch",
+        "spawn_subagent": "Task",
         "bash": "Bash",
         "read": "Read",
         "edit": "Edit",
-        "write": "Write",
     }
-    if name in mapping:
-        return mapping[name]
-    
+    if not name:
+        return "?"
+    key = str(name)
+    if key in mapping:
+        return mapping[key]
+    # Case-insensitive / CamelCase (RunTerminalCommand → run_terminal_command)
+    snake = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key).replace("-", "_").lower()
+    if snake in mapping:
+        return mapping[snake]
+    low = key.lower()
+    if low in mapping:
+        return mapping[low]
+
     # Clean up other MCP tool names
-    clean = name
+    clean = key
     if clean.startswith("mcp_"):
         clean = clean[4:]
     if clean.startswith("sublime-mcp_"):
@@ -102,7 +119,7 @@ def _map_tool_name(name):
         clean = clean[10:]
     elif clean.startswith("github_"):
         clean = clean[7:]
-        
+
     # Convert to a nice CamelCase or clean capitalization
     parts = clean.replace("-", "_").split("_")
     return "".join(p.capitalize() for p in parts if p)
@@ -441,12 +458,60 @@ _CAMEL_TO_SNAKE = {
     "toolInput": "tool_input",
     "toolUseId": "tool_use_id",
     "toolResponse": "tool_response",
+    "toolResult": "tool_response",  # Grok PostToolUse field (not Claude's tool_response)
     "lastAssistantMessage": "last_assistant_message",
     "stopReason": "stop_reason",
     "notificationType": "notification_type",
     "permissionMode": "permission_mode",
     "workspaceRoot": "workspace_root",
+    "userPrompt": "prompt",
+    "promptText": "prompt",
+    "stopHookActive": "stop_hook_active",
 }
+
+
+def _coerce_text(val):
+    """Flatten prompt/message fields that may be str or content-block lists."""
+    if val is None:
+        return ""
+    if isinstance(val, str):
+        return val
+    if isinstance(val, list):
+        parts = []
+        for block in val:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                t = block.get("text") or block.get("content") or ""
+                if isinstance(t, str) and t:
+                    parts.append(t)
+        return "\n".join(parts)
+    if isinstance(val, dict):
+        t = val.get("text") or val.get("content") or val.get("prompt") or ""
+        return t if isinstance(t, str) else ""
+    return str(val)
+
+
+def _extract_prompt(ev):
+    """Best-effort user prompt from Claude / Grok / Cursor envelopes."""
+    if not isinstance(ev, dict):
+        return ""
+    for key in (
+        "prompt",
+        "user_prompt",
+        "userPrompt",
+        "prompt_text",
+        "promptText",
+        "text",
+        "message",
+        "content",
+        "input",
+    ):
+        if key in ev:
+            text = _coerce_text(ev.get(key))
+            if text.strip():
+                return text
+    return ""
 
 
 def _normalize_event_keys(ev):
@@ -466,6 +531,14 @@ def _normalize_event_keys(ev):
                 or ev.get("sessionId")
                 or "_"
             )
+    # Grok UserPromptSubmit may not use Claude's plain `prompt` key.
+    if not _coerce_text(ev.get("prompt")).strip():
+        extracted = _extract_prompt(ev)
+        if extracted:
+            ev["prompt"] = extracted
+    # Prefer tool_response; Grok only sends toolResult (mapped above).
+    if "tool_response" not in ev and "tool_result" in ev:
+        ev["tool_response"] = ev["tool_result"]
     return ev
 
 
@@ -560,7 +633,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     if sid in _sessions:
                         _flush_turn(sid)
                     _sessions[sid] = {
-                        "prompt": ev.get("prompt", ""),
+                        "prompt": _extract_prompt(ev) or _coerce_text(ev.get("prompt")),
                         "start": recv,
                         "tools": [],
                         "extras": [],
