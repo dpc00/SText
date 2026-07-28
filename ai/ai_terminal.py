@@ -482,7 +482,10 @@ _BASE_SCHEME = {
     "globals": {
         "background": "#000000",
         "foreground": "#FFFFFF",
-        "caret": "#FFFFFF",
+        # Host caret must be invisible: Claude/ratatui draw the cursor with
+        # reverse fg/bg on a cell. A visible ST caret is a second cursor and
+        # looks like an off-by-one (Terminus keeps the host caret hidden).
+        "caret": "#000000",
         "selection": "#444444",
         "line_highlight": "#0a0a0a",
         "gutter": "#000000",
@@ -526,6 +529,13 @@ def _init_dynamic_color_scheme():
                     for r in rules:
                         if "scope" in r:
                             _REGISTERED_SCOPES.add(r["scope"])
+                # Keep host caret invisible even on schemes written before this rule.
+                g = data.setdefault("globals", {})
+                bg = g.get("background", "#000000")
+                if g.get("caret") != bg:
+                    g["caret"] = bg
+                    _save_color_scheme(data)
+                    _color_scheme_log(f"[init] Forced host caret invisible (matched bg {bg}).")
             msg = f"[init] Initialized. Loaded {len(_REGISTERED_SCOPES)} registered scope rules from disk ({size} bytes)."
             print(f"[ai_terminal] {msg}")
             _color_scheme_log(msg)
@@ -1146,22 +1156,18 @@ def _terminal_view(window, name=None):
     # nonzero margin shows up as a horizontal scrollbar. Terminals don't need
     # text padding anyway. See _measure for the width calc.
     v.settings().set("margin", 0)
-    # Caret / font from ai_terminal.sublime-settings (view-scoped so the rest
-    # of the editor keeps the user's global prefs).
+    # Host caret OFF — the TUI paints the cursor via reverse video (SGR 7).
+    # Never enable block_caret here; a visible ST caret doubles the TUI cursor
+    # and reads as wrong position / off-by-one. Terminus does the same.
+    v.settings().set("block_caret", False)
+    v.settings().set("caret_extra_width", 0)
     try:
         ts = sublime.load_settings(_SETTINGS_NAME)
-        v.settings().set("block_caret", bool(ts.get("block_caret", True)))
-        caret_style = ts.get("caret_style", "blink")
-        if caret_style:
-            v.settings().set("caret_style", caret_style)
-        cew = ts.get("caret_extra_width", 2)
-        if cew is not None:
-            v.settings().set("caret_extra_width", int(cew))
         font = ts.get("terminal_font")
         if font:
             v.settings().set("font_face", font)
     except Exception:
-        v.settings().set("block_caret", True)
+        pass
     # draw_centered=False and a pinned scroll_past_end=False isolate the
     # terminal from the user's global scroll_past_end preference (which they
     # may enable for code views). A fixed-height TUI has no use for
@@ -1300,17 +1306,11 @@ def _do_render(term):
     term._render_pending = False
     if not term.screen.dirty:
         return
-    # Read structured cells under one lock. Display caret may differ from the
-    # raw PTY cursor: Claude often parks the hardware cursor on the status
-    # footer while the edit buffer is on `>` (see ai/terminal/caret.py).
+    # Read structured cells + PTY cursor under one lock. The ST selection is
+    # placed at the PTY cursor for scroll/copy bookkeeping only — the host
+    # caret is invisible (TUI reverse-video is the real cursor).
     with term._lock:
         rows, cy, cx = term.screen.render_cells()
-        try:
-            from .terminal.caret import adjust_display_caret, pad_row_for_caret
-        except ImportError:
-            from ai.terminal.caret import adjust_display_caret, pad_row_for_caret
-        cy, cx = adjust_display_caret(term.screen, cy, cx)
-        rows = pad_row_for_caret(rows, cy, cx)
     term.screen.dirty = False
     text, regions = _build_text_and_regions(rows)
     view.run_command("ai_terminal_render",
@@ -1429,18 +1429,9 @@ class AiTerminalViewListener(sublime_plugin.ViewEventListener):
         if command == "move":
             by = (args or {}).get("by")
             fwd = (args or {}).get("forward", False)
-            # Fallback path if arrows aren't bound to ai_terminal_keypress.
-            # Do not scroll_to_bottom here (same resize thrash as keypress).
+            # Fallback if arrows aren't bound to ai_terminal_keypress.
+            # No scroll_to_bottom (resize thrash with layout watcher).
             if by == "characters":
-                try:
-                    from .terminal.caret import nudge_input_caret
-                except ImportError:
-                    from ai.terminal.caret import nudge_input_caret
-                with term._lock:
-                    if nudge_input_caret(term.screen, 1 if fwd else -1):
-                        term.screen.dirty = True
-                if term.screen.dirty:
-                    _schedule_render(term)
                 term.send_string("\x1b[C" if fwd else "\x1b[D")
                 return ("ai_terminal_noop", {})
             if by == "lines":
@@ -1802,20 +1793,6 @@ class AiTerminalKeypressCommand(sublime_plugin.TextCommand):
                 term._auto_follow = True
                 _scroll_to_bottom(self.view)
                 term._last_vp_y = self.view.viewport_position()[1]
-            # When Claude parked the hardware cursor on the status bar, move
-            # the *display* caret immediately so left/right aren't invisible
-            # until the next footer repaint CUPs back to the prompt.
-            if kl in ("left", "right") and not ctrl and not alt:
-                try:
-                    from .terminal.caret import nudge_input_caret
-                except ImportError:
-                    from ai.terminal.caret import nudge_input_caret
-                delta = -1 if kl == "left" else 1
-                with term._lock:
-                    if nudge_input_caret(term.screen, delta):
-                        term.screen.dirty = True
-                if term.screen.dirty:
-                    _schedule_render(term)
             term.send_string(code)
 
 

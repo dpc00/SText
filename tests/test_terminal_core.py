@@ -10,18 +10,11 @@ import unittest
 from ai.terminal import (
     Parser,
     Screen,
-    adjust_display_caret,
     build_text_and_regions,
     pack_attr,
     quantize256,
     scope_name_for,
     translate_key,
-)
-from ai.terminal.caret import (
-    content_end_col,
-    input_start_col,
-    nudge_input_caret,
-    pad_row_for_caret,
 )
 from ai.terminal.colors import FAINT, REVERSE
 
@@ -141,6 +134,13 @@ class TestParser(unittest.TestCase):
         p2.feed("\x1b[?1049h")
         self.assertTrue(p2.s.alt_screen)
 
+    def test_reverse_sgr_sets_flag(self):
+        s = Screen(10, 3)
+        p = Parser(s)
+        p.feed("\x1b[7mX\x1b[0m")
+        self.assertEqual(s.grid[0][0], "X")
+        self.assertTrue(s.attrs[0][0] & REVERSE)
+
 
 class TestRender(unittest.TestCase):
     def test_coalesce_regions(self):
@@ -153,71 +153,6 @@ class TestRender(unittest.TestCase):
         red_regs = [r for r in regs if r[2] == "ai.fb.2.0"]
         self.assertEqual(len(red_regs), 1)
         self.assertEqual(red_regs[0][1] - red_regs[0][0], 2)
-
-
-class TestDisplayCaret(unittest.TestCase):
-    def _claude_like_screen(self):
-        """Prompt `>\\xa0hi` + border + status footer (Claude-shaped)."""
-        s = Screen(40, 12)
-        s.grid[4][0] = ">"
-        s.grid[4][1] = "\u00a0"
-        s.grid[4][2] = "h"
-        s.grid[4][3] = "i"
-        for c in range(s.cols):
-            s.grid[5][c] = "\u2500"
-        for i, ch in enumerate("  Weekly: 22%"):
-            s.grid[8][i] = ch
-        return s
-
-    def test_input_start_is_two_after_prompt_marker(self):
-        s = self._claude_like_screen()
-        self.assertEqual(input_start_col(s, 4), 2)
-        self.assertEqual(content_end_col(s, 4), 4)  # after 'hi'
-
-    def test_pin_when_parked_on_status(self):
-        s = self._claude_like_screen()
-        s.x, s.y = 4, 4  # on prompt at end of 'hi'
-        rows, cy, cx = s.render_cells()
-        adjust_display_caret(s, cy, cx)
-        self.assertEqual(s.input_caret_x, 4)
-        s.x, s.y = 20, 8  # park on status
-        rows, cy, cx = s.render_cells()
-        cy2, cx2 = adjust_display_caret(s, cy, cx)
-        self.assertEqual(cy2, 4)
-        self.assertEqual(cx2, 4)
-
-    def test_nudge_left_when_parked(self):
-        s = self._claude_like_screen()
-        s.x, s.y = 4, 4
-        adjust_display_caret(s, *s.render_cells()[1:])
-        s.x, s.y = 20, 8
-        self.assertTrue(nudge_input_caret(s, -1))
-        self.assertEqual(s.input_caret_x, 3)  # on 'i'
-        # cannot enter the `>\\xa0` prefix
-        s.input_caret_x = 2
-        nudge_input_caret(s, -1)
-        self.assertEqual(s.input_caret_x, 2)
-
-    def test_mid_prompt_trusts_hardware(self):
-        s = self._claude_like_screen()
-        s.x, s.y = 2, 4  # on 'h'
-        rows, cy, cx = s.render_cells()
-        cy2, cx2 = adjust_display_caret(s, cy, cx)
-        self.assertEqual(cx2, 2)
-
-    def test_pad_row(self):
-        s = self._claude_like_screen()
-        s.x, s.y = 20, 8
-        rows, cy, cx = s.render_cells()
-        cy2, cx2 = adjust_display_caret(s, cy, cx)
-        padded = pad_row_for_caret(rows, cy2, 4)
-        self.assertGreaterEqual(len(padded[cy2]), 4)
-
-    def test_no_prompt_no_adjust(self):
-        s = Screen(20, 5)
-        s.x, s.y = 3, 2
-        rows, cy, cx = s.render_cells()
-        self.assertEqual(adjust_display_caret(s, cy, cx), (cy, cx))
 
 
 if __name__ == "__main__":

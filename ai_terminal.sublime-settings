@@ -17,13 +17,14 @@
     // whether the random conversation replays are a ConPTY-specific issue.
     "windows_pty_backend": "conpty",
 
-    // Terminal View Cursor / Caret preferences:
-    // Enables a block cursor (True/False). Default True.
-    "block_caret": true,
-    // Caret blink/draw style ("blink", "solid", "smooth", "phase", "wide"). Default "blink".
-    "caret_style": "blink",
-    // Extra pixel-width for caret line drawing. Default 2.
-    "caret_extra_width": 2,
+    // Host ST caret is ALWAYS off for terminal views (see _terminal_view).
+    // Claude/OpenCode paint the cursor with reverse fg/bg (SGR 7) in the cell
+    // stream — same model as Terminus. Do not turn on block_caret; a visible
+    // host caret becomes a second cursor and looks like an off-by-one.
+    // These keys are ignored if present (kept for documentation only):
+    // "block_caret": false,
+    // "caret_style": "solid",
+    // "caret_extra_width": 0,
 
     // Font for the terminal view only (overrides the global font_face for
     // ai_terminal tabs). Must be a monospace font with full box-drawing
