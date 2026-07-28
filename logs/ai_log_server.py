@@ -46,6 +46,20 @@ def _ts():
     return datetime.datetime.now()
 
 
+def _scrub_utf8(s):
+    """Make text safe for UTF-8 file writes.
+
+    Agent payloads can contain lone surrogates (e.g. \\udc9d from binary
+    tool output). Python's utf-8 codec refuses those even with
+    errors='replace' on the file object — scrub first.
+    """
+    if s is None:
+        return ""
+    if not isinstance(s, str):
+        s = str(s)
+    return s.encode("utf-8", "surrogatepass").decode("utf-8", "replace")
+
+
 def _md_path():
     return os.path.join(OUT, f"{_date()}.md")
 
@@ -236,7 +250,7 @@ def _md_ambient_standalone(ts, glyph, name, text, path=None):
     if text:
         line += f"   {text}"
     with open(path, "a", encoding="utf-8", errors="replace") as f:
-        f.write(line + "\n")
+        f.write(_scrub_utf8(line) + "\n")
 
 
 def _format_tool_response(resp):
@@ -389,7 +403,7 @@ def _flush_turn(sid, path=None):
         _md_header_if_new()
         path = _md_path()
     with open(path, "a", encoding="utf-8", errors="replace") as f:
-        f.write("\n".join(out) + "\n")
+        f.write(_scrub_utf8("\n".join(out)) + "\n")
 
 
 def _mark_tool_done(sid, tool_use_id, name, err, ts=None, response=None):
