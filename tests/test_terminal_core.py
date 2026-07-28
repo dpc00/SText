@@ -17,6 +17,7 @@ from ai.terminal import (
     scope_name_for,
     translate_key,
 )
+from ai.terminal.caret import pad_row_for_caret
 from ai.terminal.colors import FAINT, REVERSE
 
 class TestKeys(unittest.TestCase):
@@ -169,12 +170,36 @@ class TestDisplayCaret(unittest.TestCase):
 
     def test_pin_to_prompt_when_cursor_on_status(self):
         s = self._claude_like_screen()
-        s.x, s.y = 20, 8  # parked on status
+        # First place cursor on prompt so we remember column 5 (after 'hi' + pad).
+        s.x, s.y = 5, 4
+        rows, cy, cx = s.render_cells()
+        adjust_display_caret(s, cy, cx)
+        self.assertEqual(s.input_caret_x, 5)
+        # Then Claude parks on status — restore remembered column, not end-1.
+        s.x, s.y = 20, 8
         rows, cy, cx = s.render_cells()
         cy2, cx2 = adjust_display_caret(s, cy, cx)
         self.assertEqual(cy2, 4)
-        # after '>\\xa0hi' -> col 4
+        self.assertEqual(cx2, 5)
+
+    def test_pin_fallback_without_memory(self):
+        s = self._claude_like_screen()
+        s.input_caret_x = None
+        s.x, s.y = 20, 8
+        rows, cy, cx = s.render_cells()
+        cy2, cx2 = adjust_display_caret(s, cy, cx)
+        self.assertEqual(cy2, 4)
+        # '>\xa0hi' last non-blank at col 3 -> end 4
         self.assertEqual(cx2, 4)
+
+    def test_pad_row_for_caret_extends_rstripped_prompt(self):
+        s = self._claude_like_screen()
+        s.x, s.y = 20, 8  # not on prompt -> prompt row fully rstripped
+        rows, cy, cx = s.render_cells()
+        cy2, cx2 = adjust_display_caret(s, cy, cx)
+        # Without pad, prompt row is short; with pad, length >= caret col.
+        padded = pad_row_for_caret(rows, cy2, 5)
+        self.assertGreaterEqual(len(padded[cy2]), 5)
 
     def test_trust_cursor_on_prompt(self):
         s = self._claude_like_screen()
@@ -182,6 +207,7 @@ class TestDisplayCaret(unittest.TestCase):
         rows, cy, cx = s.render_cells()
         cy2, cx2 = adjust_display_caret(s, cy, cx)
         self.assertEqual((cy2, cx2), (cy, cx))
+        self.assertEqual(s.input_caret_x, 4)
 
     def test_no_prompt_no_adjust(self):
         s = Screen(20, 5)

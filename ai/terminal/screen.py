@@ -25,6 +25,10 @@ class Screen:
         self.saved = (0, 0)
         self.alt_screen = False
         self.dirty = True
+        # Last hardware cursor column while on the `>` prompt row. Used by
+        # adjust_display_caret when Claude parks the cursor on the status bar
+        # so ST restores the exact input column (not end-of-text - 1).
+        self.input_caret_x = None
 
     def resize(self, cols, rows):
         cols, rows = max(1, cols), max(1, rows)
