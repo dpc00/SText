@@ -32,14 +32,14 @@ KEY_MAP = {
     "f12": "\x1b[24~",
 }
 
-_APP_MODEKEY_MAP = {
+APP_MODE_KEY_MAP = {
     "down": "\x1bOB",
     "up": "\x1bOA",
     "right": "\x1bOC",
     "left": "\x1bOD",
 }
 
-_CTRLKEY_MAP = {
+CTRL_KEY_MAP = {
     "up": "\x1b[1;5A",
     "down": "\x1b[1;5B",
     "right": "\x1b[1;5C",
@@ -64,14 +64,14 @@ _CTRLKEY_MAP = {
     "?": "\x7f",
 }
 
-_ALTKEY_MAP = {
+ALT_KEY_MAP = {
     "up": "\x1b[1;3A",
     "down": "\x1b[1;3B",
     "right": "\x1b[1;3C",
     "left": "\x1b[1;3D",
 }
 
-_SHIFTKEY_MAP = {
+SHIFT_KEY_MAP = {
     "up": "\x1b[1;2A",
     "down": "\x1b[1;2B",
     "right": "\x1b[1;2C",
@@ -87,8 +87,8 @@ _SHIFTKEY_MAP = {
 
 
 def get_key_code(key, application_mode=False):
-    if application_mode and key in _APP_MODEKEY_MAP:
-        return _APP_MODEKEY_MAP[key]
+    if application_mode and key in APP_MODE_KEY_MAP:
+        return APP_MODE_KEY_MAP[key]
     if key in KEY_MAP:
         return KEY_MAP[key]
     return key
@@ -96,8 +96,8 @@ def get_key_code(key, application_mode=False):
 
 def get_ctrl_key_code(key):
     key = key.lower()
-    if key in _CTRLKEY_MAP:
-        return _CTRLKEY_MAP[key]
+    if key in CTRL_KEY_MAP:
+        return CTRL_KEY_MAP[key]
     if len(key) == 1 and "a" <= key <= "z":
         return chr(ord(key) - ord("a") + 1)
     return get_key_code(key)
@@ -105,15 +105,15 @@ def get_ctrl_key_code(key):
 
 def get_alt_key_code(key):
     key_lo = key.lower()
-    if key_lo in _ALTKEY_MAP:
-        return _ALTKEY_MAP[key_lo]
+    if key_lo in ALT_KEY_MAP:
+        return ALT_KEY_MAP[key_lo]
     return "\x1b" + get_key_code(key)
 
 
 def get_shift_key_code(key):
     key = key.lower()
-    if key in _SHIFTKEY_MAP:
-        return _SHIFTKEY_MAP[key]
+    if key in SHIFT_KEY_MAP:
+        return SHIFT_KEY_MAP[key]
     if key in KEY_MAP:
         return KEY_MAP[key]
     return key.upper()
@@ -127,5 +127,3 @@ def translate_key(key, ctrl=False, alt=False, shift=False):
     if shift:
         return get_shift_key_code(key)
     return get_key_code(key)
-
-

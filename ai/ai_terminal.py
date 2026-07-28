@@ -429,42 +429,47 @@ try:
         translate_key as _translate_key,
     )
     from .terminal.render import build_text_and_regions as _build_text_and_regions_pure
-except ImportError:  # running outside User package tree (unit tests / scripts)
-    from ai.terminal.colors import (
-        quantize256 as _quantize256,
-        pack_attr as _attr,
-        xterm256_rgb as _xterm256_rgb,
-        XTERM256_RGB as _XTERM256_RGB,
-        FG_SHIFT as _FG_SHIFT,
-        BG_SHIFT as _BG_SHIFT,
-        ATTR_FG_MASK as _ATTR_FG_MASK,
-        ATTR_BG_MASK as _ATTR_BG_MASK,
-        BOLD as _BOLD,
-        REVERSE as _REVERSE,
-        FAINT as _FAINT,
-        BG_LUMA_THRESHOLD as _BG_LUMA_THRESHOLD,
-        ANSI16_HEX as _ANSI16_HEX,
-        xterm_hex as _xterm_hex,
-        HEX as _HEX,
-        scope_name_for as _scope_name_for,
-        rstrip_cells as _rstrip_cells,
-        _ANSI16_RGB,
-    )
-    from ai.terminal.screen import Screen as _Screen, BLANK as _BLANK
-    from ai.terminal.parser import Parser as _Parser
-    from ai.terminal.keys import (
-        KEY_MAP as _KEY_MAP,
-        APP_MODE_KEY_MAP as _APP_MODE_KEY_MAP,
-        CTRL_KEY_MAP as _CTRL_KEY_MAP,
-        ALT_KEY_MAP as _ALT_KEY_MAP,
-        SHIFT_KEY_MAP as _SHIFT_KEY_MAP,
-        get_key_code as _get_key_code,
-        get_ctrl_key_code as _get_ctrl_key_code,
-        get_alt_key_code as _get_alt_key_code,
-        get_shift_key_code as _get_shift_key_code,
-        translate_key as _translate_key,
-    )
-    from ai.terminal.render import build_text_and_regions as _build_text_and_regions_pure
+except ImportError as _term_imp_err:
+    # Unit tests / scripts outside Packages/User use top-level `ai.*`.
+    # Do NOT hide a real missing-name error behind "No module named 'ai'".
+    try:
+        from ai.terminal.colors import (
+            quantize256 as _quantize256,
+            pack_attr as _attr,
+            xterm256_rgb as _xterm256_rgb,
+            XTERM256_RGB as _XTERM256_RGB,
+            FG_SHIFT as _FG_SHIFT,
+            BG_SHIFT as _BG_SHIFT,
+            ATTR_FG_MASK as _ATTR_FG_MASK,
+            ATTR_BG_MASK as _ATTR_BG_MASK,
+            BOLD as _BOLD,
+            REVERSE as _REVERSE,
+            FAINT as _FAINT,
+            BG_LUMA_THRESHOLD as _BG_LUMA_THRESHOLD,
+            ANSI16_HEX as _ANSI16_HEX,
+            xterm_hex as _xterm_hex,
+            HEX as _HEX,
+            scope_name_for as _scope_name_for,
+            rstrip_cells as _rstrip_cells,
+            _ANSI16_RGB,
+        )
+        from ai.terminal.screen import Screen as _Screen, BLANK as _BLANK
+        from ai.terminal.parser import Parser as _Parser
+        from ai.terminal.keys import (
+            KEY_MAP as _KEY_MAP,
+            APP_MODE_KEY_MAP as _APP_MODE_KEY_MAP,
+            CTRL_KEY_MAP as _CTRL_KEY_MAP,
+            ALT_KEY_MAP as _ALT_KEY_MAP,
+            SHIFT_KEY_MAP as _SHIFT_KEY_MAP,
+            get_key_code as _get_key_code,
+            get_ctrl_key_code as _get_ctrl_key_code,
+            get_alt_key_code as _get_alt_key_code,
+            get_shift_key_code as _get_shift_key_code,
+            translate_key as _translate_key,
+        )
+        from ai.terminal.render import build_text_and_regions as _build_text_and_regions_pure
+    except ImportError:
+        raise _term_imp_err
 
 
 # ─── colour scheme registration (Sublime-specific) ───────────────────────────
