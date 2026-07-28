@@ -4,7 +4,7 @@
 		"encoding": "utf8",
 		"cmd": ["python", "-i", "-u"],
 		"cwd": "C:\\Users\\donal\\projects\\SText",
-		"syntax": "Packages/Python/Python.tmLanguage",
+		"syntax": "Packages/Python/Python.sublime-syntax",
 		"external_id": "python",
 		"extend_env": {"PYTHONIOENCODING": "utf-8"}
 	}},
