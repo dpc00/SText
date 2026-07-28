@@ -85,6 +85,34 @@ def _scrub_utf8(s):
     return s.encode("utf-8", "surrogatepass").decode("utf-8", "replace")
 
 
+def _scrub_obj(obj):
+    """Recursively scrub strings in dict/list trees (for json.dumps / archives).
+
+    Lone surrogates survive json.dumps(ensure_ascii=False) and only blow up
+    when the resulting line is encoded to UTF-8 for disk — which used to
+    kill _append_jsonl and leave holes in the daily log pipeline.
+    """
+    if isinstance(obj, str):
+        return _scrub_utf8(obj)
+    if isinstance(obj, dict):
+        return {(_scrub_utf8(k) if isinstance(k, str) else k): _scrub_obj(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_scrub_obj(v) for v in obj]
+    return obj
+
+
+def _safe_json_dumps(obj, **kwargs):
+    """json.dumps after surrogate scrub; never raises on bad Unicode."""
+    kwargs.setdefault("ensure_ascii", False)
+    try:
+        return json.dumps(_scrub_obj(obj), **kwargs)
+    except (TypeError, ValueError):
+        try:
+            return json.dumps(_scrub_obj(obj), ensure_ascii=True, default=str)
+        except Exception:
+            return "{}"
+
+
 def _md_path():
     return os.path.join(OUT, f"{_date()}.md")
 
@@ -433,7 +461,7 @@ def _format_tool_response(resp):
                             break
                     if not has_huge_lists:
                         try:
-                            text = json.dumps(resp, ensure_ascii=False)
+                            text = _safe_json_dumps(resp)
                         except Exception:
                             text = ""
                     else:
@@ -444,7 +472,7 @@ def _format_tool_response(resp):
     text = text.replace("<untrusted_context>", "").replace("</untrusted_context>", "")
     text = text.replace("&lt;untrusted_context&gt;\n", "").replace("\n&lt;/untrusted_context&gt;", "")
     text = text.replace("&lt;untrusted_context&gt;", "").replace("&lt;/untrusted_context&gt;", "")
-    return text.strip()
+    return _scrub_utf8(text).strip()
 
 
 def _flush_turn(sid, path=None):
@@ -848,13 +876,18 @@ class H(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             import traceback
             try:
-                with open(os.path.join(DIAG_DIR, "post_error.log"), "a", encoding="utf-8") as f:
-                    f.write(f"--- POST ERROR: {e} ---\n")
-                    traceback.print_exc(file=f)
+                with open(
+                    os.path.join(DIAG_DIR, "post_error.log"),
+                    "a",
+                    encoding="utf-8",
+                    errors="replace",
+                ) as f:
+                    f.write(_scrub_utf8(f"--- POST ERROR: {e} ---\n"))
+                    f.write(_scrub_utf8(traceback.format_exc() + "\n"))
             except Exception:
                 pass
             try:
-                self.send_error(500, str(e))
+                self.send_error(500, _scrub_utf8(str(e)))
             except Exception:
                 pass
 
