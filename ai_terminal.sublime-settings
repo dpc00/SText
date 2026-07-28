@@ -163,6 +163,16 @@
                 "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
             }
         },
+        "Grok Build": {
+            // --no-alt-screen: main buffer (not DECSET 1049).
+            // --minimal: scrollback-native UI (the visible change).
+            // force_main_screen=true already ignores alt-screen on the host,
+            // so --no-alt-screen alone looks identical to plain `grok`.
+            "launch_command": ["grok", "--no-alt-screen", "--minimal"],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+            }
+        },
         "Ollama (Codex)": {
             "launch_command": ["ollama", "launch", "codex"],
             "spawn_env": { // needs more parameters at the moment mostly get from comments at old spawn env
