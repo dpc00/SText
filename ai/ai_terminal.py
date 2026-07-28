@@ -1300,13 +1300,17 @@ def _do_render(term):
     term._render_pending = False
     if not term.screen.dirty:
         return
-    # Read structured cells + TUI cursor under one lock acquisition so the caret
-    # row (history offset + screen.y) matches the text we render this frame.
-    # Faithful to the PTY cursor (Terminus-style). Do not invent a display
-    # caret — if Claude parks the hardware cursor on the status bar, ST shows
-    # it there. Heuristic "pin to prompt" was a wrong diagnosis of off-by-one.
+    # Read structured cells under one lock. Display caret may differ from the
+    # raw PTY cursor: Claude often parks the hardware cursor on the status
+    # footer while the edit buffer is on `>` (see ai/terminal/caret.py).
     with term._lock:
         rows, cy, cx = term.screen.render_cells()
+        try:
+            from .terminal.caret import adjust_display_caret, pad_row_for_caret
+        except ImportError:
+            from ai.terminal.caret import adjust_display_caret, pad_row_for_caret
+        cy, cx = adjust_display_caret(term.screen, cy, cx)
+        rows = pad_row_for_caret(rows, cy, cx)
     term.screen.dirty = False
     text, regions = _build_text_and_regions(rows)
     view.run_command("ai_terminal_render",
@@ -1425,16 +1429,21 @@ class AiTerminalViewListener(sublime_plugin.ViewEventListener):
         if command == "move":
             by = (args or {}).get("by")
             fwd = (args or {}).get("forward", False)
+            # Fallback path if arrows aren't bound to ai_terminal_keypress.
+            # Do not scroll_to_bottom here (same resize thrash as keypress).
             if by == "characters":
-                term._auto_follow = True
-                _scroll_to_bottom(self.view)
-                term._last_vp_y = self.view.viewport_position()[1]
+                try:
+                    from .terminal.caret import nudge_input_caret
+                except ImportError:
+                    from ai.terminal.caret import nudge_input_caret
+                with term._lock:
+                    if nudge_input_caret(term.screen, 1 if fwd else -1):
+                        term.screen.dirty = True
+                if term.screen.dirty:
+                    _schedule_render(term)
                 term.send_string("\x1b[C" if fwd else "\x1b[D")
                 return ("ai_terminal_noop", {})
             if by == "lines":
-                term._auto_follow = True
-                _scroll_to_bottom(self.view)
-                term._last_vp_y = self.view.viewport_position()[1]
                 term.send_string("\x1b[B" if fwd else "\x1b[A")
                 return ("ai_terminal_noop", {})
         return None
@@ -1779,21 +1788,34 @@ class AiTerminalKeypressCommand(sublime_plugin.TextCommand):
                 return
         code = _translate_key(key, ctrl=ctrl, alt=alt, shift=shift)
         if code:
-            # PageUp / PageDn / Home / End are scrollback-navigation keys, not
-            # input keys: the user is moving through scrollback, not returning
-            # to the prompt. Calling _scroll_to_bottom here yanks them back to
-            # the prompt AND triggers set_viewport_position, which on Windows
-            # makes ST recompute layout and transiently flip horizontal
-            # scrollbar visibility -- each flip fires a resize event, and the
-            # repeated PgUp/PgDn cycle disrupts the screen replay. Skip the
-            # scroll-to-bottom + viewport write for these keys; just forward
-            # the byte sequence to the PTY (TUIs like less/vim/claude-code
-            # handle their own scrolling on receipt of \x1b[5~ / \x1b[6~).
-            _SCROLLBACK_KEYS = frozenset(("pageup", "pagedown", "home", "end"))
-            if key.lower() not in _SCROLLBACK_KEYS:
+            # Viewport writes (scroll_to_bottom) must NOT run on keys that only
+            # move within the TUI or scrollback. set_viewport_position on
+            # Windows can recompute layout and, with the layout watcher, fire
+            # PTY resizes that fight Claude's cursor (left/right feel "dead"
+            # for a stroke or two). Printable input still re-engages follow.
+            _NO_SCROLL_KEYS = frozenset((
+                "pageup", "pagedown", "home", "end",
+                "left", "right", "up", "down",
+            ))
+            kl = key.lower()
+            if kl not in _NO_SCROLL_KEYS:
                 term._auto_follow = True
                 _scroll_to_bottom(self.view)
                 term._last_vp_y = self.view.viewport_position()[1]
+            # When Claude parked the hardware cursor on the status bar, move
+            # the *display* caret immediately so left/right aren't invisible
+            # until the next footer repaint CUPs back to the prompt.
+            if kl in ("left", "right") and not ctrl and not alt:
+                try:
+                    from .terminal.caret import nudge_input_caret
+                except ImportError:
+                    from ai.terminal.caret import nudge_input_caret
+                delta = -1 if kl == "left" else 1
+                with term._lock:
+                    if nudge_input_caret(term.screen, delta):
+                        term.screen.dirty = True
+                if term.screen.dirty:
+                    _schedule_render(term)
             term.send_string(code)
 
 

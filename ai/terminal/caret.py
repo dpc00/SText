@@ -1,16 +1,33 @@
-"""Display-caret helpers for TUIs that park the hardware cursor on a status bar.
+"""Display caret for Claude-style TUIs that park the hardware cursor on a status bar.
 
-Claude Code (and similar) repeatedly CUP to the footer to repaint token/cost
-lines and often leave the real cursor there between keystrokes. The input
-prompt stays on a `>` row above. Sublime's caret should sit on the prompt so
-typing feels right even when the PTY cursor is temporarily on the footer.
+Why this exists
+---------------
+Claude Code (main-screen mode) often CUPs to the footer to repaint token/cost
+lines and *leaves* the hardware cursor there. The edit buffer still lives on
+the `>` prompt row. A faithful PTY→ST caret mapping then puts the ST caret on
+the footer while the user is editing the prompt — left/right appear to do
+nothing until Claude happens to CUP back to the prompt (feels like multiple
+keystrokes / wrong position).
 
-Pure Python — no Sublime imports.
+Terminus feels fine when the TUI keeps the hardware cursor on the input field.
+When the TUI parks the cursor on the status bar, every host that draws a
+caret from the PTY cursor needs a display mapping. We only remap when we
+detect a `>` prompt row *and* the hardware cursor is below the input box.
+
+Column rules
+------------
+- Input starts after the prompt marker: `>` plus an optional space/NBSP (2 cells).
+  That is why "beginning of line is 2 chars left of the cursor" when fully left —
+  those two cells are the non-editable prompt, not a desync bug.
+- Editable columns are [input_start, content_end]. content_end is after the last
+  non-blank on the prompt row.
+- We remember the last editable column while the hardware cursor is on the
+  prompt; when parked on the status bar we restore that column.
 """
 
 
 def find_prompt_row(screen):
-    """Return the last grid row whose first cell is `>`, or None."""
+    """Last grid row whose first cell is `>`, or None."""
     found = None
     for y in range(screen.rows):
         if screen.grid[y] and screen.grid[y][0] == ">":
@@ -18,91 +35,103 @@ def find_prompt_row(screen):
     return found
 
 
-def _last_nonblank_col(screen, prompt_y):
-    """Index of last non-blank cell on the prompt row, or -1 if none."""
+def input_start_col(screen, prompt_y):
+    """First editable column on the prompt row (after `>` and optional blank)."""
     row = screen.grid[prompt_y]
-    last = -1
+    if not row or row[0] != ">":
+        return 0
+    if len(row) > 1 and row[1] in (" ", "\u00a0"):
+        return 2
+    return 1
+
+
+def content_end_col(screen, prompt_y):
+    """Column after last non-blank on the prompt (insert point at end of text)."""
+    row = screen.grid[prompt_y]
+    end = input_start_col(screen, prompt_y)
     for i, ch in enumerate(row):
         if ch not in (" ", "\u00a0"):
-            last = i
-    return last
+            end = i + 1
+    # Empty input: seat at start of field (after `>` / `>\xa0`).
+    start = input_start_col(screen, prompt_y)
+    return min(max(end, start), screen.cols - 1)
 
 
-def prompt_content_end(screen, prompt_y):
-    """Column after the last non-blank on the prompt (min 2 after `>`)."""
-    end = _last_nonblank_col(screen, prompt_y) + 1
-    row = screen.grid[prompt_y]
-    if end < 2 and row and row[0] == ">":
-        end = 2
-    return min(max(end, 0), screen.cols - 1)
+def _clamp_input_col(screen, prompt_y, col):
+    start = input_start_col(screen, prompt_y)
+    end = content_end_col(screen, prompt_y)
+    return min(max(int(col), start), end)
 
 
-def display_col_on_prompt(screen, prompt_y):
-    """Map hardware cursor on the prompt row to an ST insert column.
-
-    Rules:
-      - mid-line (x < last glyph): use x
-      - on last glyph (x == last): use content end (after last glyph)
-        Claude/ConPTY often reports the cursor *on* the final character of the
-        input while the insert point is after it — that was the persistent
-        one-column-left off-by-one.
-      - past last glyph (x > last): clamp to content end (ignore EOL erase CUPs)
-    """
-    last = _last_nonblank_col(screen, prompt_y)
-    end = prompt_content_end(screen, prompt_y)
-    x = screen.x
-    if last < 0:
-        return min(max(x, 2), end, screen.cols - 1)
-    if x < last:
-        return x
-    # x == last (on final glyph) or x > last (blank/EOL) → after content
-    return end
-
-
-def prompt_caret_col(screen, prompt_y):
-    """Best-effort ST caret column for the prompt row when parked on status."""
-    end = prompt_content_end(screen, prompt_y)
-    ix = getattr(screen, "input_caret_x", None)
-    if ix is not None and 0 <= int(ix) <= end:
-        return min(max(int(ix), 0), end)
-    return end
+def note_hardware_on_prompt(screen):
+    """If hardware cursor is on the prompt, remember editable column."""
+    py = find_prompt_row(screen)
+    if py is None or screen.y != py:
+        return
+    # Only trust x inside the editable span (ignore EOL erase CUPs past text).
+    start = input_start_col(screen, py)
+    end = content_end_col(screen, py)
+    if start <= screen.x <= end:
+        screen.input_caret_x = screen.x
+    elif screen.x > end:
+        # Past text (padding / erase) — remember end of text, not EOL.
+        screen.input_caret_x = end
 
 
 def adjust_display_caret(screen, cy, cx):
-    """Possibly rewrite (cy, cx) from render_cells for ST caret placement.
+    """Map PTY cursor to ST caret; pin to prompt when parked on status footer."""
+    py = find_prompt_row(screen)
+    if py is None:
+        return cy, cx
 
-    cy/cx are already in rendered-row space (history prepended when not alt).
-    When the hardware cursor sits below the input box (status footer), pin the
-    display caret to the prompt row instead.
-    """
-    prompt_y = find_prompt_row(screen)
-    if prompt_y is None:
-        return cy, cx
     hist = 0 if screen.alt_screen else len(screen.history)
-    # Remember / use the real input column while Claude has the cursor on `>`.
-    if screen.y == prompt_y:
-        disp = display_col_on_prompt(screen, prompt_y)
-        screen.input_caret_x = disp
-        return hist + prompt_y, disp
-    # Input box is: prompt row, then a border row, then status. Anything below
-    # the border is "parked on status" — snap back to the prompt.
-    if screen.y <= prompt_y + 1:
+    note_hardware_on_prompt(screen)
+
+    # On prompt or its border: use hardware column, clamped to editable span
+    # when on the prompt row itself.
+    if screen.y == py:
+        col = _clamp_input_col(screen, py, screen.x)
+        screen.input_caret_x = col
+        return hist + py, col
+    if screen.y == py + 1:
+        # Border under the input box — leave hardware as-is (rare).
         return cy, cx
-    return hist + prompt_y, prompt_caret_col(screen, prompt_y)
+
+    # Below the input box (status footer): pin to prompt at remembered column.
+    if screen.y > py + 1:
+        col = getattr(screen, "input_caret_x", None)
+        if col is None:
+            col = content_end_col(screen, py)
+        else:
+            col = _clamp_input_col(screen, py, col)
+        return hist + py, col
+
+    return cy, cx
+
+
+def nudge_input_caret(screen, delta):
+    """Optimistic left/right for when hardware is parked on the status bar.
+
+    Returns True if display should refresh immediately.
+    """
+    py = find_prompt_row(screen)
+    if py is None:
+        return False
+    # Only nudge when we would pin (hardware not on the prompt).
+    if screen.y <= py + 1:
+        return False
+    col = getattr(screen, "input_caret_x", None)
+    if col is None:
+        col = content_end_col(screen, py)
+    screen.input_caret_x = _clamp_input_col(screen, py, col + delta)
+    return True
 
 
 def pad_row_for_caret(rows, cy, cx):
-    """Ensure rendered row `cy` is long enough that ST can place caret at `cx`.
-
-    When the hardware cursor is not on the prompt row, render_cells rstrips that
-    row and drops the blank cell the terminal keeps under the cursor. Without
-    padding, `line_start + cx` clamps to EOL and the caret sits one cell left
-    of Claude's real input column (and block carets look 'one off').
-    """
+    """Ensure row cy is long enough for caret column cx (after rstrip)."""
     if cy < 0 or cy >= len(rows):
         return rows
     row = list(rows[cy])
-    # Need len(row) >= cx so caret column cx is a valid gap (0..len).
     while len(row) < cx:
         row.append((" ", 0))
     rows = list(rows)
