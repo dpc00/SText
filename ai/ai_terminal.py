@@ -602,16 +602,45 @@ def _load_scheme_from_disk():
     return best
 
 
+def _durable_scheme_backup(scheme_data):
+    """Keep a dated snapshot under ~/data/logs/ai_terminal/scheme_backups/."""
+    try:
+        n = len(scheme_data.get("rules") or [])
+        if n < 100:
+            return
+        bdir = os.path.expanduser("~/data/logs/ai_terminal/scheme_backups")
+        os.makedirs(bdir, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(bdir, f"ai_terminal_{n}rules_{ts}.sublime-color-scheme")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(scheme_data, f, indent=None, separators=(",", ":"))
+        # Keep only the 5 newest backups
+        bak = sorted(
+            (os.path.join(bdir, x) for x in os.listdir(bdir)
+             if x.endswith(".sublime-color-scheme")),
+            key=os.path.getmtime,
+            reverse=True,
+        )
+        for old in bak[5:]:
+            try:
+                os.remove(old)
+            except Exception:
+                pass
+        _color_scheme_log(f"[backup] Wrote {path} ({n} rules)")
+    except Exception as e:
+        _color_scheme_log(f"[backup] ERROR: {e}")
+
+
 def _save_color_scheme(scheme_data):
-    # Never write a scheme that would shrink the on-disk rule set by a lot.
-    # Guards against hot-reload / partial-state flushes.
+    # Never write a scheme that would shrink the on-disk rule set.
+    # Absolute floor: never replace a file that has more rules than we're writing
+    # when the existing file is "large" (the 5275→2 wipe class of bug).
     try:
         existing = _load_scheme_from_disk()
         if existing is not None:
             old_n = len(existing.get("rules") or [])
             new_n = len(scheme_data.get("rules") or [])
-            # Allow growth and small churn; block catastrophic shrinks.
-            if old_n >= 50 and new_n < max(10, old_n // 2):
+            if old_n > new_n and old_n >= 20:
                 msg = (
                     f"[save] REFUSED wipe: disk has {old_n} rules, "
                     f"refusing to write {new_n}"
@@ -629,6 +658,20 @@ def _save_color_scheme(scheme_data):
 
     for p in paths:
         try:
+            # Per-path guard: never shrink an individual file
+            if os.path.isfile(p):
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        prev = json.load(f)
+                    prev_n = len(prev.get("rules") or [])
+                    new_n = len(scheme_data.get("rules") or [])
+                    if prev_n > new_n and prev_n >= 20:
+                        _color_scheme_log(
+                            f"[save] REFUSED shrink {p}: {prev_n} -> {new_n}"
+                        )
+                        continue
+                except Exception:
+                    pass
             os.makedirs(os.path.dirname(p), exist_ok=True)
             temp_path = p + ".tmp"
             with open(temp_path, "w", encoding="utf-8") as f:
@@ -638,12 +681,39 @@ def _save_color_scheme(scheme_data):
             print(f"[ai_terminal] Error writing color scheme file to {p}: {e}")
             _color_scheme_log(f"[save] ERROR writing {p}: {e}")
 
+    _durable_scheme_backup(scheme_data)
+
+
+def _ensure_scopes_hydrated_from_disk():
+    """If memory lost scopes after reload, re-read the largest on-disk scheme.
+
+    Without this, register() thinks every scope is new and flush can race with
+    a half-initialized path. Call under _SCHEME_LOCK or at init.
+    """
+    global _REGISTERED_SCOPES
+    if len(_REGISTERED_SCOPES) >= 50:
+        return
+    data = _load_scheme_from_disk()
+    if not data:
+        return
+    n0 = len(_REGISTERED_SCOPES)
+    for r in data.get("rules") or []:
+        sc = r.get("scope")
+        if sc:
+            _REGISTERED_SCOPES.add(sc)
+    if len(_REGISTERED_SCOPES) > n0:
+        _color_scheme_log(
+            f"[hydrate] Loaded {len(_REGISTERED_SCOPES) - n0} scopes from disk "
+            f"(now {len(_REGISTERED_SCOPES)} in memory)"
+        )
+
 
 def _register_scope_async(fg, bg):
     global _WRITE_PENDING
     scope = f"ai.fb.{fg}.{bg}"
     
     with _SCHEME_LOCK:
+        _ensure_scopes_hydrated_from_disk()
         if scope in _REGISTERED_SCOPES:
             return
         _REGISTERED_SCOPES.add(scope)
