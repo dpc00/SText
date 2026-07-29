@@ -270,6 +270,45 @@ class TestCaretContentEnd(unittest.TestCase):
         self.assertEqual(input_start_col(scr, 0), 5)
         self.assertEqual(content_end_col(scr, 0), 7)
 
+    def test_grok_box_prompt_not_history_gt(self):
+        """Grok live input is `│ > …`; history `> msg` must not steal the caret."""
+        from ai.terminal.screen import Screen
+        from ai.terminal.caret import (
+            find_prompt_row,
+            input_start_col,
+            content_end_col,
+            adjust_display_caret,
+        )
+
+        cols, rows = 80, 6
+        scr = Screen(cols, rows)
+        # Transcript line (old "prompt-looking" row) — was wrongly preferred.
+        hist = "     > perhaps the code is contaminated already"
+        for i, ch in enumerate(hist):
+            scr.grid[1][i] = ch
+        # Grok input box row (hardware sits here).
+        box = "  \u2502 > pe" + (" " * 50) + "\u2502  "
+        for i, ch in enumerate(box[:cols]):
+            scr.grid[4][i] = ch
+        scr.x, scr.y = 6, 4  # after `> `
+
+        self.assertEqual(find_prompt_row(scr), 4)
+        self.assertEqual(input_start_col(scr, 4), 6)
+        cy, cx = adjust_display_caret(scr, 4, 6)
+        self.assertEqual((cy, cx), (4, 6))
+
+    def test_grok_box_empty_input_start(self):
+        from ai.terminal.screen import Screen
+        from ai.terminal.caret import find_prompt_row, input_start_col, content_end_col
+
+        scr = Screen(60, 3)
+        box = "  \u2502 > " + (" " * 40) + "\u2502"
+        for i, ch in enumerate(box[:60]):
+            scr.grid[1][i] = ch
+        self.assertEqual(find_prompt_row(scr), 1)
+        self.assertEqual(input_start_col(scr, 1), 6)
+        self.assertEqual(content_end_col(scr, 1), 6)
+
 
 class TestHostCursor(unittest.TestCase):
     def test_pads_white_block_glyph(self):

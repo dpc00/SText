@@ -1808,14 +1808,11 @@ def _do_render(term):
     term._render_pending = False
     if not term.screen.dirty:
         return
-    # Host cursor: ST caret stays invisible (Claude reverse-video is the only
-    # cursor when the app paints it). When the app does not reverse the cell
-    # (Grok / shells), paint_host_cursor pads a cell, uses █ on blanks, and
-    # ORs REVERSE so the block rides normal ai.fb.* regions (same path as
-    # Claude). No HTML phantom (inserts width). No HOST_CURSOR_SCOPE punch
-    # (that permanent scope's one-cell fill often paints nothing).
-    # adjust_display_caret remaps when Claude parks the hardware cursor on
-    # the status footer while the edit buffer is still on the `>` row.
+    # Host cursor: ST caret stays invisible when the app paints reverse-video
+    # (Claude). When it does not (Grok / shells), paint_host_cursor puts a
+    # white █ on the blank insertion cell (display-only). Caret row must come
+    # from adjust_display_caret — Grok's live `│ >` row, not a history `>`.
+
     with term._lock:
         rows, cy, cx = term.screen.render_cells()
         cy, cx = _adjust_display_caret(term.screen, cy, cx)

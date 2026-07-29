@@ -1,4 +1,4 @@
-"""Display caret for Claude-style TUIs that park the hardware cursor on a status bar.
+"""Display caret for TUIs that park the hardware cursor off the input field.
 
 Why this exists
 ---------------
@@ -9,6 +9,11 @@ the footer while the user is editing the prompt — left/right appear to do
 nothing until Claude happens to CUP back to the prompt (feels like multiple
 keystrokes / wrong position).
 
+Grok keeps the hardware cursor on its input row (`│ > … │` in a box). That row
+must win over earlier transcript lines that also start with `>`. If we lock
+onto a history `>` and remap, the ST caret jumps to the wrong line (e.g. mid-
+scrollback) and the real command line looks cursorless.
+
 Terminus feels fine when the TUI keeps the hardware cursor on the input field.
 When the TUI parks the cursor on the status bar, every host that draws a
 caret from the PTY cursor needs a display mapping. We only remap when we
@@ -16,46 +21,61 @@ detect a `>` prompt row *and* the hardware cursor is below the input box.
 
 Column rules
 ------------
-- Input starts after the prompt marker: `>` plus an optional space/NBSP (2 cells).
-  That is why "beginning of line is 2 chars left of the cursor" when fully left —
-  those two cells are the non-editable prompt, not a desync bug.
-- Editable columns are [input_start, content_end]. content_end is after the last
-  non-blank on the prompt row.
+- Input starts after the prompt marker: `>` plus an optional space/NBSP.
+  Leading spaces and box borders (`│`) are not the prompt marker.
+- Editable columns are [input_start, content_end]. content_end is after the
+  last non-blank of the *input field* (not right-side chrome / clock).
 - We remember the last editable column while the hardware cursor is on the
   prompt; when parked on the status bar we restore that column.
 """
 
-
-def find_prompt_row(screen):
-    """Last grid row with a `>` prompt marker (optionally after leading spaces).
-
-    Junie/Compose pads the prompt with spaces before `>`; requiring col 0 to be
-    `>` made us miss the row and skip caret remapping.
-    """
-    found = None
-    for y in range(screen.rows):
-        row = screen.grid[y]
-        if not row:
-            continue
-        for ch in row:
-            if ch in (" ", "\u00a0"):
-                continue
-            if ch == ">":
-                found = y
-            break
-    return found
+# Skip when scanning for `>`: spaces and Grok/box vertical borders.
+# Without this, Grok's `│ >` row is invisible to find_prompt_row (first
+# non-space is `│`), so an older transcript `> …` wins and the caret remaps
+# to the wrong line.
+_PROMPT_PREFIX = frozenset(
+    (
+        " ",
+        "\u00a0",
+        "\u2502",  # │
+        "\u2503",  # ┃
+        "\u2551",  # ║
+        "\u2524",  # ┤
+        "\u251c",  # ├
+        "|",
+    )
+)
 
 
 def _prompt_marker_col(screen, prompt_y):
-    """Column of the `>` on the prompt row, or None."""
+    """Column of the `>` prompt marker on the row, or None.
+
+    Allows leading spaces and vertical box borders (Grok: `  │ > text │`).
+    The marker must be the first non-prefix cell (not a `>` buried in text).
+    """
     row = screen.grid[prompt_y]
     if not row:
         return None
-    for i, ch in enumerate(row):
-        if ch in (" ", "\u00a0"):
+    n = min(len(row), screen.cols)
+    for i in range(n):
+        ch = row[i]
+        if ch in _PROMPT_PREFIX:
             continue
         return i if ch == ">" else None
     return None
+
+
+def find_prompt_row(screen):
+    """Last grid row with a `>` prompt marker (spaces/box border prefix OK).
+
+    Prefers the bottom-most match so Grok's live input box wins over earlier
+    transcript lines that also use a leading `>`.
+    """
+    found = None
+    for y in range(screen.rows):
+        if _prompt_marker_col(screen, y) is not None:
+            found = y
+    return found
 
 
 def input_start_col(screen, prompt_y):
