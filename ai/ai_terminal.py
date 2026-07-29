@@ -451,6 +451,7 @@ try:
     )
     from .terminal.mouse import (
         encode_click as _encode_click,
+        encode_mouse as _encode_mouse,
         encode_wheel as _encode_wheel,
         st_button_to_proto as _st_button_to_proto,
         view_point_to_cell as _view_point_to_cell,
@@ -507,6 +508,7 @@ except ImportError as _term_imp_err:
         )
         from ai.terminal.mouse import (
             encode_click as _encode_click,
+            encode_mouse as _encode_mouse,
             encode_wheel as _encode_wheel,
             st_button_to_proto as _st_button_to_proto,
             view_point_to_cell as _view_point_to_cell,
@@ -1266,6 +1268,11 @@ class _Terminal:
         # sticking at the top showing the banner.
         self._auto_follow = True
         self._last_vp_y = 0.0
+        # Last PTY cell (1-based col,row) hit by a mouse click/drag. Used as
+        # the wheel locus — ST's scroll_lines has no pointer coords, and the
+        # caret is usually on the command line, which makes TUI scrollbars
+        # ignore the wheel. Updated on every routed mouse event.
+        self._last_mouse_cell = None
         # Asciicast v3 recording (recording patch). When recording is on,
         # start() opens a per-session .cast file and writes the v3 header;
         # _on_data / send_string / resize / kill append timed events. Off
@@ -1410,6 +1417,12 @@ class _Terminal:
         return "\n".join("".join(ch for ch, _ in row) for row in rows)
 
     def kill(self):
+        # Drop any in-flight mouse hold so a restart doesn't inherit it.
+        try:
+            _mouse_force_release(self, self.view.id())
+        except Exception:
+            _MOUSE_HOLD.pop(self.view.id(), None)
+        self._last_mouse_cell = None
         # Recording patch: emit an "x" (exit) event and close the .cast
         # file so the recording ends cleanly. The stream-layer "o" events
         # already captured everything Claude emitted, so there's no need
@@ -1984,9 +1997,53 @@ def _event_to_pty_cell(view, term, event):
     )
 
 
-def _route_mouse_click(view, term, event):
-    """If the app enabled mouse tracking, send a click report. Return True if handled."""
-    if not term.screen.mouse_tracking:
+# Button-hold state for 1002/1003: view_id -> (proto_btn, col, row, gen)
+# ST never delivers a clean mouse-up; we release after a short idle so click
+# (press…idle→release) and drag (press…motion…motion…idle→release) both work.
+_MOUSE_HOLD = {}
+_MOUSE_RELEASE_MS = 90
+
+
+def _mouse_force_release(term, view_id):
+    """Emit SGR/X10 release for any held button and clear hold state."""
+    hold = _MOUSE_HOLD.pop(view_id, None)
+    if not hold or term is None:
+        return
+    btn, col, row, _gen = hold
+    try:
+        sgr = term.screen.mouse_sgr
+        term.send_string(
+            _encode_mouse(btn, col, row, press=False, sgr=sgr)
+        )
+    except Exception:
+        pass
+
+
+def _schedule_mouse_release(view, term, gen):
+    """Release the held button if no further drag events arrive."""
+    vid = view.id()
+
+    def _fire():
+        hold = _MOUSE_HOLD.get(vid)
+        if hold is None or hold[3] != gen:
+            return
+        t = _Terminal.from_id(vid)
+        _mouse_force_release(t, vid)
+
+    sublime.set_timeout(_fire, _MOUSE_RELEASE_MS)
+
+
+def _route_mouse_click(view, term, event, *, discrete_click=False):
+    """Send a mouse report when the app enabled tracking. Return True if handled.
+
+    discrete_click: True for multi-click (ST by=words/lines) — always a full
+    press+release so double-clicks reach the TUI instead of becoming ST word
+    selection. False for normal drag_select: in 1002/1003 modes use press +
+    motion + idle release so scroll-thumb drag works; in 1000 mode always
+    press+release.
+    """
+    mode = term.screen.mouse_tracking
+    if not mode:
         return False
     cell = _event_to_pty_cell(view, term, event)
     if cell is None:
@@ -1997,8 +2054,30 @@ def _route_mouse_click(view, term, event):
     if proto is None:
         return False
     col, row = cell
-    seq = _encode_click(proto, col, row, sgr=term.screen.mouse_sgr)
+    term._last_mouse_cell = (col, row)
+    # User is interacting with the TUI chrome — don't yank viewport to bottom.
+    term._auto_follow = False
+    sgr = term.screen.mouse_sgr
+    vid = view.id()
+
+    # Multi-click or click-only mode: complete any prior hold, then one click.
+    if discrete_click or mode < 1002:
+        _mouse_force_release(term, vid)
+        term.send_string(_encode_click(proto, col, row, sgr=sgr))
+        return True
+
+    # 1002 (drag) / 1003 (any-event): press, then motion while held.
+    hold = _MOUSE_HOLD.get(vid)
+    if hold is None:
+        seq = _encode_mouse(proto, col, row, press=True, sgr=sgr)
+        gen = 1
+    else:
+        _btn_prev, _c_prev, _r_prev, gen_prev = hold
+        seq = _encode_mouse(proto, col, row, press=True, motion=True, sgr=sgr)
+        gen = gen_prev + 1
+    _MOUSE_HOLD[vid] = (proto, col, row, gen)
     term.send_string(seq)
+    _schedule_mouse_release(view, term, gen)
     return True
 
 
@@ -2006,23 +2085,26 @@ def _route_mouse_wheel(view, term, amount):
     """Send wheel-up/down when mouse tracking is on. Return True if handled."""
     if not term.screen.mouse_tracking:
         return False
-    # Prefer the caret/last selection point as the wheel locus (xterm uses
-    # the cell under the pointer; ST does not pass pointer coords on
-    # scroll_lines, so the insertion point is the best available proxy).
-    try:
-        pt = view.sel()[0].b if view.sel() else 0
-        row, col = view.rowcol(pt)
-    except Exception:
-        row, col = 0, 0
-    cell = _view_point_to_cell(
-        row,
-        col,
-        hist_len=_mouse_hist_len(term),
-        screen_rows=term.screen.rows,
-        screen_cols=term.screen.cols,
-    )
+    # Locus priority (xterm uses the cell under the pointer; ST does not pass
+    # pointer coords on scroll_lines):
+    #   1) last click/drag cell (where the user was just pointing — scrollbar)
+    #   2) caret / selection point
+    #   3) bottom-right of the grid
+    cell = getattr(term, "_last_mouse_cell", None)
     if cell is None:
-        # Viewport scrolled into history: pin reports to bottom-right of grid.
+        try:
+            pt = view.sel()[0].b if view.sel() else 0
+            row, col = view.rowcol(pt)
+        except Exception:
+            row, col = 0, 0
+        cell = _view_point_to_cell(
+            row,
+            col,
+            hist_len=_mouse_hist_len(term),
+            screen_rows=term.screen.rows,
+            screen_cols=term.screen.cols,
+        )
+    if cell is None:
         col, row = term.screen.cols, term.screen.rows
     else:
         col, row = cell
@@ -2032,6 +2114,7 @@ def _route_mouse_wheel(view, term, amount):
     n = max(1, min(abs(int(round(float(amount)))), 5))
     sgr = term.screen.mouse_sgr
     seq = "".join(_encode_wheel(direction_up, col, row, sgr=sgr) for _ in range(n))
+    term._auto_follow = False
     term.send_string(seq)
     return True
 
@@ -2060,16 +2143,17 @@ class AiTerminalKeyInterceptor(sublime_plugin.EventListener):
         # ── Xterm mouse tracking (Grok / fullscreen TUIs) ──────────────────
         # Apps enable via CSI ?1000/1002/1003 h (+ usually ?1006 h SGR).
         # Without this, clicks only move ST's selection and never reach the PTY.
-        # Shift+click / extend / multi-click keep ST selection (xterm bypass).
+        # Shift+click / extend keep ST selection (xterm shift-bypass). Multi-click
+        # (double-click → by=words) is FORWARD when tracking is on — dropping it
+        # made TUI scroll buttons ignore double-clicks and left ST selecting
+        # "words" inside the framebuffer instead.
         if command_name == "drag_select":
             args = args or {}
             event = args.get("event") or {}
-            # Bypass when user is extending/additive selecting, or multi-click.
             if args.get("extend") or args.get("additive") or args.get("subtractive"):
                 return None
-            if args.get("by") in ("words", "lines", "columns"):
-                return None
-            if _route_mouse_click(view, term, event):
+            multi = args.get("by") in ("words", "lines", "columns")
+            if _route_mouse_click(view, term, event, discrete_click=multi):
                 return ("ai_terminal_noop", {})
             return None
         if command_name == "scroll_lines":
