@@ -2352,6 +2352,79 @@ def _send_full_click(term, view_id, proto, col, row, sgr):
     _MOUSE_LAST_CLICK[view_id] = (col, row, time.time())
 
 
+# Copy-first tap arm: view_id not needed — stored on term.
+# term._cf_tap = (col, row, gen, proto) while waiting to see if the pointer moves.
+_COPYFIRST_TAP_MS = 150
+
+
+def _cancel_copyfirst_tap(term):
+    """Invalidate any pending copy-first tap→PTY click."""
+    if term is None:
+        return
+    try:
+        term._cf_tap = None
+    except Exception:
+        pass
+
+
+def _arm_or_cancel_copyfirst_tap(view, term, event):
+    """Copy-first + mouse tracking: arm a delayed full click, or cancel on move.
+
+    Returns True when this event should be swallowed (noop) so ST does not
+    start a text selection on a TUI button tap. Returns False to let ST
+    own a drag-select (pointer moved to another cell).
+    """
+    cell = _event_to_pty_cell(view, term, event)
+    if cell is None:
+        _cancel_copyfirst_tap(term)
+        return False
+    col, row = cell
+    st_btn = event.get("button", 1) if event else 1
+    proto = _st_button_to_proto(st_btn)
+    if proto is None:
+        _cancel_copyfirst_tap(term)
+        return False
+
+    pending = getattr(term, "_cf_tap", None)
+    if pending is None:
+        gen = int(getattr(term, "_cf_tap_gen", 0) or 0) + 1
+        term._cf_tap_gen = gen
+        term._cf_tap = (col, row, gen, proto)
+        term._last_mouse_cell = (col, row)
+        term._auto_follow = False
+        vid = view.id()
+
+        def _fire(v_id=vid, g=gen, c=col, r=row, p=proto):
+            t = _Terminal.from_id(v_id)
+            if t is None:
+                return
+            arm = getattr(t, "_cf_tap", None)
+            if arm is None or arm[2] != g:
+                return  # cancelled (drag or newer tap)
+            t._cf_tap = None
+            if not t.screen.mouse_tracking or not t.pty.is_alive():
+                return
+            sgr = t.screen.mouse_sgr
+            try:
+                _send_full_click(t, v_id, p, c, r, sgr)
+            except Exception as e:
+                print(f"[ai_terminal] copy-first tap click failed: {e}")
+
+        sublime.set_timeout(_fire, _COPYFIRST_TAP_MS)
+        # Swallow so a button tap does not leave a ST selection flash that
+        # also freezes paints under the select guard.
+        return True
+
+    p_col, p_row, p_gen, p_proto = pending[0], pending[1], pending[2], pending[3]
+    if (col, row) != (p_col, p_row):
+        # Pointer moved → user is drag-selecting text; cancel PTY tap.
+        _cancel_copyfirst_tap(term)
+        _arm_st_select_guard(term)
+        return False
+    # Same cell re-delivery / jitter: keep the arm, swallow.
+    return True
+
+
 def _wheel_locus(view, term):
     """1-based (col, row) for wheel reports when ST gives no pointer.
 
@@ -2601,17 +2674,37 @@ class AiTerminalKeyInterceptor(sublime_plugin.EventListener):
                 forward_by_default = raw.strip().lower() in ("1", "true", "yes", "on")
             else:
                 forward_by_default = bool(raw)
-            # Copy-first: never forward drag — ST owns text selection.
+            multi = args.get("by") in ("words", "lines", "columns")
+            # Copy-first: ST owns *drags* (text select between agent tabs).
+            # Still deliver short *taps* and multi-clicks to the PTY when the
+            # app enabled mouse tracking — otherwise Grok trust dialogs /
+            # buttons never receive clicks (ST only emits drag_select).
             if not forward_by_default:
-                _mouse_force_release(term, view.id())
-                _arm_st_select_guard(term)
+                if modified:
+                    _cancel_copyfirst_tap(term)
+                    _mouse_force_release(term, view.id())
+                    _arm_st_select_guard(term)
+                    return None
+                if term.screen.mouse_tracking:
+                    if multi:
+                        _cancel_copyfirst_tap(term)
+                        if _route_mouse_click(
+                            view, term, event, discrete_click=True
+                        ):
+                            return ("ai_terminal_noop", {})
+                        return None
+                    # Tap vs drag: arm a delayed full PTY click; cancel if the
+                    # pointer moves to another cell (then ST keeps the select).
+                    if _arm_or_cancel_copyfirst_tap(view, term, event):
+                        return ("ai_terminal_noop", {})
+                else:
+                    _cancel_copyfirst_tap(term)
                 return None
             # Mouse-first: Shift/Ctrl-drag select; plain drag → PTY when tracking.
             if modified:
                 _mouse_force_release(term, view.id())
                 _arm_st_select_guard(term)
                 return None
-            multi = args.get("by") in ("words", "lines", "columns")
             if _route_mouse_click(view, term, event, discrete_click=multi):
                 return ("ai_terminal_noop", {})
             return None
