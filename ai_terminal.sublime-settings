@@ -17,6 +17,11 @@
     ],
     // The default profile to run if no profile name is explicitly requested
     "default_profile": "Ollama (OpenCode)",
+    // Mouse drag vs text selection when a TUI enables xterm mouse tracking:
+    //   true  = mouse-first: plain drag → PTY (Grok scrollbar/UI); Shift/Ctrl-drag → ST select
+    //   false = copy-first: all drags → ST select (copy between agent tabs). PTY drag off;
+    //           wheel still works. Live-read each drag (no reload). Default false = copy-first.
+    "drag_forwards_by_default": false,
     // Ignore the TUI's alt-screen (DECSET 1049) toggle so our renderer keeps
     // real ST scrollback. Default true = scrollback on. Set false to let a
     // TUI take over the view with a fixed fullscreen matrix (loses scrollback).

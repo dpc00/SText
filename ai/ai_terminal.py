@@ -1827,14 +1827,39 @@ def _plain_cells_signature(rows):
     return "".join(parts)
 
 
+def _selection_paint_blocked(view, term):
+    """True when a full paint would destroy an in-progress ST text selection.
+
+    Live response/prompt rows dirty the screen every frame; thinking text is
+    often static. Without a guard, the first mousedown (still empty sel) loses
+    to a 30ms paint that sel.clear()+caret-pins — selection never sticks
+    except on quiet regions (e.g. finished thinking blocks).
+    """
+    try:
+        if any(not s.empty() for s in view.sel()):
+            return True
+    except Exception:
+        pass
+    guard = float(getattr(term, "_st_select_guard_until", 0.0) or 0.0)
+    return guard > 0.0 and time.monotonic() < guard
+
+
+def _arm_st_select_guard(term, seconds=1.25):
+    """Block full paints briefly so drag_select can establish a non-empty range."""
+    until = time.monotonic() + float(seconds)
+    prev = float(getattr(term, "_st_select_guard_until", 0.0) or 0.0)
+    if until > prev:
+        term._st_select_guard_until = until
+
+
 def _do_render(term):
     view = term.view
     if not view or not view.is_valid():
         term._render_pending = False
         return
-    # Defer while the user has a text selection (to copy/cut): the full-buffer
-    # view.replace + caret re-pin would wipe it. Poll until the selection clears.
-    if any(not s.empty() for s in view.sel()):
+    # Defer while selecting/copying: full-buffer replace + caret re-pin wipes it.
+    # Poll until selection clears and the post-drag guard expires.
+    if _selection_paint_blocked(view, term):
         sublime.set_timeout(lambda: _do_render(term), _RENDER_MS)
         return  # leave _render_pending True so _schedule_render doesn't double-arm
     term._render_pending = False
@@ -2468,14 +2493,35 @@ class AiTerminalKeyInterceptor(sublime_plugin.EventListener):
         # ── Xterm mouse tracking (Grok / fullscreen TUIs) ──────────────────
         # Apps enable via CSI ?1000/1002/1003 h (+ usually ?1006 h SGR).
         # Without this, clicks only move ST's selection and never reach the PTY.
-        # Shift+click / extend keep ST selection (xterm shift-bypass). Multi-click
-        # (double-click → by=words) is FORWARD when tracking is on — dropping it
-        # made TUI scroll buttons ignore double-clicks and left ST selecting
-        # "words" inside the framebuffer instead.
+        #
+        # drag_forwards_by_default (ai_terminal.sublime-settings):
+        #   true  — mouse-first (old): plain drag → PTY; Shift/Ctrl-drag → ST select
+        #   false — copy-first: ALL drags → ST select (plain, Shift, Ctrl). PTY
+        #           drag is off so Grok cannot steal the gesture; wheel still
+        #           routes via scroll_lines. (Modifier-drag → PTY was a bad flip:
+        #           it removed the only working select bypasses.)
         if command_name == "drag_select":
             args = args or {}
             event = args.get("event") or {}
-            if args.get("extend") or args.get("additive") or args.get("subtractive"):
+            modified = bool(
+                args.get("extend") or args.get("additive") or args.get("subtractive")
+            )
+            raw = sublime.load_settings(_SETTINGS_NAME).get(
+                "drag_forwards_by_default", True
+            )
+            if isinstance(raw, str):
+                forward_by_default = raw.strip().lower() in ("1", "true", "yes", "on")
+            else:
+                forward_by_default = bool(raw)
+            # Copy-first: never forward drag — ST owns text selection.
+            if not forward_by_default:
+                _mouse_force_release(term, view.id())
+                _arm_st_select_guard(term)
+                return None
+            # Mouse-first: Shift/Ctrl-drag select; plain drag → PTY when tracking.
+            if modified:
+                _mouse_force_release(term, view.id())
+                _arm_st_select_guard(term)
                 return None
             multi = args.get("by") in ("words", "lines", "columns")
             if _route_mouse_click(view, term, event, discrete_click=multi):
@@ -3119,6 +3165,12 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
         vp = view.viewport_position()
         ve = view.viewport_extent()
         lh = view.line_height() or 20
+        term = _Terminal.from_id(view.id())
+
+        # Abort buffer mutation while the user is selecting text. Even a
+        # single-char patch shifts offsets and kills a drag mid-response.
+        if term is not None and _selection_paint_blocked(view, term):
+            return
 
         patched = False
         if fast_caret and text and view.size() == len(text):
@@ -3153,7 +3205,6 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
         real_h = _real_content_height(view)
         near_bottom = (vp[1] + ve[1]) >= (rest + real_h - lh * 2)
         content_fits = real_h <= ve[1] + 0.5
-        term = _Terminal.from_id(view.id())
         tui_owns_scroll = bool(
             term is not None
             and (term.screen.alt_screen or term.screen.mouse_tracking)
@@ -3173,7 +3224,18 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
         # the block highlight and the next keystroke stays in place.
         pad = _HOST_SCROLL_PAD_LINES
         sel = view.sel()
-        if cursor_offset is not None and int(cursor_offset) >= 0:
+        # Never clobber an active ST text selection (copy/cut). Streaming
+        # response paints used to sel.clear() every frame and kill drags
+        # outside quiet regions (thinking blocks).
+        keep_selection = any(not s.empty() for s in sel)
+        if keep_selection:
+            if tui_owns_scroll:
+                _pin_viewport_rest(view, rest, term)
+            elif do_follow and not content_fits:
+                _scroll_to_bottom(view)
+                if term is not None:
+                    term._last_vp_y = view.viewport_position()[1]
+        elif cursor_offset is not None and int(cursor_offset) >= 0:
             pos = min(int(cursor_offset), view.size())
             sel.clear()
             sel.add(sublime.Region(pos, pos))
