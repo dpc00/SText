@@ -33,10 +33,8 @@ Column rules
 # Without this, Grok's `│ >` row is invisible to find_prompt_row (first
 # non-space is `│`), so an older transcript `> …` wins and the caret remaps
 # to the wrong line.
-_PROMPT_PREFIX = frozenset(
+_BOX_V = frozenset(
     (
-        " ",
-        "\u00a0",
         "\u2502",  # │
         "\u2503",  # ┃
         "\u2551",  # ║
@@ -45,6 +43,7 @@ _PROMPT_PREFIX = frozenset(
         "|",
     )
 )
+_PROMPT_PREFIX = frozenset((" ", "\u00a0")) | _BOX_V
 
 
 def _prompt_marker_col(screen, prompt_y):
@@ -104,7 +103,8 @@ def content_end_col(screen, prompt_y):
     Grok paints a clock on the same row as `>` (e.g. `7:52 AM` after a long
     pad). Using the absolute last non-blank parked the host caret on the clock
     so the command line looked cursorless. Stop at a run of GAP blanks; text
-    after that gap is chrome. Empty field (only chrome) seats at input_start.
+    after that gap is chrome. Box vertical borders end the field immediately.
+    Empty field (only chrome) seats at input_start.
     """
     row = screen.grid[prompt_y]
     start = input_start_col(screen, prompt_y)
@@ -114,6 +114,8 @@ def content_end_col(screen, prompt_y):
     n = min(len(row), screen.cols)
     for i in range(start, n):
         ch = row[i]
+        if ch in _BOX_V:
+            break
         if ch in (" ", "\u00a0"):
             gap += 1
             if seen_text and gap >= _CONTENT_GAP:
@@ -128,10 +130,37 @@ def content_end_col(screen, prompt_y):
     return min(max(end, start), screen.cols - 1)
 
 
+def field_right_limit(screen, prompt_y):
+    """Max caret column inside the input field (not on right box border).
+
+    Unlike content_end_col (end of typed text), this is the right edge of the
+    editable area so mid-line cursors are not forced to EOL text.
+    """
+    row = screen.grid[prompt_y]
+    start = input_start_col(screen, prompt_y)
+    n = min(len(row), screen.cols)
+    for i in range(start, n):
+        if row[i] in _BOX_V:
+            return max(start, i - 1)
+    return max(start, n - 1)
+
+
 def _clamp_input_col(screen, prompt_y, col):
+    """Clamp to typed-text span (for footer-park restore only)."""
     start = input_start_col(screen, prompt_y)
     end = content_end_col(screen, prompt_y)
     return min(max(int(col), start), end)
+
+
+def _clamp_live_col(screen, prompt_y, col):
+    """Clamp hardware column on the live prompt row — trust PTY, not content_end.
+
+    Clamping to content_end while the cursor is on the prompt fights mid-line
+    edits and Grok's real x (caret jumps to EOL / lags a key behind).
+    """
+    start = input_start_col(screen, prompt_y)
+    limit = field_right_limit(screen, prompt_y)
+    return min(max(int(col), start), limit)
 
 
 def note_hardware_on_prompt(screen):
@@ -139,13 +168,17 @@ def note_hardware_on_prompt(screen):
     py = find_prompt_row(screen)
     if py is None or screen.y != py:
         return
-    # Only trust x inside the editable span (ignore EOL erase CUPs past text).
     start = input_start_col(screen, py)
+    limit = field_right_limit(screen, py)
     end = content_end_col(screen, py)
-    if start <= screen.x <= end:
-        screen.input_caret_x = screen.x
-    elif screen.x > end:
-        # Past text (padding / erase) — remember end of text, not EOL.
+    if start <= screen.x <= limit:
+        # Prefer live x; when in the pad past typed text, remember text end
+        # for footer-park restore (not the far border).
+        if screen.x > end:
+            screen.input_caret_x = end
+        else:
+            screen.input_caret_x = screen.x
+    elif screen.x > limit:
         screen.input_caret_x = end
 
 
@@ -158,11 +191,13 @@ def adjust_display_caret(screen, cy, cx):
     hist = 0 if screen.alt_screen else len(screen.history)
     note_hardware_on_prompt(screen)
 
-    # On prompt or its border: use hardware column, clamped to editable span
-    # when on the prompt row itself.
+    # Live on the prompt row: trust hardware column (Grok keeps the cursor here).
+    # Do not clamp display x to content_end — that forces EOL and fights mid-line.
     if screen.y == py:
-        col = _clamp_input_col(screen, py, screen.x)
-        screen.input_caret_x = col
+        col = _clamp_live_col(screen, py, screen.x)
+        # Remember text-span column for footer-park restore only.
+        end = content_end_col(screen, py)
+        screen.input_caret_x = end if col > end else col
         return hist + py, col
     if screen.y == py + 1:
         # Border under the input box — leave hardware as-is (rare).

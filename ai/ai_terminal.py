@@ -2898,6 +2898,20 @@ def _host_rest_y(view):
     return float(_HOST_SCROLL_PAD_LINES) * lh
 
 
+def _pin_viewport_rest(view, rest=None, term=None):
+    """Pin to host rest_y only if the viewport drifted (avoids per-frame thrash)."""
+    if rest is None:
+        rest = _host_rest_y(view)
+    try:
+        cur = view.viewport_position()[1]
+        if abs(cur - rest) > 1.0:
+            view.set_viewport_position((0.0, rest), False)
+        if term is not None:
+            term._last_vp_y = rest
+    except Exception:
+        pass
+
+
 def _real_content_height(view):
     """layout height of real terminal content (excludes both host pads)."""
     le = view.layout_extent()
@@ -2984,9 +2998,13 @@ class AiTerminalKeypressCommand(sublime_plugin.TextCommand):
             if kl not in _NO_SCROLL_KEYS:
                 term._auto_follow = True
                 if tui:
+                    # Only re-pin when drifted; set_viewport every key on Windows
+                    # forces layout work and feels like lag/jumps on Grok.
                     try:
                         rest = _host_rest_y(self.view)
-                        self.view.set_viewport_position((0.0, rest), False)
+                        cur = self.view.viewport_position()[1]
+                        if abs(cur - rest) > 1.0:
+                            self.view.set_viewport_position((0.0, rest), False)
                         term._last_vp_y = rest
                     except Exception:
                         pass
@@ -3043,9 +3061,7 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
             sel.clear()
             sel.add(sublime.Region(pos, pos))
             if tui_owns_scroll:
-                view.set_viewport_position((0.0, rest), False)
-                if term is not None:
-                    term._last_vp_y = rest
+                _pin_viewport_rest(view, rest, term)
             elif do_follow and not content_fits:
                 _scroll_to_bottom(view)
                 if term is not None:
@@ -3059,16 +3075,14 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
             sel.clear()
             sel.add(sublime.Region(pos, pos))
             if tui_owns_scroll:
-                view.set_viewport_position((0.0, rest), False)
-                if term is not None:
-                    term._last_vp_y = rest
+                _pin_viewport_rest(view, rest, term)
             elif do_follow and not content_fits:
                 _scroll_to_bottom(view)
                 if term is not None:
                     term._last_vp_y = view.viewport_position()[1]
         else:
             if tui_owns_scroll:
-                view.set_viewport_position((0.0, rest), False)
+                _pin_viewport_rest(view, rest, term)
             else:
                 last_real = max(0, view.rowcol(view.size())[0] - pad)
                 pt = view.text_point(last_real, 0)
@@ -3079,7 +3093,7 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
                     if term is not None:
                         term._last_vp_y = view.viewport_position()[1]
         if content_fits or tui_owns_scroll:
-            view.set_viewport_position((0.0, rest), False)
+            _pin_viewport_rest(view, rest, term)
 
 
 class AiTerminalNukeCommand(sublime_plugin.TextCommand):

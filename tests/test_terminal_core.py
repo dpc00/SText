@@ -309,6 +309,34 @@ class TestCaretContentEnd(unittest.TestCase):
         self.assertEqual(input_start_col(scr, 1), 6)
         self.assertEqual(content_end_col(scr, 1), 6)
 
+    def test_live_prompt_trusts_mid_line_hardware(self):
+        """On the prompt row, display caret follows PTY x (not content_end)."""
+        from ai.terminal.screen import Screen
+        from ai.terminal.caret import adjust_display_caret, content_end_col
+
+        scr = Screen(80, 3)
+        box = "  \u2502 > hello world" + (" " * 40) + "\u2502"
+        for i, ch in enumerate(box[:80]):
+            scr.grid[1][i] = ch
+        # Mid-line on 'w' of world (input starts at 6: hello_ = 6..10, space, world)
+        # cols: 6-10 hello, 11 space, 12-16 world
+        scr.x, scr.y = 12, 1
+        self.assertEqual(content_end_col(scr, 1), 17)
+        cy, cx = adjust_display_caret(scr, 1, 12)
+        self.assertEqual((cy, cx), (1, 12))
+
+    def test_content_end_stops_at_box_border(self):
+        from ai.terminal.screen import Screen
+        from ai.terminal.caret import content_end_col, input_start_col
+
+        scr = Screen(40, 2)
+        # Short pad so a naive scan would treat │ as text.
+        line = "  \u2502 > hi  \u2502"
+        for i, ch in enumerate(line):
+            scr.grid[0][i] = ch
+        self.assertEqual(input_start_col(scr, 0), 6)
+        self.assertEqual(content_end_col(scr, 0), 8)  # after 'i'
+
 
 class TestHostCursor(unittest.TestCase):
     def test_pads_white_block_glyph(self):
