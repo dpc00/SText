@@ -325,6 +325,34 @@ class TestCaretContentEnd(unittest.TestCase):
         cy, cx = adjust_display_caret(scr, 1, 12)
         self.assertEqual((cy, cx), (1, 12))
 
+    def test_caret_after_trailing_space_not_snapped_to_word(self):
+        """After typing 'word ', caret stays after the space (not on 'd')."""
+        from ai.terminal.screen import Screen
+        from ai.terminal.caret import (
+            adjust_display_caret,
+            content_end_col,
+            input_start_col,
+        )
+
+        scr = Screen(80, 5)
+        # Input: "hi " then pad to box border. content_end is after 'i' only.
+        body = "  \u2502 > hi "
+        box = body + (" " * 40) + "\u2502"
+        for i, ch in enumerate(box[:80]):
+            scr.grid[2][i] = ch
+        start = input_start_col(scr, 2)
+        # 'h','i',' ' at start, start+1, start+2; caret after space = start+3
+        after_space = start + 3
+        self.assertEqual(content_end_col(scr, 2), start + 2)  # after 'i' only
+        scr.x, scr.y = after_space, 2
+        cy, cx = adjust_display_caret(scr, 2, after_space)
+        self.assertEqual((cy, cx), (2, after_space))
+        self.assertEqual(scr.input_caret_x, after_space)
+        # Footer park must also restore after the space, not content_end.
+        scr.y = 4
+        cy2, cx2 = adjust_display_caret(scr, 4, 0)
+        self.assertEqual((cy2, cx2), (2, after_space))
+
     def test_content_end_stops_at_box_border(self):
         from ai.terminal.screen import Screen
         from ai.terminal.caret import content_end_col, input_start_col

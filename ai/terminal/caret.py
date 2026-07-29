@@ -164,22 +164,24 @@ def _clamp_live_col(screen, prompt_y, col):
 
 
 def note_hardware_on_prompt(screen):
-    """If hardware cursor is on the prompt, remember editable column."""
+    """If hardware cursor is on the prompt, remember editable column.
+
+    Must remember the *live* column, including after a just-typed space.
+    content_end_col ignores trailing spaces (clock-gap logic); collapsing
+    input_caret_x to that made the caret sit on the last letter after Space
+    until the next non-space key redraws.
+    """
     py = find_prompt_row(screen)
     if py is None or screen.y != py:
         return
     start = input_start_col(screen, py)
     limit = field_right_limit(screen, py)
-    end = content_end_col(screen, py)
     if start <= screen.x <= limit:
-        # Prefer live x; when in the pad past typed text, remember text end
-        # for footer-park restore (not the far border).
-        if screen.x > end:
-            screen.input_caret_x = end
-        else:
-            screen.input_caret_x = screen.x
+        screen.input_caret_x = int(screen.x)
     elif screen.x > limit:
-        screen.input_caret_x = end
+        screen.input_caret_x = limit
+    elif screen.x < start:
+        screen.input_caret_x = start
 
 
 def adjust_display_caret(screen, cy, cx):
@@ -192,24 +194,24 @@ def adjust_display_caret(screen, cy, cx):
     note_hardware_on_prompt(screen)
 
     # Live on the prompt row: trust hardware column (Grok keeps the cursor here).
-    # Do not clamp display x to content_end — that forces EOL and fights mid-line.
+    # Never collapse to content_end — trailing spaces are real insertion points.
     if screen.y == py:
         col = _clamp_live_col(screen, py, screen.x)
-        # Remember text-span column for footer-park restore only.
-        end = content_end_col(screen, py)
-        screen.input_caret_x = end if col > end else col
+        screen.input_caret_x = col
         return hist + py, col
     if screen.y == py + 1:
         # Border under the input box — leave hardware as-is (rare).
         return cy, cx
 
     # Below the input box (status footer): pin to prompt at remembered column.
+    # Use live-field clamp (not content_end) so a remembered "after space"
+    # position is not snapped back to the last non-blank.
     if screen.y > py + 1:
         col = getattr(screen, "input_caret_x", None)
         if col is None:
             col = content_end_col(screen, py)
         else:
-            col = _clamp_input_col(screen, py, col)
+            col = _clamp_live_col(screen, py, col)
         return hist + py, col
 
     return cy, cx
