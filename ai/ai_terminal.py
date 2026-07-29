@@ -3054,37 +3054,39 @@ _clamp_token = None
 
 
 def _vp_pan_to_tui_scroll(view, term, dy):
-    """Turn an ST viewport y-dip into PTY wheel/Page ticks, then pin.
+    """Turn an ST viewport y-dip into PTY wheel/Page ticks.
 
     Windows trackpads often never fire scroll_lines or mousemap scroll_up;
-    they only shove viewport_position a few pixels. That dip *is* the gesture.
+    they only shove viewport_position a few pixels (user saw ~6px). That dip
+    *is* the gesture. Important: threshold must be BELOW a single nudge, or we
+    pin without sending, ST stops offering more pan, and scroll feels dead.
     """
     lh = view.line_height() or 12.0
     # Large negative y is ST view.show() overshoot on focus/hover — not a
     # user scroll. Pin only; do not PageDown the TUI on every focus.
     if dy < -lh * 1.5:
-        return
-    term._vp_pan_accum = float(getattr(term, "_vp_pan_accum", 0.0) or 0.0) + float(dy)
-    # ~1/3 line or 4px — enough to reject noise, low enough for a 6px nudge
-    threshold = max(4.0, lh * 0.3)
-    accum = term._vp_pan_accum
-    if abs(accum) < threshold:
-        return
-    ticks = max(1, min(int(round(abs(accum) / max(lh * 0.35, 4.0))), 8))
-    # dy/accum > 0: viewport moved down → user scrolled toward later content
-    # → wheel-down → negative amount for _route_mouse_wheel.
-    amount = -float(ticks) if accum > 0 else float(ticks)
-    term._vp_pan_accum = 0.0
+        return False
+    # Fire on any real pan. A single trackpad nudge is often ~4–8px; line
+    # height is ~16–24px — never require a full line.
+    if abs(dy) < 1.5:
+        return False
+    ticks = max(1, min(int(round(abs(dy) / max(lh * 0.25, 3.0))), 8))
+    # dy > 0: viewport moved down → later content → wheel-down → amount < 0
+    amount = -float(ticks) if dy > 0 else float(ticks)
     try:
-        if not getattr(term, "_vp_pan_logged", False):
+        n = int(getattr(term, "_vp_pan_log_n", 0) or 0)
+        if n < 8:
             print(
                 f"[ai_terminal] trackpad pan→TUI scroll "
-                f"accum={accum:.1f}px ticks={ticks} amount={amount}"
+                f"dy={dy:.1f}px lh={lh:.1f} ticks={ticks} amount={amount} "
+                f"mouse={term.screen.mouse_tracking} alt={term.screen.alt_screen}"
             )
-            term._vp_pan_logged = True
+            term._vp_pan_log_n = n + 1
         _route_mouse_wheel(view, term, amount)
+        return True
     except Exception as e:
         print(f"[ai_terminal] vp-pan scroll failed: {e}")
+        return False
 
 
 def _clamp_vp_loop():
@@ -3094,45 +3096,51 @@ def _clamp_vp_loop():
             v = term.view
             if not v or not v.is_valid():
                 continue
-            # Fullscreen TUI / mouse-tracking apps own all scrolling.
-            # Trackpad path on Windows: core pans vp a few px (no reliable
-            # scroll_lines). Convert that pan into TUI scroll, then pin (0,0)
-            # so the user never sees a lasting dip — only the TUI moves.
+            # Every ai_terminal view: trackpad = core pan. Convert + pin.
+            # (Previously gated on alt/mouse only; force_main_screen makes
+            # alt_screen False even under Grok, and a missed mouse mode left
+            # pure pan with no PTY traffic — matches empty wheel casts.)
             try:
-                if term.screen.alt_screen or term.screen.mouse_tracking:
-                    # Keep scroll_past_end on so ST continues to allow a brief
-                    # pan (our signal). Without it, pan dies after one nudge.
-                    try:
-                        v.settings().set("scroll_past_end", True)
-                    except Exception:
-                        pass
-                    vp = v.viewport_position()
-                    dy = float(vp[1])
-                    if abs(dy) >= 0.5 or abs(float(vp[0])) >= 0.5:
-                        if abs(dy) >= 0.5:
-                            _vp_pan_to_tui_scroll(v, term, dy)
-                        v.set_viewport_position((0.0, 0.0), False)
-                    continue
+                v.settings().set("scroll_past_end", True)
             except Exception:
                 pass
-            le = v.layout_extent()
-            ve = v.viewport_extent()
-            vp = v.viewport_position()
-            lh = v.line_height() or 12.0
-            # Tolerate small overflow: when ve briefly shrinks (ST shows a transient
-            # bar / the TUI emits a shorter frame), le can exceed ve by a few px and
-            # the strict `le <= ve + 0.5` condition fails, leaving vp drifted to
-            # e.g. (0, 4) for ~200ms until ve recovers -- the user sees a long
-            # down-dip. Clamping vp=0 whenever content exceeds the viewport by <= 1
-            # line height kills that dip (at most the bottom ~1 line is briefly
-            # clipped, which is far less jarring than a 200ms shift). When content
-            # exceeds by more (the user scrolled up to read scrollback), do NOT
-            # clamp -- let vp stay where the user scrolled.
-            if le[1] - ve[1] <= lh and (vp[0] != 0.0 or vp[1] != 0.0):
+            try:
+                vp = v.viewport_position()
+                dy = float(vp[1])
+                dx = float(vp[0])
+            except Exception:
+                continue
+
+            tui_like = bool(
+                term.screen.alt_screen
+                or term.screen.mouse_tracking
+            )
+            # Also treat near-fit buffers as TUI (Grok with force_main_screen
+            # often has little host scrollback and only core-pan room).
+            try:
+                le = v.layout_extent()
+                ve = v.viewport_extent()
+                lh = v.line_height() or 12.0
+                near_fit = (le[1] - ve[1]) <= lh * 3
+            except Exception:
+                near_fit = False
+                lh = 12.0
+
+            if tui_like or near_fit:
+                if abs(dy) >= 1.5:
+                    _vp_pan_to_tui_scroll(v, term, dy)
+                if abs(dy) >= 0.5 or abs(dx) >= 0.5:
+                    v.set_viewport_position((0.0, 0.0), False)
+                continue
+
+            # Tall scrollback shell: only kill tiny overflow dips, don't steal
+            # real user scrollback browsing.
+            if le[1] - ve[1] <= lh and (dx != 0.0 or dy != 0.0):
                 v.set_viewport_position((0.0, 0.0), False)
     except Exception as e:
         print(f"[ai_terminal] clamp loop error: {e}")
-    _clamp_token = sublime.set_timeout(_clamp_vp_loop, 16)
+    # 8ms: catch the brief pan before the next paint eats it
+    _clamp_token = sublime.set_timeout(_clamp_vp_loop, 8)
 
 
 def plugin_loaded():
@@ -3150,8 +3158,8 @@ def plugin_loaded():
             sublime.cancel_timeout(_clamp_token)
         except Exception:
             pass
-    _clamp_token = sublime.set_timeout(_clamp_vp_loop, 16)
-    print("[ai_terminal] loaded")
+    _clamp_token = sublime.set_timeout(_clamp_vp_loop, 8)
+    print("[ai_terminal] loaded (trackpad pan→TUI scroll armed)")
 
 
 def plugin_unloaded():
