@@ -2850,14 +2850,27 @@ def _resolve_here_path(window, paths):
 
 
 def _pick_cwd_then(window, on_path):
-    """Resolve cwd or show a quick panel of project candidates, then call on_path."""
-    path = _resolve_here_path(window, [])
-    if path:
-        on_path(path)
+    """Resolve cwd or show a quick panel of project candidates, then call on_path.
+
+    Tools → Ai Terminal → profile (e.g. Grok Build) lands here with no sidebar
+    paths. Do **not** auto-spawn from the active file's nearest root — that
+    skips the usual directory picker and often lands on umbrella maps
+    (~/projects via CLAUDE.md, ~ via AGENTS.md) when the user only had a
+    settings file focused. Auto only when the cwd is truly unambiguous.
+    """
+    folders = list(window.folders() or []) if window else []
+    sole = _sole_auto_cwd(folders)
+    if sole:
+        on_path(sole)
         return
 
     candidates = _cwd_candidates(window)
     if not candidates:
+        # No sidebar projects: last resort is active-file / sole resolve.
+        path = _resolve_here_path(window, [])
+        if path:
+            on_path(path)
+            return
         sublime.status_message("Ai terminal: no folder resolved")
         return
     if len(candidates) == 1:
@@ -2869,12 +2882,30 @@ def _pick_cwd_then(window, on_path):
         base = os.path.basename(c.rstrip("\\/")) or c
         labels.append([base, c])
 
+    # Pre-highlight the active file's project when it is in the list (still
+    # require an explicit pick — selected_index alone does not auto-confirm).
+    selected = 0
+    try:
+        view = window.active_view() if window else None
+        fn = view.file_name() if view else None
+        if fn:
+            boundary = _containing_window_folder(window, fn)
+            hint = _nearest_project_root(fn, stop_at=boundary)
+            if hint:
+                hint_n = _norm_path(hint)
+                for i, c in enumerate(candidates):
+                    if _norm_path(c) == hint_n:
+                        selected = i
+                        break
+    except Exception:
+        selected = 0
+
     def on_done(idx):
         if idx < 0:
             return
         on_path(candidates[idx])
 
-    window.show_quick_panel(labels, on_done)
+    window.show_quick_panel(labels, on_done, 0, selected)
 
 
 def _spawn(window, path, profile=None):
