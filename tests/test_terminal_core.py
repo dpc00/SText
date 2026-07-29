@@ -433,6 +433,52 @@ class TestCaretContentEnd(unittest.TestCase):
         cy, cx = adjust_display_caret(scr, 1, scr.x)
         self.assertEqual(cx, start + 3)
 
+    def test_optimistic_left_right_on_prompt(self):
+        """Arrow keys while hardware still on the glyph → display moves now.
+
+        Grok's L/R emit only BS (\\x08); without optimism the host █/reverse
+        waits on the next paint and feels laggy mid-command.
+        """
+        from ai.terminal.screen import Screen
+        from ai.terminal.caret import (
+            adjust_display_caret,
+            note_optimistic_insert,
+            input_start_col,
+        )
+
+        scr = Screen(80, 3)
+        box = "  \u2502 > hello world" + (" " * 30) + "\u2502"
+        for i, ch in enumerate(box[:80]):
+            scr.grid[1][i] = ch
+        start = input_start_col(scr, 1)
+        # Hardware at end of 'world' (start + len('hello world')).
+        end = start + len("hello world")
+        scr.x, scr.y = end, 1
+        self.assertTrue(note_optimistic_insert(scr, -1))
+        self.assertTrue(note_optimistic_insert(scr, -1))
+        cy, cx = adjust_display_caret(scr, 1, scr.x)
+        self.assertEqual(cx, end - 2)
+        # Right restores toward end.
+        self.assertTrue(note_optimistic_insert(scr, +1))
+        cy2, cx2 = adjust_display_caret(scr, 1, scr.x)
+        self.assertEqual(cx2, end - 1)
+        # PTY catch-up clears optimism.
+        scr.x = end - 1
+        cy3, cx3 = adjust_display_caret(scr, 1, scr.x)
+        self.assertEqual(cx3, end - 1)
+        self.assertIsNone(getattr(scr, "optimistic_x", None))
+
+    def test_midline_host_cursor_move_keeps_text(self):
+        """Mid-line reverse cursor: text identical, only regions move."""
+        row = [(c, 0) for c in "hello"]
+        r1, p1 = paint_host_cursor([list(row)], 0, 1)
+        r2, p2 = paint_host_cursor([list(row)], 0, 3)
+        self.assertTrue(p1 and p2)
+        t1, reg1 = build_text_and_regions(r1)
+        t2, reg2 = build_text_and_regions(r2)
+        self.assertEqual(t1, t2)
+        self.assertNotEqual(reg1, reg2)
+
     def test_content_end_stops_at_box_border(self):
         from ai.terminal.screen import Screen
         from ai.terminal.caret import content_end_col, input_start_col

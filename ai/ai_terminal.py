@@ -1797,14 +1797,15 @@ _RENDER_MS = 40
 _RENDER_MIN_INTERVAL_MS = 55
 
 
-def _schedule_render(term):
+def _schedule_render(term, delay_ms=None):
+    """Arm a paint. delay_ms=0 for optimistic caret (still min-interval capped)."""
     if term._render_pending:
         # Mark that more work arrived while armed; _do_render re-arms if dirty.
         term._render_coalesce = True
         return
     term._render_pending = True
     term._render_coalesce = False
-    delay = _RENDER_MS
+    delay = _RENDER_MS if delay_ms is None else max(0, int(delay_ms))
     last = getattr(term, "_last_render_mono", 0.0) or 0.0
     if last:
         # Cap paint rate so burst typing cannot schedule a full replace every
@@ -1878,19 +1879,20 @@ def _do_render(term):
     prev_plain = getattr(term, "_last_plain_sig", None)
     prev_text = getattr(term, "_last_render_text", None)
     prev_caret = getattr(term, "_last_caret_off", None)
-    # Burst typing / optimistic caret: screen content often unchanged between
-    # keys; only the host █ + ST selection move. Skip full colour rebuild and
-    # prefer small patches so the main thread can keep taking keypresses.
+    caret_now = caret_off if caret_off is not None else -1
+    # Burst typing / L-R cursor: PTY cells unchanged (plain_sig stable); only
+    # host █ / reverse highlight + ST selection move. Mid-line reverse moves
+    # keep the *text* identical — still a fast frame (regions + selection).
     fast_caret = (
         prev_plain is not None
         and prev_plain == plain_sig
         and prev_text is not None
-        and prev_text != text
+        and (prev_text != text or prev_caret != caret_now)
     )
     skip_all = (
         prev_text is not None
         and prev_text == text
-        and prev_caret == (caret_off if caret_off is not None else -1)
+        and prev_caret == caret_now
     )
     if skip_all:
         term._last_render_mono = time.monotonic()
@@ -3070,20 +3072,30 @@ class AiTerminalKeypressCommand(sublime_plugin.TextCommand):
             kl = key.lower()
             # Optimistic caret: Grok often leaves hardware x on the last glyph
             # for a frame after Space/printables — host block looked stuck on
-            # the word until the next key. Advance display immediately.
+            # the word until the next key. Same for left/right: cast shows Grok
+            # only emits BS (\x08) for arrows (no full redraw); waiting on the
+            # 40ms paint + full view.replace felt laggy and left reverse/█
+            # artifacts. Advance display immediately; PTY catch-up clears opt.
             if not ctrl and not alt:
-                if kl in _NO_SCROLL_KEYS or kl in (
-                    "escape", "enter", "tab", "insert", "delete",
-                ):
+                if kl in ("escape", "enter", "tab", "insert", "delete", "up", "down",
+                          "pageup", "pagedown", "home", "end"):
                     _clear_optimistic_caret(term.screen)
+                elif kl == "left":
+                    if _note_optimistic_insert(term.screen, -1):
+                        term.screen.dirty = True
+                        _schedule_render(term, delay_ms=0)
+                elif kl == "right":
+                    if _note_optimistic_insert(term.screen, +1):
+                        term.screen.dirty = True
+                        _schedule_render(term, delay_ms=0)
                 elif kl == "backspace":
                     if _note_optimistic_insert(term.screen, -1):
                         term.screen.dirty = True
-                        _schedule_render(term)
+                        _schedule_render(term, delay_ms=0)
                 elif kl == "space" or (len(key) == 1 and key.isprintable()):
                     if _note_optimistic_insert(term.screen, +1):
                         term.screen.dirty = True
-                        _schedule_render(term)
+                        _schedule_render(term, delay_ms=0)
             # Fullscreen / mouse-tracking TUIs (Junie, Grok): never yank the
             # viewport on every printable — that fought mid-line caret and
             # made the next char land at EOL. Pin to rest instead.
@@ -3138,7 +3150,9 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
 
         patched = False
         if fast_caret and text and view.size() == len(text):
-            # Diff live buffer vs new frame; host █ move is 1–2 cells.
+            # Diff live buffer vs new frame; host █ / reverse move is 0–2 cells.
+            # Mid-line left/right: chars identical (only reverse attr moves) →
+            # 0 diffs; still patch=True so we skip full view.replace.
             cur = view.substr(sublime.Region(0, view.size()))
             if len(cur) == len(text):
                 diffs = []
@@ -3147,23 +3161,15 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
                         diffs.append(i)
                         if len(diffs) > 4:
                             break
-                if diffs and len(diffs) <= 4:
+                if len(diffs) <= 4:
                     for i in diffs:
                         view.replace(edit, sublime.Region(i, i + 1), text[i])
                     patched = True
-                    # Host cursor region only — full colour runs are still valid.
-                    host_rs = []
-                    for begin, end, scope in regions or []:
-                        if scope == _HOST_CURSOR_SCOPE:
-                            host_rs.append(sublime.Region(begin, end))
-                    key = _COLOR_KEY_PREFIX + _HOST_CURSOR_SCOPE
-                    if host_rs:
-                        view.add_regions(
-                            key, host_rs, scope=_HOST_CURSOR_SCOPE,
-                            flags=sublime.DRAW_NO_OUTLINE,
-                        )
-                    else:
-                        view.erase_regions(key)
+                    # Must re-apply *all* colour regions: host cursor is reverse
+                    # / ai.fb.16.1 on the cell, not HOST_CURSOR_SCOPE alone.
+                    # Old reverse/█ scopes left as artifacts if we only punched
+                    # the permanent host key.
+                    _apply_color_regions(view, regions or [])
 
         if not patched:
             view.replace(edit, sublime.Region(0, view.size()), text)
