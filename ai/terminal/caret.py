@@ -163,6 +163,59 @@ def _clamp_live_col(screen, prompt_y, col):
     return min(max(int(col), start), limit)
 
 
+def clear_optimistic_caret(screen):
+    """Drop pending optimistic column (PTY moved or non-insert key)."""
+    for name in ("optimistic_x", "optimistic_base_x"):
+        if hasattr(screen, name):
+            try:
+                delattr(screen, name)
+            except Exception:
+                setattr(screen, name, None)
+
+
+def note_optimistic_insert(screen, delta=1):
+    """Advance display caret before the PTY redraws (Space lag fix).
+
+    Grok often leaves hardware x on the last glyph for a frame after Space;
+    without this the host block sits on the word until the next key.
+    Returns True if a display refresh should run immediately.
+    """
+    py = find_prompt_row(screen)
+    if py is None:
+        return False
+    # Only while editing the prompt row (or about to pin to it).
+    if screen.y != py and screen.y <= py + 1:
+        return False
+    base = int(screen.x) if screen.y == py else int(
+        getattr(screen, "input_caret_x", None) or content_end_col(screen, py)
+    )
+    if screen.y == py:
+        screen.optimistic_base_x = base
+    else:
+        screen.optimistic_base_x = base
+    screen.optimistic_x = _clamp_live_col(screen, py, base + int(delta))
+    screen.input_caret_x = screen.optimistic_x
+    return True
+
+
+def _display_col_on_prompt(screen, prompt_y):
+    """Hardware column, with optimistic insert advance if PTY not caught up."""
+    hw = int(screen.x)
+    opt = getattr(screen, "optimistic_x", None)
+    base = getattr(screen, "optimistic_base_x", None)
+    if opt is not None and base is not None:
+        if hw != base:
+            # PTY cursor moved — trust it and clear optimism.
+            clear_optimistic_caret(screen)
+            col = hw
+        else:
+            # Still waiting on PTY; show the post-key column (e.g. after Space).
+            col = int(opt)
+    else:
+        col = hw
+    return _clamp_live_col(screen, prompt_y, col)
+
+
 def note_hardware_on_prompt(screen):
     """If hardware cursor is on the prompt, remember editable column.
 
@@ -174,14 +227,8 @@ def note_hardware_on_prompt(screen):
     py = find_prompt_row(screen)
     if py is None or screen.y != py:
         return
-    start = input_start_col(screen, py)
-    limit = field_right_limit(screen, py)
-    if start <= screen.x <= limit:
-        screen.input_caret_x = int(screen.x)
-    elif screen.x > limit:
-        screen.input_caret_x = limit
-    elif screen.x < start:
-        screen.input_caret_x = start
+    col = _display_col_on_prompt(screen, py)
+    screen.input_caret_x = col
 
 
 def adjust_display_caret(screen, cy, cx):
@@ -193,10 +240,10 @@ def adjust_display_caret(screen, cy, cx):
     hist = 0 if screen.alt_screen else len(screen.history)
     note_hardware_on_prompt(screen)
 
-    # Live on the prompt row: trust hardware column (Grok keeps the cursor here).
+    # Live on the prompt row: hardware column + optimistic Space/print advance.
     # Never collapse to content_end — trailing spaces are real insertion points.
     if screen.y == py:
-        col = _clamp_live_col(screen, py, screen.x)
+        col = _display_col_on_prompt(screen, py)
         screen.input_caret_x = col
         return hist + py, col
     if screen.y == py + 1:
@@ -228,10 +275,11 @@ def nudge_input_caret(screen, delta):
     # Only nudge when we would pin (hardware not on the prompt).
     if screen.y <= py + 1:
         return False
+    clear_optimistic_caret(screen)
     col = getattr(screen, "input_caret_x", None)
     if col is None:
         col = content_end_col(screen, py)
-    screen.input_caret_x = _clamp_input_col(screen, py, col + delta)
+    screen.input_caret_x = _clamp_live_col(screen, py, col + delta)
     return True
 
 

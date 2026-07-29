@@ -451,6 +451,8 @@ try:
     )
     from .terminal.caret import (
         adjust_display_caret as _adjust_display_caret,
+        clear_optimistic_caret as _clear_optimistic_caret,
+        note_optimistic_insert as _note_optimistic_insert,
         pad_row_for_caret as _pad_row_for_caret,
     )
     from .terminal.mouse import (
@@ -512,6 +514,8 @@ except ImportError as _term_imp_err:
         )
         from ai.terminal.caret import (
             adjust_display_caret as _adjust_display_caret,
+            clear_optimistic_caret as _clear_optimistic_caret,
+            note_optimistic_insert as _note_optimistic_insert,
             pad_row_for_caret as _pad_row_for_caret,
         )
         from ai.terminal.mouse import (
@@ -2989,6 +2993,22 @@ class AiTerminalKeypressCommand(sublime_plugin.TextCommand):
                 "left", "right", "up", "down",
             ))
             kl = key.lower()
+            # Optimistic caret: Grok often leaves hardware x on the last glyph
+            # for a frame after Space/printables — host block looked stuck on
+            # the word until the next key. Advance display immediately.
+            if not ctrl and not alt:
+                if kl in _NO_SCROLL_KEYS or kl in (
+                    "escape", "enter", "tab", "insert", "delete",
+                ):
+                    _clear_optimistic_caret(term.screen)
+                elif kl == "backspace":
+                    if _note_optimistic_insert(term.screen, -1):
+                        term.screen.dirty = True
+                        _schedule_render(term)
+                elif kl == "space" or (len(key) == 1 and key.isprintable()):
+                    if _note_optimistic_insert(term.screen, +1):
+                        term.screen.dirty = True
+                        _schedule_render(term)
             # Fullscreen / mouse-tracking TUIs (Junie, Grok): never yank the
             # viewport on every printable — that fought mid-line caret and
             # made the next char land at EOL. Pin to rest instead.

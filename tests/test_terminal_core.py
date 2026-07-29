@@ -353,6 +353,31 @@ class TestCaretContentEnd(unittest.TestCase):
         cy2, cx2 = adjust_display_caret(scr, 4, 0)
         self.assertEqual((cy2, cx2), (2, after_space))
 
+    def test_optimistic_space_advances_before_pty(self):
+        """Space while PTY x still on last letter → display moves ahead."""
+        from ai.terminal.screen import Screen
+        from ai.terminal.caret import (
+            adjust_display_caret,
+            note_optimistic_insert,
+            input_start_col,
+        )
+
+        scr = Screen(80, 3)
+        box = "  \u2502 > hi" + (" " * 40) + "\u2502"
+        for i, ch in enumerate(box[:80]):
+            scr.grid[1][i] = ch
+        start = input_start_col(scr, 1)
+        # Hardware still on last letter 'i' (start+1); Space not applied yet.
+        scr.x, scr.y = start + 1, 1
+        self.assertTrue(note_optimistic_insert(scr, +1))
+        cy, cx = adjust_display_caret(scr, 1, scr.x)
+        self.assertEqual(cx, start + 2)  # after optimistic space
+        # PTY catches up to same column → clear optimism, stay put.
+        scr.x = start + 2
+        cy2, cx2 = adjust_display_caret(scr, 1, scr.x)
+        self.assertEqual(cx2, start + 2)
+        self.assertIsNone(getattr(scr, "optimistic_x", None))
+
     def test_content_end_stops_at_box_border(self):
         from ai.terminal.screen import Screen
         from ai.terminal.caret import content_end_col, input_start_col
