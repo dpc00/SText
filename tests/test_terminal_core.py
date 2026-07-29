@@ -222,25 +222,26 @@ class TestCaretContentEnd(unittest.TestCase):
 
 
 class TestHostCursor(unittest.TestCase):
-    def test_pads_and_block_glyph_when_absent(self):
-        """Grok-style: cursor past rstripped blanks — pad + █ + reverse."""
+    def test_pads_block_glyph_no_reverse(self):
+        """Grok-style: pad + █, attrs clean; host_cursor scope applied by caller."""
         rows = [[(">", 0), (" ", 0), ("h", 0), ("i", 0)]]
         self.assertTrue(cell_needs_host_cursor(rows, 0, 4))
-        out, painted = paint_host_cursor(rows, 0, 4)  # insert point after "hi"
+        out, painted = paint_host_cursor(rows, 0, 4)
         self.assertTrue(painted)
         self.assertEqual(len(out[0]), 5)
         ch, attr = out[0][4]
         self.assertEqual(ch, "\u2588")
-        self.assertTrue(attr & REVERSE)
+        self.assertEqual(attr, 0)
+        self.assertFalse(attr & REVERSE)
         text, regs = build_text_and_regions(out)
-        # reverse-of-default → visible black-on-white scope
-        self.assertTrue(any(r[2] == "ai.fb.1.16" for r in regs))
+        self.assertFalse(any(r[2] == "ai.fb.1.16" for r in regs))
         off = cursor_text_offset(out, 0, 4)
         self.assertEqual(off, 4)
         self.assertEqual(text[off], "\u2588")
-        rev = [r for r in regs if r[0] <= off < r[1]]
-        self.assertEqual(len(rev), 1)
-        self.assertEqual(rev[0][2], "ai.fb.1.16")
+        punched = punch_host_cursor_region(regs, off)
+        host = [r for r in punched if r[2] == HOST_CURSOR_SCOPE]
+        self.assertEqual(len(host), 1)
+        self.assertEqual(host[0][:2], [4, 5])
 
     def test_leaves_existing_reverse(self):
         """Claude-style: app already reverse-painted the cursor cell."""
@@ -250,23 +251,16 @@ class TestHostCursor(unittest.TestCase):
         self.assertFalse(painted)
         self.assertEqual(out[0][0], ("x", REVERSE))
 
-    def test_mid_line_ors_reverse_keeps_char(self):
+    def test_mid_line_keeps_char_no_attr_mutate(self):
         rows = [[("a", 0), ("b", 0), ("c", 0)]]
         out, painted = paint_host_cursor(rows, 0, 1)
         self.assertTrue(painted)
-        self.assertEqual(out[0][1][0], "b")  # non-blank: reverse glyph, not █
-        self.assertTrue(out[0][1][1] & REVERSE)
+        self.assertEqual(out[0][1][0], "b")
+        self.assertEqual(out[0][1][1], 0)
         self.assertEqual(out[0][0][1], 0)
-        text, regs = build_text_and_regions(out)
-        off = cursor_text_offset(out, 0, 1)
-        self.assertEqual(off, 1)
-        self.assertEqual(text[off], "b")
-        covering = [r for r in regs if r[0] <= off < r[1]]
-        self.assertEqual(len(covering), 1)
-        self.assertEqual(covering[0][2], "ai.fb.1.16")
 
     def test_punch_exclusive_over_color_run(self):
-        """punch helper still isolates HOST_CURSOR_SCOPE (legacy/optional)."""
+        """Mid-line host cursor must not share the cell with ai.fb.* scopes."""
         rows = [[("a", pack_attr(fg=2)), ("b", pack_attr(fg=2)), ("c", pack_attr(fg=2))]]
         out, painted = paint_host_cursor(rows, 0, 1)
         self.assertTrue(painted)

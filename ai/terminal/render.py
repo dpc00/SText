@@ -24,26 +24,23 @@ def cell_needs_host_cursor(rows, cy, cx):
     return not bool(attr & REVERSE)
 
 
-# Full block: ST add_regions often paints no fill on a lone space, so a
-# reverse-video space at EOL is invisible even when the region/scope is correct.
+# ST often paints no fill on a lone space under add_regions, so a blank
+# host-cursor cell is invisible. Use a full block glyph (display-only).
 _HOST_CURSOR_GLYPH = "\u2588"  # █
 
 
 def paint_host_cursor(rows, cy, cx):
-    """Ensure a visible cursor cell when the app did not SGR-reverse it.
+    """Ensure a drawable cell at the PTY cursor for host visibility.
 
-    The ST host caret is forced invisible (scheme caret = background) so
-    Claude/ratatui reverse-video cursors are not doubled. Apps that never
-    SGR-reverse the cursor cell (Grok --minimal, plain shells) then show
-    no insertion point until a keystroke.
+    Stable design (2026-07-28, permanent host_cursor scope):
+      - ST host caret is invisible so Claude reverse-video is not doubled.
+      - If the app already SGR-reversed the cell, do nothing (app cursor).
+      - Otherwise pad the cell and leave attrs alone; caller tags
+        HOST_CURSOR_SCOPE (not reverse/ai.fb.1.16 — that raced and looked stuck).
+      - Blank/space cells use █ so the host scope has a solid glyph to paint
+        (space-only regions frequently show no fill in ST).
 
-    Host synthesis ORs REVERSE onto the cell so it rides the normal ai.fb.*
-    colour path. Blank/space cells also become a full-block glyph (█): reverse
-    on a space is frequently invisible under ST add_regions, while reverse on
-    █ is a solid block. Display-only — never written to the PTY.
-
-    Returns (rows, host_painted). host_painted is True when we synthesized
-    the cursor cell (caller may skip double-applying a host scope).
+    Returns (rows, host_painted). host_painted True → apply HOST_CURSOR_SCOPE.
     """
     if rows is None or cy is None or cx is None:
         return rows, False
@@ -51,16 +48,18 @@ def paint_host_cursor(rows, cy, cx):
         return rows, False
     rows = list(rows)
     row = list(rows[cy])
-    # Cursor often sits past rstripped trailing spaces; pad so the cell exists.
+    # Cursor often sits past rstripped trailing spaces; pad so the cell exists
+    # for cursor_text_offset + a one-cell host_cursor region.
     while len(row) <= cx:
         row.append((" ", 0))
     ch, attr = row[cx]
     if attr & REVERSE:
         rows[cy] = row
         return rows, False
+    # Display-only glyph on blanks so host_cursor fill is visible.
     if not ch or ch in (" ", "\u00a0"):
         ch = _HOST_CURSOR_GLYPH
-    row[cx] = (ch, attr | REVERSE)
+    row[cx] = (ch, 0)
     rows[cy] = row
     return rows, True
 
