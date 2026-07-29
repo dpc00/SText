@@ -180,6 +180,47 @@ class TestRender(unittest.TestCase):
         self.assertEqual(red_regs[0][1] - red_regs[0][0], 2)
 
 
+class TestCaretContentEnd(unittest.TestCase):
+    def _row(self, s: str, cols: int = 0):
+        from ai.terminal.screen import Screen
+        from ai.terminal.caret import content_end_col, input_start_col, find_prompt_row
+
+        cols = cols or max(len(s), 40)
+        scr = Screen(cols, 3)
+        for i, ch in enumerate(s[:cols]):
+            scr.grid[0][i] = ch
+        return scr, content_end_col, input_start_col, find_prompt_row
+
+    def test_excludes_right_clock_after_gap(self):
+        """Grok: `> hello world` + pad + `7:52 AM` must end after 'world'."""
+        #        012345678901234567890...
+        line = "> hello world" + (" " * 20) + "7:52 AM"
+        scr, content_end_col, input_start_col, _ = self._row(line, cols=len(line) + 2)
+        self.assertEqual(input_start_col(scr, 0), 2)
+        # after 'd' of world
+        self.assertEqual(content_end_col(scr, 0), 2 + len("hello world"))
+
+    def test_empty_field_ignores_clock(self):
+        """Empty Grok prompt: only right clock → seat at input start."""
+        line = "> " + (" " * 30) + "7:52 AM"
+        scr, content_end_col, input_start_col, _ = self._row(line, cols=len(line) + 2)
+        start = input_start_col(scr, 0)
+        self.assertEqual(content_end_col(scr, 0), start)
+
+    def test_single_spaces_inside_text_kept(self):
+        line = "> a b c"
+        scr, content_end_col, _, _ = self._row(line)
+        self.assertEqual(content_end_col(scr, 0), len(line))
+
+    def test_spaced_prompt_marker(self):
+        """Junie pads before `>`."""
+        line = "   > hi"
+        scr, content_end_col, input_start_col, find_prompt_row = self._row(line)
+        self.assertEqual(find_prompt_row(scr), 0)
+        self.assertEqual(input_start_col(scr, 0), 5)
+        self.assertEqual(content_end_col(scr, 0), 7)
+
+
 class TestHostCursor(unittest.TestCase):
     def test_pads_without_reverse_when_absent(self):
         """Grok-style: cursor past rstripped blanks — pad only, no ai.fb.1.16."""

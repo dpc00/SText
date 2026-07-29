@@ -73,15 +73,38 @@ def input_start_col(screen, prompt_y):
     return nxt
 
 
+# Long blank run after input text = pad before right-side chrome (Grok clock).
+# Single/double spaces stay part of the typed field; 4+ ends the field.
+_CONTENT_GAP = 4
+
+
 def content_end_col(screen, prompt_y):
-    """Column after last non-blank on the prompt (insert point at end of text)."""
+    """Column after last non-blank of the *input field* (not right-side chrome).
+
+    Grok paints a clock on the same row as `>` (e.g. `7:52 AM` after a long
+    pad). Using the absolute last non-blank parked the host caret on the clock
+    so the command line looked cursorless. Stop at a run of GAP blanks; text
+    after that gap is chrome. Empty field (only chrome) seats at input_start.
+    """
     row = screen.grid[prompt_y]
-    end = input_start_col(screen, prompt_y)
-    for i, ch in enumerate(row):
-        if ch not in (" ", "\u00a0"):
-            end = i + 1
-    # Empty input: seat at start of field (after `>` / `>\xa0`).
     start = input_start_col(screen, prompt_y)
+    end = start
+    gap = 0
+    seen_text = False
+    n = min(len(row), screen.cols)
+    for i in range(start, n):
+        ch = row[i]
+        if ch in (" ", "\u00a0"):
+            gap += 1
+            if seen_text and gap >= _CONTENT_GAP:
+                break
+            continue
+        # Non-blank after a long pad from field start → right chrome only.
+        if gap >= _CONTENT_GAP:
+            break
+        gap = 0
+        seen_text = True
+        end = i + 1
     return min(max(end, start), screen.cols - 1)
 
 
