@@ -1418,10 +1418,12 @@ class _Terminal:
 
     def kill(self):
         # Drop any in-flight mouse hold so a restart doesn't inherit it.
+        vid = self.view.id()
         try:
-            _mouse_force_release(self, self.view.id())
+            _mouse_force_release(self, vid)
         except Exception:
-            _MOUSE_HOLD.pop(self.view.id(), None)
+            _MOUSE_HOLD.pop(vid, None)
+        _MOUSE_LAST_CLICK.pop(vid, None)
         self._last_mouse_cell = None
         # Recording patch: emit an "x" (exit) event and close the .cast
         # file so the recording ends cleanly. The stream-layer "o" events
@@ -2000,16 +2002,21 @@ def _event_to_pty_cell(view, term, event):
 # Button-hold state for 1002/1003:
 #   view_id -> (proto_btn, col, row, gen, t0, moved)
 # ST never delivers a clean mouse-up. We release after idle so:
-#   click  = press … idle → release
-#   drag   = press … motion… idle → release
-#   double = press … (2nd hit same cell or ST by=words) → release + full click
+#   tap   = press … short idle → release  (touchpad-friendly)
+#   drag  = press … motion… longer idle → release
+#   double = 2nd hit same cell / ST by=words → release + full click
 _MOUSE_HOLD = {}
-# Long enough to press-hold and drag a TUI scroll thumb before auto-release.
-# 90ms was too short: first click "completed" before a double-click/grab.
-_MOUSE_RELEASE_MS = 450
-# If a second press lands on the same cell within this window, treat as
-# double-click even when ST does not set by=words.
-_MOUSE_DBLCLICK_MS = 500
+# Last completed click (for double-tap after release): view_id -> (col, row, t)
+_MOUSE_LAST_CLICK = {}
+# Touchpad taps are one short drag_select; complete them quickly.
+_MOUSE_TAP_RELEASE_MS = 130
+# After the pointer actually moves (thumb drag), keep hold longer.
+_MOUSE_DRAG_RELEASE_MS = 500
+# Touchpads are slower than mice; allow a wider double-tap window.
+_MOUSE_DBLCLICK_MS = 700
+# Rows at the bottom of a fullscreen TUI are usually the input line — bad
+# default for two-finger scroll (would aim at the prompt, not the history).
+_WHEEL_AVOID_BOTTOM_ROWS = 4
 
 
 def _mouse_force_release(term, view_id):
@@ -2023,11 +2030,12 @@ def _mouse_force_release(term, view_id):
         term.send_string(
             _encode_mouse(btn, col, row, press=False, sgr=sgr)
         )
+        _MOUSE_LAST_CLICK[view_id] = (col, row, time.time())
     except Exception:
         pass
 
 
-def _schedule_mouse_release(view, gen):
+def _schedule_mouse_release(view, gen, delay_ms):
     """Release the held button if no further drag events arrive."""
     vid = view.id()
 
@@ -2038,7 +2046,38 @@ def _schedule_mouse_release(view, gen):
         t = _Terminal.from_id(vid)
         _mouse_force_release(t, vid)
 
-    sublime.set_timeout(_fire, _MOUSE_RELEASE_MS)
+    sublime.set_timeout(_fire, int(delay_ms))
+
+
+def _send_full_click(term, view_id, proto, col, row, sgr):
+    """Press+release one click and remember it for double-tap detection."""
+    _mouse_force_release(term, view_id)
+    term.send_string(_encode_click(proto, col, row, sgr=sgr))
+    _MOUSE_LAST_CLICK[view_id] = (col, row, time.time())
+
+
+def _wheel_locus(view, term):
+    """1-based (col, row) for wheel reports when ST gives no pointer.
+
+    Priority:
+      1) last click/drag cell (user was aiming at scrollbar / history)
+      2) mid-history cell (avoid command-line rows at the bottom)
+    Never prefer the caret: on Grok it sits on the input line, so two-finger
+    scroll would miss the scrollable panel entirely.
+    """
+    cell = getattr(term, "_last_mouse_cell", None)
+    if cell is not None:
+        return cell
+    cols = max(1, int(term.screen.cols))
+    rows = max(1, int(term.screen.rows))
+    # Aim at the history panel: horizontal centre, vertical upper-mid.
+    # Right-edge bias helps TUIs that only scroll when the pointer is near
+    # the scrollbar column (Grok paints chrome on the far right).
+    avoid = min(_WHEEL_AVOID_BOTTOM_ROWS, max(0, rows - 1))
+    usable = max(1, rows - avoid)
+    row = max(1, (usable + 1) // 2)
+    col = max(1, cols - 1)  # near right edge / scroll chrome
+    return col, row
 
 
 def _route_mouse_click(view, term, event, *, discrete_click=False):
@@ -2052,6 +2091,9 @@ def _route_mouse_click(view, term, event, *, discrete_click=False):
 
     Multi-click often arrives without event x/y — fall back to last cell so
     double-clicks on the scroll control still reach the PTY.
+
+    Touchpad notes: taps are short; we auto-release quickly until motion is
+    seen, then keep the hold longer for drag-grab. Double-tap window is wide.
     """
     mode = term.screen.mouse_tracking
     if not mode:
@@ -2076,18 +2118,28 @@ def _route_mouse_click(view, term, event, *, discrete_click=False):
 
     # Multi-click or click-only mode: complete any prior hold, then one click.
     if discrete_click or mode < 1002:
-        _mouse_force_release(term, vid)
-        term.send_string(_encode_click(proto, col, row, sgr=sgr))
+        _send_full_click(term, vid, proto, col, row, sgr)
         return True
 
     # 1002 (drag) / 1003 (any-event): press, then motion while held.
     hold = _MOUSE_HOLD.get(vid)
     if hold is None:
+        # Fresh press. If a previous click just finished on this cell, this is
+        # the second half of a double-tap (common on touchpads after release).
+        prev = _MOUSE_LAST_CLICK.get(vid)
+        if (
+            prev is not None
+            and prev[0] == col
+            and prev[1] == row
+            and (now - prev[2]) * 1000.0 <= _MOUSE_DBLCLICK_MS
+        ):
+            _send_full_click(term, vid, proto, col, row, sgr)
+            return True
         seq = _encode_mouse(proto, col, row, press=True, sgr=sgr)
         gen = 1
         _MOUSE_HOLD[vid] = (proto, col, row, gen, now, False)
         term.send_string(seq)
-        _schedule_mouse_release(view, gen)
+        _schedule_mouse_release(view, gen, _MOUSE_TAP_RELEASE_MS)
         return True
 
     btn_prev, c_prev, r_prev, gen_prev, t0, moved = hold
@@ -2098,8 +2150,7 @@ def _route_mouse_click(view, term, event, *, discrete_click=False):
     # double-click (ST sometimes omits by=words). Finish first click, send
     # a full second click. Do NOT emit "motion" — that ate double-clicks.
     if same_cell and not moved and elapsed_ms <= _MOUSE_DBLCLICK_MS:
-        _mouse_force_release(term, vid)
-        term.send_string(_encode_click(proto, col, row, sgr=sgr))
+        _send_full_click(term, vid, proto, col, row, sgr)
         return True
 
     # Same cell, still holding, no movement: ST re-delivery / jitter. Keep
@@ -2107,7 +2158,8 @@ def _route_mouse_click(view, term, event, *, discrete_click=False):
     if same_cell:
         gen = gen_prev + 1
         _MOUSE_HOLD[vid] = (proto, col, row, gen, t0, moved)
-        _schedule_mouse_release(view, gen)
+        delay = _MOUSE_DRAG_RELEASE_MS if moved else _MOUSE_TAP_RELEASE_MS
+        _schedule_mouse_release(view, gen, delay)
         return True
 
     # Cell changed → drag motion (scroll-thumb grab).
@@ -2115,41 +2167,25 @@ def _route_mouse_click(view, term, event, *, discrete_click=False):
     gen = gen_prev + 1
     _MOUSE_HOLD[vid] = (proto, col, row, gen, t0, True)
     term.send_string(seq)
-    _schedule_mouse_release(view, gen)
+    _schedule_mouse_release(view, gen, _MOUSE_DRAG_RELEASE_MS)
     return True
 
 
 def _route_mouse_wheel(view, term, amount):
-    """Send wheel-up/down when mouse tracking is on. Return True if handled."""
+    """Send wheel-up/down when mouse tracking is on. Return True if handled.
+
+    Aimed at laptop two-finger scroll: ST maps that to scroll_lines with no
+    pointer coords, so we pick a sensible history-panel locus (see
+    _wheel_locus) instead of the command-line caret.
+    """
     if not term.screen.mouse_tracking:
         return False
-    # Locus priority (xterm uses the cell under the pointer; ST does not pass
-    # pointer coords on scroll_lines):
-    #   1) last click/drag cell (where the user was just pointing — scrollbar)
-    #   2) caret / selection point
-    #   3) bottom-right of the grid
-    cell = getattr(term, "_last_mouse_cell", None)
-    if cell is None:
-        try:
-            pt = view.sel()[0].b if view.sel() else 0
-            row, col = view.rowcol(pt)
-        except Exception:
-            row, col = 0, 0
-        cell = _view_point_to_cell(
-            row,
-            col,
-            hist_len=_mouse_hist_len(term),
-            screen_rows=term.screen.rows,
-            screen_cols=term.screen.cols,
-        )
-    if cell is None:
-        col, row = term.screen.cols, term.screen.rows
-    else:
-        col, row = cell
+    col, row = _wheel_locus(view, term)
     # ST scroll_lines: positive amount moves content down (wheel up).
     direction_up = float(amount) > 0
-    # One report per notch; multi-line amounts fire multiple wheel ticks.
-    n = max(1, min(abs(int(round(float(amount)))), 5))
+    # Trackpad flings report larger |amount|; allow more ticks than a mouse
+    # wheel notch so two-finger swipes actually move TUI history.
+    n = max(1, min(abs(int(round(float(amount)))), 12))
     sgr = term.screen.mouse_sgr
     seq = "".join(_encode_wheel(direction_up, col, row, sgr=sgr) for _ in range(n))
     term._auto_follow = False
