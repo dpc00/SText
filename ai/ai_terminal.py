@@ -531,10 +531,14 @@ _REGISTERED_SCOPES = set()
 _SCHEME_PATH = None  # Safely initialized inside _init_dynamic_color_scheme using sublime.packages_path()
 # Permanent high-contrast block for host-synthesized cursors (Grok --minimal,
 # plain shells). Must not depend on dynamic ai.fb.* registration.
+# Foreground must be LIGHT: the host cell is a full-block glyph (█) painted by
+# add_regions. ST often applies only the text colour, not the region fill; a
+# black foreground then makes █ black-on-black (invisible). White █ reads as a
+# solid block even when fill fails.
 _HOST_CURSOR_RULE = {
     "scope": "ai.terminal.host_cursor",
     "background": "#CCCCCC",
-    "foreground": "#000000",
+    "foreground": "#FFFFFF",
 }
 _BASE_SCHEME = {
     "name": "AI Terminal",
