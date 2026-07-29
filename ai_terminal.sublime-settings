@@ -175,6 +175,17 @@
                 "AI_TERMINAL_LOG_LINES": "1"
             }
         },
+        // Same as Grok Build but --no-alt-screen: A/B when ai_terminal first
+        // paint / folder-trust modal goes blank under fullscreen alt-screen.
+        "Grok Build (no-alt)": {
+            "launch_command": [
+                "grok",
+                "--no-alt-screen"
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1"
+            }
+        },
         "JCode": {
             "launch_command": [
                 "jcode"
