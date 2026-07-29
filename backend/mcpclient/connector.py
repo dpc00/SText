@@ -13,6 +13,7 @@ Claude Code uses, so the model already knows these names.
 import asyncio
 import json
 import os
+import shutil
 import sys
 from contextlib import AsyncExitStack
 
@@ -24,6 +25,76 @@ from mcp.client.streamable_http import streamablehttp_client
 
 def _log(msg):
     print(msg, file=sys.stderr, flush=True)
+
+
+def _resolve_stdio_command(command, args):
+    """Resolve bare Windows shims (npx/bun) to absolute executables.
+
+    Hosts that spawn without a shell (and some CreateProcess paths) cannot
+    find bare ``npx`` — only ``npx.cmd`` / full paths. Prefer absolute paths
+    so PATH-less GUI launches still work.
+    """
+    if not command:
+        return command, list(args or [])
+    args = list(args or [])
+    resolved = command
+    # Already absolute and exists — keep.
+    if os.path.isabs(command) and os.path.exists(command):
+        resolved = command
+    else:
+        which = shutil.which(command)
+        if which:
+            resolved = which
+        elif sys.platform == "win32":
+            base = os.path.basename(command).lower()
+            # Common install locations when PATH is stripped (Explorer/ST/JVM).
+            candidates = []
+            if base in ("npx", "npx.cmd"):
+                candidates = [
+                    r"C:\Program Files\nodejs\npx.cmd",
+                    os.path.expandvars(r"%ProgramFiles%\nodejs\npx.cmd"),
+                ]
+            elif base in ("bun", "bun.exe"):
+                candidates = [
+                    os.path.expanduser(r"~\.bun\bin\bun.exe"),
+                    os.path.expandvars(r"%USERPROFILE%\.bun\bin\bun.exe"),
+                ]
+            elif base in ("node", "node.exe"):
+                candidates = [
+                    r"C:\Program Files\nodejs\node.exe",
+                    os.path.expandvars(r"%ProgramFiles%\nodejs\node.exe"),
+                ]
+            for c in candidates:
+                if c and os.path.exists(c):
+                    resolved = c
+                    break
+    if resolved != command:
+        _log(f"[mcp] resolved command {command!r} -> {resolved!r}")
+    return resolved, args
+
+
+def _stdio_env(cfg_env):
+    """Build env for stdio servers: always keep a usable PATH for npx/node/bun."""
+    env = {**os.environ}
+    if cfg_env:
+        env.update({str(k): str(v) for k, v in cfg_env.items()})
+    # Ensure nodejs + bun bins are on PATH even if parent env is minimal.
+    extras = []
+    for p in (
+        r"C:\Program Files\nodejs",
+        os.path.expandvars(r"%ProgramFiles%\nodejs"),
+        os.path.expanduser(r"~\.bun\bin"),
+        os.path.expandvars(r"%APPDATA%\npm"),
+    ):
+        if p and os.path.isdir(p) and p not in extras:
+            extras.append(p)
+    path = env.get("PATH") or env.get("Path") or ""
+    parts = [p for p in path.split(os.pathsep) if p]
+    for p in reversed(extras):
+        if p.lower() not in {x.lower() for x in parts}:
+            parts.insert(0, p)
+    env["PATH"] = os.pathsep.join(parts)
+    return env
 
 
 class ServerConnector:
@@ -90,13 +161,12 @@ class ServerConnector:
                 if not command:
                     _log(f"[mcp] {name}: stdio server missing command, skipping")
                     return
-                # StdioServerParameters.env=None inherits our process env. When a
-                # server supplies env vars, merge them ON TOP of os.environ so
-                # PATH (and npx/bun lookup) still works.
-                env = cfg.get("env")
-                if env:
-                    env = {**os.environ, **env}
-                params = StdioServerParameters(command=command, args=cfg.get("args", []), env=env)
+                command, args = _resolve_stdio_command(command, cfg.get("args", []))
+                # Always pass a full env with PATH that includes nodejs/bun.
+                # Bare env=None uses the SDK's reduced default env, which can
+                # miss user-scoped bins depending on how the parent was launched.
+                env = _stdio_env(cfg.get("env"))
+                params = StdioServerParameters(command=command, args=args, env=env)
                 transport = await local.enter_async_context(stdio_client(params))
                 read, write = transport
                 session = await local.enter_async_context(ClientSession(read, write))
