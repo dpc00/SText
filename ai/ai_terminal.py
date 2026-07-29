@@ -2200,16 +2200,13 @@ def _scroll_tick_count(amount):
 def _route_mouse_wheel(view, term, amount):
     """Forward trackpad/mouse-wheel scroll to the PTY. Always tries to send.
 
-    ST trackpad often only pans the core view (jiggle). We translate that into
-    bytes the TUI understands. Wheel-only was not enough for Grok — also send
-    PageUp/PageDown and arrow keys so *something* moves history.
+    amount > 0 → scroll toward *older* history (PageUp / wheel-up).
+    amount < 0 → scroll toward *newer* / live end (PageDown / wheel-down).
 
     Returns True if any bytes were written.
     """
-    # ST scroll_lines: positive amount moves content down (user finger up /
-    # "scroll up" to see earlier history) → wheel-up / PageUp.
     try:
-        direction_up = float(amount) > 0
+        direction_up = float(amount) > 0  # older history
     except (TypeError, ValueError):
         direction_up = True
     n = _scroll_tick_count(amount)
@@ -2217,19 +2214,19 @@ def _route_mouse_wheel(view, term, amount):
     term._last_scroll_send_t = time.time()
 
     parts = []
-    # 1) Page keys — most reliable for chat history TUIs
+    # Page keys — primary for chat history when scrolled back
     try:
         page = _get_key_code("pageup" if direction_up else "pagedown")
     except Exception:
         page = "\x1b[5~" if direction_up else "\x1b[6~"
     parts.append(page * n)
-    # 2) Arrows — finer step if page is ignored
+    # Arrows — finer steps
     try:
         arrow = _get_key_code("up" if direction_up else "down")
     except Exception:
         arrow = "\x1b[A" if direction_up else "\x1b[B"
     parts.append(arrow * max(1, n))
-    # 3) Xterm wheel if the app enabled mouse tracking
+    # Xterm wheel (centre + right chrome) when mouse tracking is on
     if term.screen.mouse_tracking:
         col, row = _wheel_locus(view, term)
         sgr = term.screen.mouse_sgr
@@ -2238,8 +2235,6 @@ def _route_mouse_wheel(view, term, amount):
                 _encode_wheel(direction_up, col, row, sgr=sgr) for _ in range(n)
             )
         )
-        # Also fire wheel on the right chrome (scrollbar column) — some TUIs
-        # only honor wheel there.
         edge_col = max(1, int(term.screen.cols))
         if edge_col != col:
             parts.append(
@@ -2248,8 +2243,7 @@ def _route_mouse_wheel(view, term, amount):
                     for _ in range(n)
                 )
             )
-    seq = "".join(parts)
-    term.send_string(seq)
+    term.send_string("".join(parts))
     return True
 
 
@@ -3117,31 +3111,39 @@ _clamp_token = None
 def _vp_pan_to_tui_scroll(view, term, dy):
     """Turn an ST viewport y-dip into PTY scroll bytes.
 
-    Windows trackpads often only shove viewport_position (the jiggle). That
-    dip is the gesture. Throttle so clamp@8ms does not spam PageUp and make
-    the fight worse.
+    Mapping (matches user expectation when scrolled back in Grok history):
+      finger / content move UP (viewport y increases, dy > 0)
+          → older history (PageUp)  — amount > 0
+      finger / content move DOWN (viewport y decreases, dy < 0)
+          → newer / back toward live end (PageDown) — amount < 0
+
+    Previously dy>0 sent PageDown (inverted), and large negative dy was
+    dropped as "focus overshoot", so down-move did nothing at all.
     """
     lh = view.line_height() or 12.0
-    # Large negative y is ST view.show() overshoot on focus/hover — not a
-    # user scroll. Pin only; do not PageDown the TUI on every focus.
-    if dy < -lh * 1.5:
-        return False
     if abs(dy) < 1.5:
         return False
     now = time.time()
+    # True focus overshoot is a large one-shot negative jump with no recent
+    # user pan. Normal trackpad down-moves are small and must NOT be dropped.
+    last_pan = float(getattr(term, "_last_user_pan_t", 0.0) or 0.0)
+    if dy < -lh * 2.5 and (now - last_pan) > 0.4:
+        return False
     # Skip if scroll_lines / mousemap already fed the PTY for this gesture.
     last = float(getattr(term, "_last_scroll_send_t", 0.0) or 0.0)
     if (now - last) < 0.05:
         return False
     ticks = max(1, min(int(round(abs(dy) / max(lh * 0.25, 3.0))), 6))
-    # dy > 0: viewport moved down → later content → amount < 0
-    amount = -float(ticks) if dy > 0 else float(ticks)
+    # INVERT relative to old mapping: dy > 0 → older (amount > 0)
+    amount = float(ticks) if dy > 0 else -float(ticks)
+    term._last_user_pan_t = now
     try:
         n = int(getattr(term, "_vp_pan_log_n", 0) or 0)
         if n < 12:
             print(
                 f"[ai_terminal] trackpad pan→TUI scroll "
                 f"dy={dy:.1f}px ticks={ticks} amount={amount} "
+                f"({'older' if amount > 0 else 'newer'}) "
                 f"mouse={term.screen.mouse_tracking}"
             )
             term._vp_pan_log_n = n + 1
