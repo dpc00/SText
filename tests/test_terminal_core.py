@@ -378,6 +378,61 @@ class TestCaretContentEnd(unittest.TestCase):
         self.assertEqual(cx2, start + 2)
         self.assertIsNone(getattr(scr, "optimistic_x", None))
 
+    def test_optimistic_stacks_on_fast_typing(self):
+        """Rapid keys before PTY moves must advance display by key count."""
+        from ai.terminal.screen import Screen
+        from ai.terminal.caret import (
+            adjust_display_caret,
+            note_optimistic_insert,
+            input_start_col,
+        )
+
+        scr = Screen(80, 3)
+        box = "  \u2502 > " + (" " * 50) + "\u2502"
+        for i, ch in enumerate(box[:80]):
+            scr.grid[1][i] = ch
+        start = input_start_col(scr, 1)
+        # Empty field; hardware at start. Type 5 chars before PTY moves.
+        scr.x, scr.y = start, 1
+        for _ in range(5):
+            self.assertTrue(note_optimistic_insert(scr, +1))
+        cy, cx = adjust_display_caret(scr, 1, scr.x)
+        self.assertEqual(cx, start + 5)
+        # Partial catch-up: PTY advanced 2 cols; display stays at +5.
+        scr.x = start + 2
+        cy2, cx2 = adjust_display_caret(scr, 1, scr.x)
+        self.assertEqual(cx2, start + 5)
+        self.assertIsNotNone(getattr(scr, "optimistic_x", None))
+        # Sixth key stacks on the optimistic column, not hardware.
+        self.assertTrue(note_optimistic_insert(scr, +1))
+        cy3, cx3 = adjust_display_caret(scr, 1, scr.x)
+        self.assertEqual(cx3, start + 6)
+        # Full catch-up clears optimism.
+        scr.x = start + 6
+        cy4, cx4 = adjust_display_caret(scr, 1, scr.x)
+        self.assertEqual(cx4, start + 6)
+        self.assertIsNone(getattr(scr, "optimistic_x", None))
+
+    def test_optimistic_backspace_stacks(self):
+        from ai.terminal.screen import Screen
+        from ai.terminal.caret import (
+            adjust_display_caret,
+            note_optimistic_insert,
+            input_start_col,
+        )
+
+        scr = Screen(80, 3)
+        box = "  \u2502 > hello" + (" " * 40) + "\u2502"
+        for i, ch in enumerate(box[:80]):
+            scr.grid[1][i] = ch
+        start = input_start_col(scr, 1)
+        # Caret after 'hello'
+        scr.x, scr.y = start + 5, 1
+        self.assertTrue(note_optimistic_insert(scr, -1))
+        self.assertTrue(note_optimistic_insert(scr, -1))
+        cy, cx = adjust_display_caret(scr, 1, scr.x)
+        self.assertEqual(cx, start + 3)
+
     def test_content_end_stops_at_box_border(self):
         from ai.terminal.screen import Screen
         from ai.terminal.caret import content_end_col, input_start_col

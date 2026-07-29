@@ -1789,14 +1789,47 @@ def _measure(view):
 
 # ─── debounced renderer ──────────────────────────────────────────────────────
 
+# Throttle full paints. 40ms was fine for single keys; under burst typing each
+# frame does view.replace + add_regions on the whole TUI and starves ST's
+# key dispatch on Windows. Keep ~40ms for snappy single keys, but never paint
+# faster than MIN_INTERVAL during a continuous stream.
 _RENDER_MS = 40
+_RENDER_MIN_INTERVAL_MS = 55
 
 
 def _schedule_render(term):
     if term._render_pending:
+        # Mark that more work arrived while armed; _do_render re-arms if dirty.
+        term._render_coalesce = True
         return
     term._render_pending = True
-    sublime.set_timeout(lambda: _do_render(term), _RENDER_MS)
+    term._render_coalesce = False
+    delay = _RENDER_MS
+    last = getattr(term, "_last_render_mono", 0.0) or 0.0
+    if last:
+        # Cap paint rate so burst typing cannot schedule a full replace every
+        # key once the previous frame completes.
+        elapsed_ms = (time.monotonic() - last) * 1000.0
+        if elapsed_ms < _RENDER_MIN_INTERVAL_MS:
+            delay = max(delay, int(_RENDER_MIN_INTERVAL_MS - elapsed_ms))
+    sublime.set_timeout(lambda: _do_render(term), delay)
+
+
+def _plain_cells_signature(rows):
+    """Stable content fingerprint before host-cursor paint (no ST deps)."""
+    if not rows:
+        return ""
+    # Join chars only — attrs changes still need a full colour rebuild, so
+    # include a coarse attr token per cell. Cheap string, not a hash object.
+    parts = []
+    for row in rows:
+        for ch, attr in row:
+            parts.append(ch)
+            if attr:
+                parts.append("\x00")
+                parts.append(str(int(attr)))
+        parts.append("\n")
+    return "".join(parts)
 
 
 def _do_render(term):
@@ -1821,7 +1854,10 @@ def _do_render(term):
         rows, cy, cx = term.screen.render_cells()
         cy, cx = _adjust_display_caret(term.screen, cy, cx)
         rows = _pad_row_for_caret(rows, cy, cx)
-    term.screen.dirty = False
+        # Clear under the lock so a concurrent parser feed cannot set dirty
+        # then have us wipe it without painting that feed.
+        term.screen.dirty = False
+    plain_sig = _plain_cells_signature(rows)
     rows, _host_painted = _paint_host_cursor(rows, cy, cx)
     text, regions = _build_text_and_regions(rows)
     caret_off = _cursor_text_offset(rows, cy, cx)
@@ -1838,7 +1874,36 @@ def _do_render(term):
     text = _append_host_scroll_pad(text)
     # Drop any leftover HTML host-cursor phantoms from the prior experiment.
     _clear_host_cursor_phantom(view)
+
+    prev_plain = getattr(term, "_last_plain_sig", None)
+    prev_text = getattr(term, "_last_render_text", None)
+    prev_caret = getattr(term, "_last_caret_off", None)
+    # Burst typing / optimistic caret: screen content often unchanged between
+    # keys; only the host █ + ST selection move. Skip full colour rebuild and
+    # prefer small patches so the main thread can keep taking keypresses.
+    fast_caret = (
+        prev_plain is not None
+        and prev_plain == plain_sig
+        and prev_text is not None
+        and prev_text != text
+    )
+    skip_all = (
+        prev_text is not None
+        and prev_text == text
+        and prev_caret == (caret_off if caret_off is not None else -1)
+    )
+    if skip_all:
+        term._last_render_mono = time.monotonic()
+        if term.screen.dirty or getattr(term, "_render_coalesce", False):
+            term._render_coalesce = False
+            if term.screen.dirty:
+                _schedule_render(term)
+        return
+
     # Absolute caret offset (with top pad) so mid-line typing stays put.
+    # Do not pass prev_text through command args (ST JSON-serializes them;
+    # duplicating a full TUI buffer per key would reintroduce main-thread lag).
+    # AiTerminalRenderCommand diffs against the live view when fast_caret.
     view.run_command(
         "ai_terminal_render",
         {
@@ -1846,8 +1911,18 @@ def _do_render(term):
             "cursor": [cy, cx],
             "cursor_offset": caret_off if caret_off is not None else -1,
             "regions": regions,
+            "fast_caret": bool(fast_caret),
         },
     )
+    term._last_plain_sig = plain_sig
+    term._last_render_text = text
+    term._last_caret_off = caret_off if caret_off is not None else -1
+    term._last_render_mono = time.monotonic()
+    # If keys/PTY dirtied the screen while we painted, arm another frame.
+    if term.screen.dirty or getattr(term, "_render_coalesce", False):
+        term._render_coalesce = False
+        if term.screen.dirty:
+            _schedule_render(term)
 
 
 def _build_text_and_regions(rows):
@@ -3038,9 +3113,21 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
     """Replace the whole view with the current screen snapshot on the main thread.
 
     No key/menu/palette binding; invoked programmatically.
+
+    fast_caret: when only the host cursor glyph moved (optimistic typing),
+    patch the few changed characters instead of replacing the whole buffer and
+    rebuild only the host-cursor region. Keeps ST responsive under burst keys.
     """
 
-    def run(self, edit, text="", cursor=None, cursor_offset=-1, regions=None):
+    def run(
+        self,
+        edit,
+        text="",
+        cursor=None,
+        cursor_offset=-1,
+        regions=None,
+        fast_caret=False,
+    ):
         view = self.view
         view.set_read_only(False)
         # Only re-pin to the bottom if the user is already near it, so scrolling
@@ -3048,10 +3135,42 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
         vp = view.viewport_position()
         ve = view.viewport_extent()
         lh = view.line_height() or 20
-        view.replace(edit, sublime.Region(0, view.size()), text)
-        # Re-apply colour regions every frame: view.replace invalidates the old
-        # regions, and add_regions with the same key replaces what was there.
-        _apply_color_regions(view, regions or [])
+
+        patched = False
+        if fast_caret and text and view.size() == len(text):
+            # Diff live buffer vs new frame; host █ move is 1–2 cells.
+            cur = view.substr(sublime.Region(0, view.size()))
+            if len(cur) == len(text):
+                diffs = []
+                for i, (a, b) in enumerate(zip(cur, text)):
+                    if a != b:
+                        diffs.append(i)
+                        if len(diffs) > 4:
+                            break
+                if diffs and len(diffs) <= 4:
+                    for i in diffs:
+                        view.replace(edit, sublime.Region(i, i + 1), text[i])
+                    patched = True
+                    # Host cursor region only — full colour runs are still valid.
+                    host_rs = []
+                    for begin, end, scope in regions or []:
+                        if scope == _HOST_CURSOR_SCOPE:
+                            host_rs.append(sublime.Region(begin, end))
+                    key = _COLOR_KEY_PREFIX + _HOST_CURSOR_SCOPE
+                    if host_rs:
+                        view.add_regions(
+                            key, host_rs, scope=_HOST_CURSOR_SCOPE,
+                            flags=sublime.DRAW_NO_OUTLINE,
+                        )
+                    else:
+                        view.erase_regions(key)
+
+        if not patched:
+            view.replace(edit, sublime.Region(0, view.size()), text)
+            # Re-apply colour regions every frame: view.replace invalidates the old
+            # regions, and add_regions with the same key replaces what was there.
+            _apply_color_regions(view, regions or [])
+
         rest = _host_rest_y(view)
         real_h = _real_content_height(view)
         near_bottom = (vp[1] + ve[1]) >= (rest + real_h - lh * 2)
