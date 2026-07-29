@@ -24,16 +24,24 @@ def cell_needs_host_cursor(rows, cy, cx):
     return not bool(attr & REVERSE)
 
 
+# Blank host-cursor cells need a solid glyph: ST often paints no fill on a
+# lone space under add_regions. Display-only — never sent to the PTY.
+# Do NOT use an HTML LAYOUT_INLINE phantom: that inserts extra width after
+# the caret and reads as a phantom character on the command line.
+_HOST_CURSOR_GLYPH = "\u2588"  # █
+
+
 def paint_host_cursor(rows, cy, cx):
-    """Pad the PTY cursor cell; report whether the host must draw a block.
+    """Ensure a drawable cell at the PTY cursor for host visibility.
 
-    ST host caret stays invisible so Claude reverse-video is not doubled.
-    If the app already SGR-reversed the cell, host_painted=False (app cursor).
-    Otherwise pad past rstrip so cursor_text_offset is valid and return
-    host_painted=True — the ST host draws an HTML phantom block (not
-    colour-scheme regions: one-cell fills proved unreliable).
+    Stable design (in-buffer block, no inserted phantom):
+      - ST host caret is invisible so Claude reverse-video is not doubled.
+      - If the app already SGR-reversed the cell, do nothing (app cursor).
+      - Otherwise pad the cell; blanks become █ so HOST_CURSOR_SCOPE has a
+        solid glyph. Caller punches HOST_CURSOR_SCOPE over that one cell.
+      - Mid-line keeps the real character (grey block over it).
 
-    Returns (rows, host_painted).
+    Returns (rows, host_painted). host_painted True → apply HOST_CURSOR_SCOPE.
     """
     if rows is None or cy is None or cx is None:
         return rows, False
@@ -41,13 +49,18 @@ def paint_host_cursor(rows, cy, cx):
         return rows, False
     rows = list(rows)
     row = list(rows[cy])
-    # Cursor often sits past rstripped trailing spaces; pad so the cell exists.
+    # Cursor often sits past rstripped trailing spaces; pad so the cell exists
+    # for cursor_text_offset + a one-cell host_cursor region.
     while len(row) <= cx:
         row.append((" ", 0))
-    _ch, attr = row[cx]
-    rows[cy] = row
+    ch, attr = row[cx]
     if attr & REVERSE:
+        rows[cy] = row
         return rows, False
+    if not ch or ch in (" ", "\u00a0"):
+        ch = _HOST_CURSOR_GLYPH
+    row[cx] = (ch, 0)
+    rows[cy] = row
     return rows, True
 
 
