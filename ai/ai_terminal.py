@@ -2197,43 +2197,48 @@ def _scroll_tick_count(amount):
 
 
 def _route_mouse_wheel(view, term, amount):
-    """Forward trackpad/mouse-wheel scroll to the PTY.
+    """Forward trackpad scroll to the PTY using *content-grab* semantics.
 
-    amount > 0 → older history; amount < 0 → newer / toward live end.
+    The user drags the *text* (like grabbing the buffer), not the scroll
+    thumb. That is the opposite of the TUI scroll-button, which moves the
+    *view*:
 
-    Feel: prefer *fine* steps (wheel + a few arrows). Page keys only on a
-    real fling — PageUp every nudge was correct but harsh.
+      amount > 0 → text dragged downward on screen → reveal older (above)
+      amount < 0 → text dragged upward on screen   → reveal newer (below)
+
+    Internally we still emit Page/arrow/wheel "up" for older and "down" for
+    newer; only the sign of `amount` vs finger motion is content-grab.
+
+    Feel: fine steps (wheel + arrows); one Page only on a fling.
     """
     try:
-        direction_up = float(amount) > 0  # older history
+        # amount > 0 → older history (keys/wheel "up")
+        see_older = float(amount) > 0
     except (TypeError, ValueError):
-        direction_up = True
+        see_older = True
     n = _scroll_tick_count(amount)
     term._auto_follow = False
     term._last_scroll_send_t = time.time()
 
     parts = []
-    # Fine: arrows (1–3 lines) — main continuous feel on a pad
     try:
-        arrow = _get_key_code("up" if direction_up else "down")
+        arrow = _get_key_code("up" if see_older else "down")
     except Exception:
-        arrow = "\x1b[A" if direction_up else "\x1b[B"
+        arrow = "\x1b[A" if see_older else "\x1b[B"
     parts.append(arrow * n)
-    # Fine: single-locus wheel when the app asked for mouse tracking
     if term.screen.mouse_tracking:
         col, row = _wheel_locus(view, term)
         sgr = term.screen.mouse_sgr
         parts.append(
             "".join(
-                _encode_wheel(direction_up, col, row, sgr=sgr) for _ in range(n)
+                _encode_wheel(see_older, col, row, sgr=sgr) for _ in range(n)
             )
         )
-    # Coarse: one Page only on a fling (n >= 3), not every 6px pan
     if n >= 3:
         try:
-            page = _get_key_code("pageup" if direction_up else "pagedown")
+            page = _get_key_code("pageup" if see_older else "pagedown")
         except Exception:
-            page = "\x1b[5~" if direction_up else "\x1b[6~"
+            page = "\x1b[5~" if see_older else "\x1b[6~"
         parts.append(page)
     term.send_string("".join(parts))
     return True
@@ -3101,41 +3106,37 @@ _clamp_token = None
 
 
 def _vp_pan_to_tui_scroll(view, term, dy):
-    """Turn an ST viewport y-dip into PTY scroll bytes.
+    """Turn an ST viewport y-dip into PTY scroll — *content-grab* model.
 
-    Mapping (matches user expectation when scrolled back in Grok history):
-      finger / content move UP (viewport y increases, dy > 0)
-          → older history (PageUp)  — amount > 0
-      finger / content move DOWN (viewport y decreases, dy < 0)
-          → newer / back toward live end (PageDown) — amount < 0
+    ST core pans the view; visually the text slides with the fingers (grab
+    the buffer). That is the opposite of the TUI scroll-button (move view):
 
-    Previously dy>0 sent PageDown (inverted), and large negative dy was
-    dropped as "focus overshoot", so down-move did nothing at all.
+      dy > 0  text slides UP on screen   → reveal newer below  → amount < 0
+      dy < 0  text slides DOWN on screen → reveal older above  → amount > 0
+
+    (Scroll-button "up" would do the inverse; we deliberately do not match it.)
     """
     lh = view.line_height() or 12.0
     if abs(dy) < 1.5:
         return False
     now = time.time()
     # True focus overshoot is a large one-shot negative jump with no recent
-    # user pan. Normal trackpad down-moves are small and must NOT be dropped.
+    # user pan. Normal trackpad content-drags are small and must pass through.
     last_pan = float(getattr(term, "_last_user_pan_t", 0.0) or 0.0)
     if dy < -lh * 2.5 and (now - last_pan) > 0.4:
         return False
-    # Skip if scroll_lines / mousemap already fed the PTY for this gesture.
-    # Slightly longer gap → smoother continuous pad motion, less double-fire.
     last = float(getattr(term, "_last_scroll_send_t", 0.0) or 0.0)
     if (now - last) < 0.08:
         return False
-    # Soft steps: a 6–12px nudge = 1 step; bigger pan = 2. Never 6× Page spam.
     ticks = 1 if abs(dy) < lh * 0.75 else 2
-    # dy > 0 → older (amount > 0); dy < 0 → newer
-    amount = float(ticks) if dy > 0 else -float(ticks)
+    # Content-grab: same direction the text moved on screen.
+    amount = -float(ticks) if dy > 0 else float(ticks)
     term._last_user_pan_t = now
     try:
         n = int(getattr(term, "_vp_pan_log_n", 0) or 0)
         if n < 6:
             print(
-                f"[ai_terminal] trackpad pan→TUI scroll "
+                f"[ai_terminal] content-grab pan→TUI "
                 f"dy={dy:.1f}px steps={ticks} "
                 f"({'older' if amount > 0 else 'newer'})"
             )
