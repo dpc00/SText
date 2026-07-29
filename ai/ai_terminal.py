@@ -1602,15 +1602,15 @@ def _terminal_view(window, name=None):
             v.settings().set("font_face", font)
     except Exception:
         pass
-    # draw_centered=False and a pinned scroll_past_end=False isolate the
-    # terminal from the user's global scroll_past_end preference (which they
-    # may enable for code views). A fixed-height TUI has no use for
-    # scroll-past-end anyway. NOTE: is_widget=True was tried (matching
-    # Terminus) to stop ST's on-activate viewport reposition, but it makes ST
-    # hide the main menu while the terminal is focused -- unacceptable, so it
-    # is NOT set.
+    # draw_centered=False and scroll_past_end=False isolate the terminal from
+    # the user's global preferences. scroll_past_end must stay False: with True,
+    # two-finger trackpad pan overscrolls the view a few pixels, then our
+    # clamp loop snaps it back — a visible bounce that never reaches the TUI.
+    # NOTE: is_widget=True was tried (matching Terminus) to stop ST's
+    # on-activate viewport reposition, but it makes ST hide the main menu while
+    # the terminal is focused -- unacceptable, so it is NOT set.
     v.settings().set("draw_centered", False)
-    v.settings().set("scroll_past_end", True)
+    v.settings().set("scroll_past_end", False)
     v.settings().set(_VIEW_SETTING, True)
     v.settings().set(_TAG_SETTING, True)
     # Instant resize on gutter / line_numbers / fold_buttons / margin toggles.
@@ -2193,6 +2193,29 @@ def _route_mouse_wheel(view, term, amount):
     return True
 
 
+def _pin_terminal_viewport(view, term):
+    """Kill ST view pan so trackpad gestures cannot bounce the framebuffer.
+
+    Fullscreen TUIs (alt screen / mouse tracking) always pin to (0,0).
+    Otherwise pin when content fits, or stick to bottom while auto-following.
+    """
+    try:
+        if term is not None and (
+            term.screen.alt_screen or term.screen.mouse_tracking
+        ):
+            view.set_viewport_position((0.0, 0.0), False)
+            return
+        le = view.layout_extent()
+        ve = view.viewport_extent()
+        lh = view.line_height() or 12.0
+        if le[1] - ve[1] <= lh:
+            view.set_viewport_position((0.0, 0.0), False)
+        elif term is not None and getattr(term, "_auto_follow", False):
+            _scroll_to_bottom(view)
+    except Exception:
+        pass
+
+
 class AiTerminalKeyInterceptor(sublime_plugin.EventListener):
     """Ctrl+C/V, and mouse → PTY when the app enabled DEC mouse tracking."""
 
@@ -2230,12 +2253,16 @@ class AiTerminalKeyInterceptor(sublime_plugin.EventListener):
             if _route_mouse_click(view, term, event, discrete_click=multi):
                 return ("ai_terminal_noop", {})
             return None
-        if command_name == "scroll_lines":
+        # Two-finger trackpad / mouse wheel: ALWAYS swallow for terminal views.
+        # Returning None lets ST pan the view a few px; our clamp loop then
+        # snaps it back — the "tab jumps then restores" glitch. Forward to the
+        # TUI when mouse tracking is on; pin the viewport either way.
+        if command_name in ("scroll_lines", "scroll_horizontally"):
             args = args or {}
-            amount = args.get("amount", 1)
-            if _route_mouse_wheel(view, term, amount):
-                return ("ai_terminal_noop", {})
-            return None
+            if command_name == "scroll_lines":
+                _route_mouse_wheel(view, term, args.get("amount", 1))
+            _pin_terminal_viewport(view, term)
+            return ("ai_terminal_noop", {})
         return None
 
 
@@ -2940,6 +2967,17 @@ def _clamp_vp_loop():
             v = term.view
             if not v or not v.is_valid():
                 continue
+            # Fullscreen TUI / mouse-tracking apps own all scrolling. Never let
+            # ST trackpad pan leave the viewport off (0,0) — that is the bounce
+            # the user sees as "whole tab moves a few pixels then restores".
+            try:
+                if term.screen.alt_screen or term.screen.mouse_tracking:
+                    vp = v.viewport_position()
+                    if vp[0] != 0.0 or vp[1] != 0.0:
+                        v.set_viewport_position((0.0, 0.0), False)
+                    continue
+            except Exception:
+                pass
             le = v.layout_extent()
             ve = v.viewport_extent()
             vp = v.viewport_position()
