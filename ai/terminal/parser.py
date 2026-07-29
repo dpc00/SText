@@ -102,7 +102,16 @@ class Parser:
         parts = raw.split(";") if raw else []
         out = []
         for p in parts:
-            out.append(int(p) if p.isdigit() else default)
+            # ISO-8613-6 / modern TUI form: 38:2:r:g:b or 38:5:n (colons).
+            # Junie and other Compose TUIs use this; bare isdigit() left the
+            # whole token as 0 and colours fell back to defaults ("wrong colours").
+            if ":" in p:
+                for sub in p.split(":"):
+                    out.append(int(sub) if sub.isdigit() else default)
+            elif p.isdigit():
+                out.append(int(p))
+            else:
+                out.append(default)
         return priv, out
 
     def _parse_ext_color(self, p, j):

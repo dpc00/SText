@@ -1764,26 +1764,33 @@ def _do_render(term):
     term.screen.dirty = False
     rows, host_painted = _paint_host_cursor(rows, cy, cx)
     text, regions = _build_text_and_regions(rows)
-    if host_painted:
-        off = _cursor_text_offset(rows, cy, cx)
-        if off is not None and 0 <= off < len(text):
-            # Exclusive host scope: punch out any ai.fb.* covering this cell
-            # so the grey block is visible mid-line, not only at EOL.
-            regions = _punch_host_cursor_region(regions, off)
+    caret_off = _cursor_text_offset(rows, cy, cx)
+    if host_painted and caret_off is not None and 0 <= caret_off < len(text):
+        # Exclusive host scope: punch out any ai.fb.* covering this cell
+        # so the grey block is visible mid-line, not only at EOL.
+        regions = _punch_host_cursor_region(regions, caret_off)
     # Host-only pads above+below: trackpad can pan both ways. Shift colour
-    # region offsets by the top pad length (newlines only).
+    # region offsets and caret by the top pad length (newlines only).
     top_pad_chars = _HOST_SCROLL_PAD_LINES  # "\n" * N → N chars
     if top_pad_chars and regions:
         regions = [
             (b + top_pad_chars, e + top_pad_chars, scope)
             for (b, e, scope) in regions
         ]
-    if top_pad_chars and host_painted:
-        # host cursor punch already applied inside regions list
-        pass
+    if caret_off is not None:
+        caret_off = caret_off + top_pad_chars
     text = _append_host_scroll_pad(text)
-    view.run_command("ai_terminal_render",
-                     {"text": text, "cursor": [cy, cx], "regions": regions})
+    # Prefer absolute caret offset so mid-line typing does not desync when
+    # rowcol + pad math drifts (Junie: first char mid, rest at EOL).
+    view.run_command(
+        "ai_terminal_render",
+        {
+            "text": text,
+            "cursor": [cy, cx],
+            "cursor_offset": caret_off if caret_off is not None else -1,
+            "regions": regions,
+        },
+    )
 
 
 def _build_text_and_regions(rows):
@@ -2891,10 +2898,24 @@ class AiTerminalKeypressCommand(sublime_plugin.TextCommand):
                 "left", "right", "up", "down",
             ))
             kl = key.lower()
+            # Fullscreen / mouse-tracking TUIs (Junie, Grok): never yank the
+            # viewport on every printable — that fought mid-line caret and
+            # made the next char land at EOL. Pin to rest instead.
+            tui = bool(
+                term.screen.alt_screen or term.screen.mouse_tracking
+            )
             if kl not in _NO_SCROLL_KEYS:
                 term._auto_follow = True
-                _scroll_to_bottom(self.view)
-                term._last_vp_y = self.view.viewport_position()[1]
+                if tui:
+                    try:
+                        rest = _host_rest_y(self.view)
+                        self.view.set_viewport_position((0.0, rest), False)
+                        term._last_vp_y = rest
+                    except Exception:
+                        pass
+                else:
+                    _scroll_to_bottom(self.view)
+                    term._last_vp_y = self.view.viewport_position()[1]
             term.send_string(code)
 
 
@@ -2904,7 +2925,7 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
     No key/menu/palette binding; invoked programmatically.
     """
 
-    def run(self, edit, text="", cursor=None, regions=None):
+    def run(self, edit, text="", cursor=None, cursor_offset=-1, regions=None):
         view = self.view
         view.set_read_only(False)
         # Only re-pin to the bottom if the user is already near it, so scrolling
@@ -2935,20 +2956,32 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
             if term is not None
             else near_bottom
         )
-        # View rows: [top pad][TUI rows…][bottom pad]. PTY cursor is 0-based
-        # in the TUI grid only.
+        # View rows: [top pad][TUI rows…][bottom pad]. Prefer absolute
+        # cursor_offset (includes top pad) so mid-line ST selection matches
+        # the block highlight and the next keystroke stays in place.
         pad = _HOST_SCROLL_PAD_LINES
-        if cursor is not None:
+        sel = view.sel()
+        if cursor_offset is not None and int(cursor_offset) >= 0:
+            pos = min(int(cursor_offset), view.size())
+            sel.clear()
+            sel.add(sublime.Region(pos, pos))
+            if tui_owns_scroll:
+                view.set_viewport_position((0.0, rest), False)
+                if term is not None:
+                    term._last_vp_y = rest
+            elif do_follow and not content_fits:
+                _scroll_to_bottom(view)
+                if term is not None:
+                    term._last_vp_y = view.viewport_position()[1]
+        elif cursor is not None:
             last_real = max(0, view.rowcol(view.size())[0] - pad)
             row = min(int(cursor[0]) + pad, last_real)
             line_start = view.text_point(row, 0)
             line_end = view.line(line_start).b
             pos = min(line_start + int(cursor[1]), line_end)
-            sel = view.sel()
             sel.clear()
             sel.add(sublime.Region(pos, pos))
             if tui_owns_scroll:
-                # Rest under top pad — both trackpad directions have headroom.
                 view.set_viewport_position((0.0, rest), False)
                 if term is not None:
                     term._last_vp_y = rest
@@ -2962,7 +2995,6 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
             else:
                 last_real = max(0, view.rowcol(view.size())[0] - pad)
                 pt = view.text_point(last_real, 0)
-                sel = view.sel()
                 sel.clear()
                 sel.add(sublime.Region(pt, pt))
                 if do_follow and not content_fits:

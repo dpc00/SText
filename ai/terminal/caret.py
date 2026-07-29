@@ -27,22 +27,50 @@ Column rules
 
 
 def find_prompt_row(screen):
-    """Last grid row whose first cell is `>`, or None."""
+    """Last grid row with a `>` prompt marker (optionally after leading spaces).
+
+    Junie/Compose pads the prompt with spaces before `>`; requiring col 0 to be
+    `>` made us miss the row and skip caret remapping.
+    """
     found = None
     for y in range(screen.rows):
-        if screen.grid[y] and screen.grid[y][0] == ">":
-            found = y
+        row = screen.grid[y]
+        if not row:
+            continue
+        for ch in row:
+            if ch in (" ", "\u00a0"):
+                continue
+            if ch == ">":
+                found = y
+            break
     return found
+
+
+def _prompt_marker_col(screen, prompt_y):
+    """Column of the `>` on the prompt row, or None."""
+    row = screen.grid[prompt_y]
+    if not row:
+        return None
+    for i, ch in enumerate(row):
+        if ch in (" ", "\u00a0"):
+            continue
+        return i if ch == ">" else None
+    return None
 
 
 def input_start_col(screen, prompt_y):
     """First editable column on the prompt row (after `>` and optional blank)."""
     row = screen.grid[prompt_y]
-    if not row or row[0] != ">":
+    if not row:
         return 0
-    if len(row) > 1 and row[1] in (" ", "\u00a0"):
-        return 2
-    return 1
+    m = _prompt_marker_col(screen, prompt_y)
+    if m is None:
+        return 0
+    # After `>`; skip one following space/NBSP if present.
+    nxt = m + 1
+    if nxt < len(row) and row[nxt] in (" ", "\u00a0"):
+        return nxt + 1
+    return nxt
 
 
 def content_end_col(screen, prompt_y):
