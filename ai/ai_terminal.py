@@ -1751,10 +1751,10 @@ def _do_render(term):
     # Read structured cells + PTY cursor under one lock. Host ST caret is
     # invisible (scheme caret = bg) so Claude reverse-video cursors are not
     # doubled. When the app did not SGR-reverse the cursor cell (Grok
-    # --minimal / plain shells), pad the cell and tag only
-    # ai.terminal.host_cursor — do not synthesize reverse/ai.fb.1.16 (that
-    # white block raced with the permanent host rule and looked like a
-    # "stuck on 16" cursor).
+    # --minimal / plain shells), paint_host_cursor ORs REVERSE so the block
+    # rides the normal ai.fb.* path (visible). Do not punch
+    # ai.terminal.host_cursor over that — the host scope was often invisible
+    # via add_regions and wiped the reverse cell, leaving no cursor.
     # adjust_display_caret remaps when Claude parks the hardware cursor on
     # the status footer while the edit buffer is still on the `>` row.
     with term._lock:
@@ -1762,13 +1762,9 @@ def _do_render(term):
         cy, cx = _adjust_display_caret(term.screen, cy, cx)
         rows = _pad_row_for_caret(rows, cy, cx)
     term.screen.dirty = False
-    rows, host_painted = _paint_host_cursor(rows, cy, cx)
+    rows, _host_painted = _paint_host_cursor(rows, cy, cx)
     text, regions = _build_text_and_regions(rows)
     caret_off = _cursor_text_offset(rows, cy, cx)
-    if host_painted and caret_off is not None and 0 <= caret_off < len(text):
-        # Exclusive host scope: punch out any ai.fb.* covering this cell
-        # so the grey block is visible mid-line, not only at EOL.
-        regions = _punch_host_cursor_region(regions, caret_off)
     # Host-only pads above+below: trackpad can pan both ways. Shift colour
     # region offsets and caret by the top pad length (newlines only).
     top_pad_chars = _HOST_SCROLL_PAD_LINES  # "\n" * N → N chars

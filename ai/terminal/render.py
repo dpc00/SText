@@ -25,20 +25,21 @@ def cell_needs_host_cursor(rows, cy, cx):
 
 
 def paint_host_cursor(rows, cy, cx):
-    """Ensure a drawable cell at the PTY cursor for host visibility.
+    """Ensure a visible cursor cell when the app did not SGR-reverse it.
 
     The ST host caret is forced invisible (scheme caret = background) so
     Claude/ratatui reverse-video cursors are not doubled. Apps that never
     SGR-reverse the cursor cell (Grok --minimal, plain shells) then show
     no insertion point until a keystroke.
 
-    Host synthesis must NOT OR REVERSE onto the cell: reverse-of-default
-    maps to ai.fb.1.16 (DEFAULT_FG_ID=16 bright white), which raced with
-    and often won over the permanent host_cursor rule. Pad the cell if
-    needed and leave attrs alone; the caller tags HOST_CURSOR_SCOPE only.
+    Host synthesis ORs REVERSE onto the cell so it rides the normal ai.fb.*
+    colour path (same as app-drawn block cursors). A dedicated
+    ai.terminal.host_cursor add_regions scope was tried and abandoned for
+    the paint step: the region was present but often produced no visible
+    fill, so the command line looked cursorless.
 
-    Returns (rows, host_painted). host_painted is True when the caller
-    should apply HOST_CURSOR_SCOPE (no app reverse on the cursor cell).
+    Returns (rows, host_painted). host_painted is True when we synthesized
+    reverse (caller may skip double-applying a host scope).
     """
     if rows is None or cy is None or cx is None:
         return rows, False
@@ -47,13 +48,17 @@ def paint_host_cursor(rows, cy, cx):
     rows = list(rows)
     row = list(rows[cy])
     # Cursor often sits past rstripped trailing spaces; pad so the cell exists
-    # for cursor_text_offset + a one-cell host_cursor region.
+    # for cursor_text_offset + a one-cell reverse block.
     while len(row) <= cx:
         row.append((" ", 0))
-    _ch, attr = row[cx]
-    rows[cy] = row
+    ch, attr = row[cx]
     if attr & REVERSE:
+        rows[cy] = row
         return rows, False
+    if not ch:
+        ch = " "
+    row[cx] = (ch, attr | REVERSE)
+    rows[cy] = row
     return rows, True
 
 
