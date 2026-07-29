@@ -2,7 +2,7 @@
 
 Pure Python — no Sublime imports.
 """
-from .colors import REVERSE, scope_name_for
+from .colors import REVERSE, pack_attr, scope_name_for
 
 # Baked into the ST color scheme (see ai_terminal._HOST_CURSOR_SCOPE). Used when
 # the host synthesizes a cursor so visibility does not depend on dynamic
@@ -24,33 +24,26 @@ def cell_needs_host_cursor(rows, cy, cx):
     return not bool(attr & REVERSE)
 
 
-# Blank host-cursor cells need a solid glyph: ST often paints no fill on a
-# lone reverse space. █ + reverse rides the normal ai.fb.* path (black on
-# white for default colours). Display-only — never sent to the PTY.
-# Do NOT use an HTML LAYOUT_INLINE phantom: that inserts extra width after
-# the caret and reads as a phantom character on the command line.
-# Do NOT rely on ai.terminal.host_cursor add_regions alone: one-cell fills
-# for that permanent scope frequently paint nothing even when the region exists.
+# Full block glyph (display-only, never sent to the PTY).
+# Bright-white-on-black attr: ST often drops region *fill* and keeps only
+# foreground. Reverse-default is black-on-white → black █ on black terminal
+# when fill is dropped = invisible. White █ stays visible without fill.
 _HOST_CURSOR_GLYPH = "\u2588"  # █
+_HOST_CURSOR_ATTR = pack_attr(fg=16, bg=1)  # → ai.fb.16.1 white on near-black
 
 
 def paint_host_cursor(rows, cy, cx):
     """Ensure a visible cursor cell when the app did not SGR-reverse it.
 
     ST host caret is invisible so Claude/ratatui reverse-video is not doubled.
-    Apps that never reverse the cursor cell (Grok --minimal, plain shells)
-    get a host-synthesized block:
+    Grok/shells that never reverse the cursor cell get a host-synthesized
+    white █ (ai.fb.16.1). Mid-line keeps the real character with REVERSE
+    (Claude's path; fill failure still often leaves readable inverted text).
 
-      - Pad past rstrip so the cell exists.
-      - Blank/space → █ (solid glyph; reverse-on-space is often invisible).
-      - OR REVERSE so the cell uses the same ai.fb.* colour path as Claude
-        cursors (default reverse → ai.fb.1.16 black-on-white).
-      - Mid-line keeps the real character, inverted.
+    No HTML phantom (inserts a fake command-line char). No HOST_CURSOR_SCOPE
+    punch (that permanent scope's one-cell fill often paints nothing).
 
-    Caller must NOT punch HOST_CURSOR_SCOPE over this cell — that scope's
-    add_regions fill is unreliable and would wipe the reverse scope.
-
-    Returns (rows, host_painted). host_painted True when we synthesized reverse.
+    Returns (rows, host_painted).
     """
     if rows is None or cy is None or cx is None:
         return rows, False
@@ -66,8 +59,11 @@ def paint_host_cursor(rows, cy, cx):
         rows[cy] = row
         return rows, False
     if not ch or ch in (" ", "\u00a0"):
-        ch = _HOST_CURSOR_GLYPH
-    row[cx] = (ch, attr | REVERSE)
+        # EOL / blank insertion point — white block, always-on glyph path.
+        row[cx] = (_HOST_CURSOR_GLYPH, _HOST_CURSOR_ATTR)
+    else:
+        # Mid-line — invert the real character (do not replace with █).
+        row[cx] = (ch, attr | REVERSE)
     rows[cy] = row
     return rows, True
 

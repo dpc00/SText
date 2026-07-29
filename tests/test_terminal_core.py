@@ -272,8 +272,8 @@ class TestCaretContentEnd(unittest.TestCase):
 
 
 class TestHostCursor(unittest.TestCase):
-    def test_pads_block_glyph_with_reverse(self):
-        """Grok-style: pad + █ + REVERSE → ai.fb.1.16 (not host_cursor punch)."""
+    def test_pads_white_block_glyph(self):
+        """Grok-style: pad + white █ (ai.fb.16.1) — visible even if fill drops."""
         rows = [[(">", 0), (" ", 0), ("h", 0), ("i", 0)]]
         self.assertTrue(cell_needs_host_cursor(rows, 0, 4))
         out, painted = paint_host_cursor(rows, 0, 4)
@@ -281,13 +281,12 @@ class TestHostCursor(unittest.TestCase):
         self.assertEqual(len(out[0]), 5)
         ch, attr = out[0][4]
         self.assertEqual(ch, "\u2588")
-        self.assertTrue(attr & REVERSE)
+        self.assertFalse(attr & REVERSE)
         text, regs = build_text_and_regions(out)
-        self.assertTrue(any(r[2] == "ai.fb.1.16" for r in regs))
+        self.assertTrue(any(r[2] == "ai.fb.16.1" for r in regs))
         off = cursor_text_offset(out, 0, 4)
         self.assertEqual(off, 4)
         self.assertEqual(text[off], "\u2588")
-        # Reverse cell already has colour; host_cursor punch is not required.
         host = [r for r in regs if r[2] == HOST_CURSOR_SCOPE]
         self.assertEqual(host, [])
 
