@@ -1995,10 +1995,14 @@ class AiTerminalViewListener(sublime_plugin.ViewEventListener):
 
 
 def _mouse_hist_len(term):
-    """Scrollback lines prepended in the view (0 on alt / fullscreen TUI)."""
+    """Lines above the PTY grid in the ST view (host top pad + scrollback).
+
+    Host top pad is always present; terminal history is only on main screen.
+    """
+    pad = _HOST_SCROLL_PAD_LINES
     if term.screen.alt_screen:
-        return 0
-    return len(term.screen.history)
+        return pad
+    return pad + len(term.screen.history)
 
 
 def _event_to_pty_cell(view, term, event):
