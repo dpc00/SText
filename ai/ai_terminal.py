@@ -1602,15 +1602,17 @@ def _terminal_view(window, name=None):
             v.settings().set("font_face", font)
     except Exception:
         pass
-    # draw_centered=False and scroll_past_end=False isolate the terminal from
-    # the user's global preferences. scroll_past_end must stay False: with True,
-    # two-finger trackpad pan overscrolls the view a few pixels, then our
-    # clamp loop snaps it back — a visible bounce that never reaches the TUI.
+    # draw_centered=False isolates the terminal from the user's global
+    # preference. scroll_past_end must be True so two-finger trackpad gestures
+    # keep generating scroll_lines even when the TUI framebuffer fits the
+    # viewport — with False, ST fires scroll once then stops ("worked once,
+    # then dead"). Visible bounce is prevented by always swallowing
+    # scroll_lines and pinning the viewport, not by disabling scroll_past_end.
     # NOTE: is_widget=True was tried (matching Terminus) to stop ST's
     # on-activate viewport reposition, but it makes ST hide the main menu while
     # the terminal is focused -- unacceptable, so it is NOT set.
     v.settings().set("draw_centered", False)
-    v.settings().set("scroll_past_end", False)
+    v.settings().set("scroll_past_end", True)
     v.settings().set(_VIEW_SETTING, True)
     v.settings().set(_TAG_SETTING, True)
     # Instant resize on gutter / line_numbers / fold_buttons / margin toggles.
@@ -2171,25 +2173,63 @@ def _route_mouse_click(view, term, event, *, discrete_click=False):
     return True
 
 
+def _scroll_tick_count(amount):
+    """How many wheel/key ticks for one ST scroll_lines amount.
+
+    Trackpads often report fractional amounts (0.15, 0.5, …). Rounding those
+    to 0 and then clamping to 1 still works, but tiny repeated events should
+    not all collapse to identical single ticks with no feel — use ceil for
+    |amount| < 1 so any real gesture moves at least one step, and scale up
+    for flings.
+    """
+    try:
+        a = abs(float(amount))
+    except (TypeError, ValueError):
+        a = 1.0
+    if a <= 0:
+        return 1
+    if a < 1.0:
+        return 1
+    return max(1, min(int(round(a)), 12))
+
+
 def _route_mouse_wheel(view, term, amount):
-    """Send wheel-up/down when mouse tracking is on. Return True if handled.
+    """Forward trackpad/mouse-wheel scroll to the PTY. Always tries to send.
 
     Aimed at laptop two-finger scroll: ST maps that to scroll_lines with no
     pointer coords, so we pick a sensible history-panel locus (see
     _wheel_locus) instead of the command-line caret.
+
+    When the app has DEC mouse tracking on, send xterm wheel reports.
+    Otherwise fall back to PageUp/PageDown (many TUIs still scroll with those).
+    Returns True if any bytes were written.
     """
-    if not term.screen.mouse_tracking:
-        return False
-    col, row = _wheel_locus(view, term)
-    # ST scroll_lines: positive amount moves content down (wheel up).
-    direction_up = float(amount) > 0
-    # Trackpad flings report larger |amount|; allow more ticks than a mouse
-    # wheel notch so two-finger swipes actually move TUI history.
-    n = max(1, min(abs(int(round(float(amount)))), 12))
-    sgr = term.screen.mouse_sgr
-    seq = "".join(_encode_wheel(direction_up, col, row, sgr=sgr) for _ in range(n))
+    # ST scroll_lines: positive amount moves content down (user finger up /
+    # "scroll up" to see earlier history) → wheel-up / PageUp.
+    try:
+        direction_up = float(amount) > 0
+    except (TypeError, ValueError):
+        direction_up = True
+    n = _scroll_tick_count(amount)
     term._auto_follow = False
-    term.send_string(seq)
+
+    if term.screen.mouse_tracking:
+        col, row = _wheel_locus(view, term)
+        sgr = term.screen.mouse_sgr
+        seq = "".join(
+            _encode_wheel(direction_up, col, row, sgr=sgr) for _ in range(n)
+        )
+        term.send_string(seq)
+        return True
+
+    # No mouse tracking — still consume the gesture so ST does not pan, and
+    # give the app page keys (better than dead air after scroll_past_end).
+    key = "pageup" if direction_up else "pagedown"
+    try:
+        code = _get_key_code(key)
+    except Exception:
+        code = "\x1b[5~" if direction_up else "\x1b[6~"
+    term.send_string(code * n)
     return True
 
 
@@ -2200,6 +2240,9 @@ def _pin_terminal_viewport(view, term):
     Otherwise pin when content fits, or stick to bottom while auto-following.
     """
     try:
+        # Live-heal older tabs created with scroll_past_end=False (that setting
+        # stops ST from re-firing trackpad scroll_lines once content fits).
+        view.settings().set("scroll_past_end", True)
         if term is not None and (
             term.screen.alt_screen or term.screen.mouse_tracking
         ):
@@ -2255,13 +2298,19 @@ class AiTerminalKeyInterceptor(sublime_plugin.EventListener):
             return None
         # Two-finger trackpad / mouse wheel: ALWAYS swallow for terminal views.
         # Returning None lets ST pan the view a few px; our clamp loop then
-        # snaps it back — the "tab jumps then restores" glitch. Forward to the
-        # TUI when mouse tracking is on; pin the viewport either way.
+        # snaps it back — the "tab jumps then restores" glitch.
+        # Always forward vertical scroll to the PTY (wheel if mouse tracking,
+        # else PageUp/Down) and pin the viewport so the tab never visibly pans.
         if command_name in ("scroll_lines", "scroll_horizontally"):
             args = args or {}
             if command_name == "scroll_lines":
                 _route_mouse_wheel(view, term, args.get("amount", 1))
             _pin_terminal_viewport(view, term)
+            # Immediate second pin on next tick: ST may apply residual pan
+            # after on_text_command returns even when we replace the command.
+            sublime.set_timeout(
+                lambda v=view, t=term: _pin_terminal_viewport(v, t), 0
+            )
             return ("ai_terminal_noop", {})
         return None
 
