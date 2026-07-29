@@ -1770,6 +1770,8 @@ def _do_render(term):
             # Exclusive host scope: punch out any ai.fb.* covering this cell
             # so the grey block is visible mid-line, not only at EOL.
             regions = _punch_host_cursor_region(regions, off)
+    # Host-only pad: give ST a scroll runway so trackpad keeps firing.
+    text = _append_host_scroll_pad(text)
     view.run_command("ai_terminal_render",
                      {"text": text, "cursor": [cy, cx], "regions": regions})
 
@@ -2310,7 +2312,16 @@ class AiTerminalKeyInterceptor(sublime_plugin.EventListener):
         if command_name in ("scroll_lines", "scroll_horizontally"):
             args = args or {}
             if command_name == "scroll_lines":
-                _route_mouse_wheel(view, term, args.get("amount", 1))
+                amt = args.get("amount", 1)
+                n = int(getattr(term, "_scroll_lines_log_n", 0) or 0)
+                if n < 12:
+                    print(
+                        f"[ai_terminal] scroll_lines amount={amt!r} "
+                        f"mouse={term.screen.mouse_tracking} "
+                        f"alt={term.screen.alt_screen}"
+                    )
+                    term._scroll_lines_log_n = n + 1
+                _route_mouse_wheel(view, term, amt)
             _pin_terminal_viewport(view, term)
             # Immediate second pin on next tick: ST may apply residual pan
             # after on_text_command returns even when we replace the command.
@@ -2762,15 +2773,40 @@ class AiTerminalSendStringWindowCommand(sublime_plugin.WindowCommand):
             term.send_string(string)
 
 
-def _scroll_to_bottom(view):
-    """Jump the viewport to the bottom of the content so the prompt line +
-    caret are visible. Called on user input so typing brings the user back to
-    the prompt after scrolling up to read scrollback (standard terminal
-    behavior). No-op when content fits the viewport (vp is already at 0)."""
+# Trailing blank lines appended only in the host view (not sent to the PTY).
+# They exist so Windows trackpad / ST core always has a real scroll range and
+# keeps emitting scroll_lines — without them a fullscreen TUI "fits" and ST
+# only rubber-bands a few px then stops. Viewport is kept at y=0 for TUI apps
+# so the pad is never visible.
+_HOST_SCROLL_PAD_LINES = 40
+
+
+def _append_host_scroll_pad(text):
+    """Append host-only blank lines so ST keeps generating trackpad scroll."""
+    if text is None:
+        text = ""
+    if text and not text.endswith("\n"):
+        text += "\n"
+    return text + ("\n" * _HOST_SCROLL_PAD_LINES)
+
+
+def _real_content_height(view):
+    """layout height excluding the host scroll pad."""
     le = view.layout_extent()
+    lh = view.line_height() or 12.0
+    return max(0.0, float(le[1]) - _HOST_SCROLL_PAD_LINES * lh)
+
+
+def _scroll_to_bottom(view):
+    """Jump the viewport to the bottom of real terminal content (not the pad).
+
+    Called on user input so typing brings the user back to the prompt after
+    scrolling up to read scrollback. No-op when real content fits the viewport.
+    """
     ve = view.viewport_extent()
-    if le[1] > ve[1]:
-        view.set_viewport_position((0.0, le[1] - ve[1]), False)
+    real_h = _real_content_height(view)
+    if real_h > ve[1]:
+        view.set_viewport_position((0.0, real_h - ve[1]), False)
 
 
 class AiTerminalKeypressCommand(sublime_plugin.TextCommand):
@@ -2847,22 +2883,17 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
         vp = view.viewport_position()
         ve = view.viewport_extent()
         lh = view.line_height() or 20
-        near_bottom = (vp[1] + ve[1]) >= (view.layout_extent()[1] - lh * 2)
+        # near_bottom uses real content height (excludes host scroll pad).
+        real_h = max(0.0, view.layout_extent()[1] - _HOST_SCROLL_PAD_LINES * lh)
+        # Before replace, layout still has old size; recompute after replace.
         view.replace(edit, sublime.Region(0, view.size()), text)
         # Re-apply colour regions every frame: view.replace invalidates the old
         # regions, and add_regions with the same key replaces what was there.
         _apply_color_regions(view, regions or [])
-        # Always reposition the ST caret at Claude Code's TUI cursor (screen.y +
-        # history offset, screen.x) so it sits on the > input line you are
-        # typing on, not at EOF -- even when the user has scrolled up to read
-        # scrollback (the caret is then off-screen below, correct in content
-        # but not yanked into view). Only scroll to show it when the user is
-        # already near the bottom, so scrolling up to read scrollback isn't
-        # yanked back on the next 40ms render. User input handlers explicitly
-        # scroll to the bottom before forwarding the key (see
-        # _scroll_to_bottom), so typing brings the viewport back to the prompt
-        # -- standard terminal behavior.
-        content_fits = view.layout_extent()[1] <= ve[1] + 0.5
+        real_h = _real_content_height(view)
+        near_bottom = (vp[1] + ve[1]) >= (real_h - lh * 2)
+        # Real TUI/content fit (ignore host pad which always makes layout tall).
+        content_fits = real_h <= ve[1] + 0.5
         # Auto-follow (Terminus-style): scroll to the bottom on new Claude
         # output when _auto_follow is True. The flag flips False when the user
         # scrolls up to read scrollback (vp drifts below where we last pinned)
@@ -2873,14 +2904,23 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
         # above the bottom -- so Claude's output appeared below the fold and
         # the user said "our terminal is not listening to Claude."
         term = _Terminal.from_id(view.id())
-        if term is not None:
+        tui_owns_scroll = bool(
+            term is not None
+            and (term.screen.alt_screen or term.screen.mouse_tracking)
+        )
+        if term is not None and not tui_owns_scroll:
             if vp[1] < term._last_vp_y - lh * 1.5:
                 term._auto_follow = False
             if near_bottom:
                 term._auto_follow = True
-        do_follow = (term is not None and term._auto_follow) if term is not None else near_bottom
+        do_follow = (
+            (term is not None and term._auto_follow)
+            if term is not None
+            else near_bottom
+        )
         if cursor is not None:
-            last_row = view.rowcol(view.size())[0]
+            # Caret is in the real grid — never in the host pad.
+            last_row = max(0, view.rowcol(view.size())[0] - _HOST_SCROLL_PAD_LINES)
             row = min(int(cursor[0]), last_row)
             line_start = view.text_point(row, 0)
             line_end = view.line(line_start).b
@@ -2888,24 +2928,32 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
             sel = view.sel()
             sel.clear()
             sel.add(sublime.Region(pos, pos))
-            # Pin to the exact bottom (not view.show's "nice" position) when
-            # following and content exceeds the viewport. When content fits,
-            # the caret is always visible and we must NOT call show -- ST
-            # pushes vp to a negative "nice" position and the clamp yanks it
-            # back, which the user sees as a 1-line up/down shift on every TUI
-            # frame. Skipping show() when content fits eliminates the shift;
-            # the clamp below pins vp to 0.
-            if do_follow and not content_fits:
+            # Fullscreen / mouse-tracking TUIs: always pin y=0 (app paints its
+            # own scroll). Host pad stays off-screen and only exists so the
+            # trackpad keeps generating scroll events.
+            if tui_owns_scroll:
+                view.set_viewport_position((0.0, 0.0), False)
+                if term is not None:
+                    term._last_vp_y = 0.0
+            elif do_follow and not content_fits:
                 _scroll_to_bottom(view)
                 if term is not None:
                     term._last_vp_y = view.viewport_position()[1]
         else:
-            view.run_command("move_to", {"to": "eof"})
-            if do_follow and not content_fits:
-                _scroll_to_bottom(view)
-                if term is not None:
-                    term._last_vp_y = view.viewport_position()[1]
-        if content_fits:
+            if tui_owns_scroll:
+                view.set_viewport_position((0.0, 0.0), False)
+            else:
+                # Stay out of the pad: move caret to last real line, not EOF.
+                last_row = max(0, view.rowcol(view.size())[0] - _HOST_SCROLL_PAD_LINES)
+                pt = view.text_point(last_row, 0)
+                sel = view.sel()
+                sel.clear()
+                sel.add(sublime.Region(pt, pt))
+                if do_follow and not content_fits:
+                    _scroll_to_bottom(view)
+                    if term is not None:
+                        term._last_vp_y = view.viewport_position()[1]
+        if content_fits or tui_owns_scroll:
             view.set_viewport_position((0.0, 0.0), False)
 
 
