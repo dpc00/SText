@@ -1810,10 +1810,10 @@ def _do_render(term):
         return
     # Host cursor: ST caret stays invisible (Claude reverse-video is the only
     # cursor when the app paints it). When the app does not reverse the cell
-    # (Grok / shells), paint_host_cursor pads a cell (█ on blanks) and we
-    # exclusive-tag ai.terminal.host_cursor on that same cell — no HTML
-    # phantom (LAYOUT_INLINE inserts width after the caret and looks like an
-    # extra command-line character).
+    # (Grok / shells), paint_host_cursor pads a cell, uses █ on blanks, and
+    # ORs REVERSE so the block rides normal ai.fb.* regions (same path as
+    # Claude). No HTML phantom (inserts width). No HOST_CURSOR_SCOPE punch
+    # (that permanent scope's one-cell fill often paints nothing).
     # adjust_display_caret remaps when Claude parks the hardware cursor on
     # the status footer while the edit buffer is still on the `>` row.
     with term._lock:
@@ -1821,12 +1821,9 @@ def _do_render(term):
         cy, cx = _adjust_display_caret(term.screen, cy, cx)
         rows = _pad_row_for_caret(rows, cy, cx)
     term.screen.dirty = False
-    rows, host_painted = _paint_host_cursor(rows, cy, cx)
+    rows, _host_painted = _paint_host_cursor(rows, cy, cx)
     text, regions = _build_text_and_regions(rows)
     caret_off = _cursor_text_offset(rows, cy, cx)
-    if host_painted and caret_off is not None and 0 <= caret_off < len(text):
-        # Exclusive host scope so mid-line ai.fb.* does not hide the block.
-        regions = _punch_host_cursor_region(regions, caret_off)
     # Host-only pads above+below: trackpad can pan both ways. Shift colour
     # region offsets and caret by the top pad length (newlines only).
     top_pad_chars = _HOST_SCROLL_PAD_LINES  # "\n" * N → N chars

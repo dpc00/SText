@@ -25,23 +25,32 @@ def cell_needs_host_cursor(rows, cy, cx):
 
 
 # Blank host-cursor cells need a solid glyph: ST often paints no fill on a
-# lone space under add_regions. Display-only — never sent to the PTY.
+# lone reverse space. █ + reverse rides the normal ai.fb.* path (black on
+# white for default colours). Display-only — never sent to the PTY.
 # Do NOT use an HTML LAYOUT_INLINE phantom: that inserts extra width after
 # the caret and reads as a phantom character on the command line.
+# Do NOT rely on ai.terminal.host_cursor add_regions alone: one-cell fills
+# for that permanent scope frequently paint nothing even when the region exists.
 _HOST_CURSOR_GLYPH = "\u2588"  # █
 
 
 def paint_host_cursor(rows, cy, cx):
-    """Ensure a drawable cell at the PTY cursor for host visibility.
+    """Ensure a visible cursor cell when the app did not SGR-reverse it.
 
-    Stable design (in-buffer block, no inserted phantom):
-      - ST host caret is invisible so Claude reverse-video is not doubled.
-      - If the app already SGR-reversed the cell, do nothing (app cursor).
-      - Otherwise pad the cell; blanks become █ so HOST_CURSOR_SCOPE has a
-        solid glyph. Caller punches HOST_CURSOR_SCOPE over that one cell.
-      - Mid-line keeps the real character (grey block over it).
+    ST host caret is invisible so Claude/ratatui reverse-video is not doubled.
+    Apps that never reverse the cursor cell (Grok --minimal, plain shells)
+    get a host-synthesized block:
 
-    Returns (rows, host_painted). host_painted True → apply HOST_CURSOR_SCOPE.
+      - Pad past rstrip so the cell exists.
+      - Blank/space → █ (solid glyph; reverse-on-space is often invisible).
+      - OR REVERSE so the cell uses the same ai.fb.* colour path as Claude
+        cursors (default reverse → ai.fb.1.16 black-on-white).
+      - Mid-line keeps the real character, inverted.
+
+    Caller must NOT punch HOST_CURSOR_SCOPE over this cell — that scope's
+    add_regions fill is unreliable and would wipe the reverse scope.
+
+    Returns (rows, host_painted). host_painted True when we synthesized reverse.
     """
     if rows is None or cy is None or cx is None:
         return rows, False
@@ -49,8 +58,7 @@ def paint_host_cursor(rows, cy, cx):
         return rows, False
     rows = list(rows)
     row = list(rows[cy])
-    # Cursor often sits past rstripped trailing spaces; pad so the cell exists
-    # for cursor_text_offset + a one-cell host_cursor region.
+    # Cursor often sits past rstripped trailing spaces; pad so the cell exists.
     while len(row) <= cx:
         row.append((" ", 0))
     ch, attr = row[cx]
@@ -59,7 +67,7 @@ def paint_host_cursor(rows, cy, cx):
         return rows, False
     if not ch or ch in (" ", "\u00a0"):
         ch = _HOST_CURSOR_GLYPH
-    row[cx] = (ch, 0)
+    row[cx] = (ch, attr | REVERSE)
     rows[cy] = row
     return rows, True
 

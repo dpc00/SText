@@ -272,8 +272,8 @@ class TestCaretContentEnd(unittest.TestCase):
 
 
 class TestHostCursor(unittest.TestCase):
-    def test_pads_block_glyph_no_reverse(self):
-        """Grok-style: pad + █, attrs clean; host_cursor scope applied by caller."""
+    def test_pads_block_glyph_with_reverse(self):
+        """Grok-style: pad + █ + REVERSE → ai.fb.1.16 (not host_cursor punch)."""
         rows = [[(">", 0), (" ", 0), ("h", 0), ("i", 0)]]
         self.assertTrue(cell_needs_host_cursor(rows, 0, 4))
         out, painted = paint_host_cursor(rows, 0, 4)
@@ -281,17 +281,15 @@ class TestHostCursor(unittest.TestCase):
         self.assertEqual(len(out[0]), 5)
         ch, attr = out[0][4]
         self.assertEqual(ch, "\u2588")
-        self.assertEqual(attr, 0)
-        self.assertFalse(attr & REVERSE)
+        self.assertTrue(attr & REVERSE)
         text, regs = build_text_and_regions(out)
-        self.assertFalse(any(r[2] == "ai.fb.1.16" for r in regs))
+        self.assertTrue(any(r[2] == "ai.fb.1.16" for r in regs))
         off = cursor_text_offset(out, 0, 4)
         self.assertEqual(off, 4)
         self.assertEqual(text[off], "\u2588")
-        punched = punch_host_cursor_region(regs, off)
-        host = [r for r in punched if r[2] == HOST_CURSOR_SCOPE]
-        self.assertEqual(len(host), 1)
-        self.assertEqual(host[0][:2], [4, 5])
+        # Reverse cell already has colour; host_cursor punch is not required.
+        host = [r for r in regs if r[2] == HOST_CURSOR_SCOPE]
+        self.assertEqual(host, [])
 
     def test_leaves_existing_reverse(self):
         """Claude-style: app already reverse-painted the cursor cell."""
@@ -301,22 +299,20 @@ class TestHostCursor(unittest.TestCase):
         self.assertFalse(painted)
         self.assertEqual(out[0][0], ("x", REVERSE))
 
-    def test_mid_line_keeps_char_no_attr_mutate(self):
+    def test_mid_line_keeps_char_ors_reverse(self):
         rows = [[("a", 0), ("b", 0), ("c", 0)]]
         out, painted = paint_host_cursor(rows, 0, 1)
         self.assertTrue(painted)
         self.assertEqual(out[0][1][0], "b")
-        self.assertEqual(out[0][1][1], 0)
+        self.assertTrue(out[0][1][1] & REVERSE)
         self.assertEqual(out[0][0][1], 0)
 
     def test_punch_exclusive_over_color_run(self):
-        """Mid-line host cursor must not share the cell with ai.fb.* scopes."""
+        """punch helper still isolates HOST_CURSOR_SCOPE if a caller uses it."""
         rows = [[("a", pack_attr(fg=2)), ("b", pack_attr(fg=2)), ("c", pack_attr(fg=2))]]
-        out, painted = paint_host_cursor(rows, 0, 1)
-        self.assertTrue(painted)
-        text, regs = build_text_and_regions(out)
-        off = cursor_text_offset(out, 0, 1)
-        self.assertEqual(off, 1)
+        # Raw cells (no paint) so punch math is independent of reverse synthesis.
+        text, regs = build_text_and_regions(rows)
+        off = 1
         punched = punch_host_cursor_region(regs, off)
         host = [r for r in punched if r[2] == HOST_CURSOR_SCOPE]
         self.assertEqual(len(host), 1)
