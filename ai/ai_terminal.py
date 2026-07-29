@@ -1997,11 +1997,19 @@ def _event_to_pty_cell(view, term, event):
     )
 
 
-# Button-hold state for 1002/1003: view_id -> (proto_btn, col, row, gen)
-# ST never delivers a clean mouse-up; we release after a short idle so click
-# (press…idle→release) and drag (press…motion…motion…idle→release) both work.
+# Button-hold state for 1002/1003:
+#   view_id -> (proto_btn, col, row, gen, t0, moved)
+# ST never delivers a clean mouse-up. We release after idle so:
+#   click  = press … idle → release
+#   drag   = press … motion… idle → release
+#   double = press … (2nd hit same cell or ST by=words) → release + full click
 _MOUSE_HOLD = {}
-_MOUSE_RELEASE_MS = 90
+# Long enough to press-hold and drag a TUI scroll thumb before auto-release.
+# 90ms was too short: first click "completed" before a double-click/grab.
+_MOUSE_RELEASE_MS = 450
+# If a second press lands on the same cell within this window, treat as
+# double-click even when ST does not set by=words.
+_MOUSE_DBLCLICK_MS = 500
 
 
 def _mouse_force_release(term, view_id):
@@ -2009,7 +2017,7 @@ def _mouse_force_release(term, view_id):
     hold = _MOUSE_HOLD.pop(view_id, None)
     if not hold or term is None:
         return
-    btn, col, row, _gen = hold
+    btn, col, row = hold[0], hold[1], hold[2]
     try:
         sgr = term.screen.mouse_sgr
         term.send_string(
@@ -2019,7 +2027,7 @@ def _mouse_force_release(term, view_id):
         pass
 
 
-def _schedule_mouse_release(view, term, gen):
+def _schedule_mouse_release(view, gen):
     """Release the held button if no further drag events arrive."""
     vid = view.id()
 
@@ -2041,15 +2049,20 @@ def _route_mouse_click(view, term, event, *, discrete_click=False):
     selection. False for normal drag_select: in 1002/1003 modes use press +
     motion + idle release so scroll-thumb drag works; in 1000 mode always
     press+release.
+
+    Multi-click often arrives without event x/y — fall back to last cell so
+    double-clicks on the scroll control still reach the PTY.
     """
     mode = term.screen.mouse_tracking
     if not mode:
         return False
     cell = _event_to_pty_cell(view, term, event)
+    if cell is None and discrete_click:
+        cell = getattr(term, "_last_mouse_cell", None)
     if cell is None:
         # Click in scrollback (or off-grid): let ST select text.
         return False
-    st_btn = event.get("button", 1)
+    st_btn = event.get("button", 1) if event else 1
     proto = _st_button_to_proto(st_btn)
     if proto is None:
         return False
@@ -2059,6 +2072,7 @@ def _route_mouse_click(view, term, event, *, discrete_click=False):
     term._auto_follow = False
     sgr = term.screen.mouse_sgr
     vid = view.id()
+    now = time.time()
 
     # Multi-click or click-only mode: complete any prior hold, then one click.
     if discrete_click or mode < 1002:
@@ -2071,13 +2085,37 @@ def _route_mouse_click(view, term, event, *, discrete_click=False):
     if hold is None:
         seq = _encode_mouse(proto, col, row, press=True, sgr=sgr)
         gen = 1
-    else:
-        _btn_prev, _c_prev, _r_prev, gen_prev = hold
-        seq = _encode_mouse(proto, col, row, press=True, motion=True, sgr=sgr)
+        _MOUSE_HOLD[vid] = (proto, col, row, gen, now, False)
+        term.send_string(seq)
+        _schedule_mouse_release(view, gen)
+        return True
+
+    btn_prev, c_prev, r_prev, gen_prev, t0, moved = hold
+    elapsed_ms = (now - t0) * 1000.0
+    same_cell = (col, row) == (c_prev, r_prev)
+
+    # Second hit on the same cell soon after press, without having dragged =
+    # double-click (ST sometimes omits by=words). Finish first click, send
+    # a full second click. Do NOT emit "motion" — that ate double-clicks.
+    if same_cell and not moved and elapsed_ms <= _MOUSE_DBLCLICK_MS:
+        _mouse_force_release(term, vid)
+        term.send_string(_encode_click(proto, col, row, sgr=sgr))
+        return True
+
+    # Same cell, still holding, no movement: ST re-delivery / jitter. Keep
+    # the press alive (refresh idle timer) without spamming the TUI.
+    if same_cell:
         gen = gen_prev + 1
-    _MOUSE_HOLD[vid] = (proto, col, row, gen)
+        _MOUSE_HOLD[vid] = (proto, col, row, gen, t0, moved)
+        _schedule_mouse_release(view, gen)
+        return True
+
+    # Cell changed → drag motion (scroll-thumb grab).
+    seq = _encode_mouse(proto, col, row, press=True, motion=True, sgr=sgr)
+    gen = gen_prev + 1
+    _MOUSE_HOLD[vid] = (proto, col, row, gen, t0, True)
     term.send_string(seq)
-    _schedule_mouse_release(view, term, gen)
+    _schedule_mouse_release(view, gen)
     return True
 
 
