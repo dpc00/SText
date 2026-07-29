@@ -451,7 +451,6 @@ try:
     )
     from .terminal.caret import (
         adjust_display_caret as _adjust_display_caret,
-        clear_optimistic_caret as _clear_optimistic_caret,
         pad_row_for_caret as _pad_row_for_caret,
     )
     from .terminal.mouse import (
@@ -513,7 +512,6 @@ except ImportError as _term_imp_err:
         )
         from ai.terminal.caret import (
             adjust_display_caret as _adjust_display_caret,
-            clear_optimistic_caret as _clear_optimistic_caret,
             pad_row_for_caret as _pad_row_for_caret,
         )
         from ai.terminal.mouse import (
@@ -3070,8 +3068,6 @@ class AiTerminalKeypressCommand(sublime_plugin.TextCommand):
             # host-side "optimistic" caret or force a paint before echo.
             # Pre-PTY caret/█ was the line-1 lag/flash path (July thrash); the
             # reference terminal waits on screen.cursor from the stream.
-            if not ctrl and not alt:
-                _clear_optimistic_caret(term.screen)
             # Fullscreen / mouse-tracking TUIs (Junie, Grok): never yank the
             # viewport on every printable — that fought mid-line caret and
             # made the next char land at EOL. Pin to rest instead.

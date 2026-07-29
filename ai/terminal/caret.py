@@ -163,129 +163,6 @@ def _clamp_live_col(screen, prompt_y, col):
     return min(max(int(col), start), limit)
 
 
-def clear_optimistic_caret(screen):
-    """Drop pending optimistic column (PTY moved or non-insert key)."""
-    for name in ("optimistic_x", "optimistic_base_x"):
-        if hasattr(screen, name):
-            try:
-                delattr(screen, name)
-            except Exception:
-                setattr(screen, name, None)
-
-
-def note_optimistic_insert(screen, delta=1):
-    """Advance display caret before the PTY redraws (Space / burst-type fix).
-
-    Grok often leaves hardware x on the last glyph for a frame after Space;
-    without this the host block sits on the word until the next key.
-
-    Fast typing: each key must *stack* on the previous optimistic column, not
-    reset to hardware+1 (PTY still on the same base). Otherwise 5 rapid keys
-    leave the host caret one cell ahead while the buffer is already +5 deep
-    once the PTY catches up — feels like typing is broken.
-
-    Returns True if a display refresh should run immediately.
-    """
-    py = find_prompt_row(screen)
-    if py is None:
-        return False
-    # Only while editing the prompt row (or about to pin to it).
-    if screen.y != py and screen.y <= py + 1:
-        return False
-    hw = int(screen.x) if screen.y == py else int(
-        getattr(screen, "input_caret_x", None) or content_end_col(screen, py)
-    )
-    opt = getattr(screen, "optimistic_x", None)
-    base = getattr(screen, "optimistic_base_x", None)
-    d = int(delta)
-    if opt is not None and base is not None:
-        opt_i = int(opt)
-        base_i = int(base)
-        if hw == base_i:
-            # PTY still lagging at the original base — stack from display col.
-            start = opt_i
-        elif d > 0 and base_i <= hw < opt_i:
-            # PTY partially caught up; keep stacking from display, rebase.
-            start = opt_i
-            screen.optimistic_base_x = hw
-        elif d < 0 and opt_i < hw <= base_i:
-            start = opt_i
-            screen.optimistic_base_x = hw
-        else:
-            # PTY caught up or jumped — fresh optimism from hardware.
-            start = hw
-            screen.optimistic_base_x = hw
-    else:
-        start = hw
-        screen.optimistic_base_x = hw
-    screen.optimistic_x = _clamp_live_col(screen, py, start + d)
-    screen.input_caret_x = screen.optimistic_x
-    return True
-
-
-def _display_col_on_prompt(screen, prompt_y):
-    """Hardware column, with optimistic insert advance if PTY not caught up.
-
-    Keeps remaining optimism across partial PTY catch-up so a 5-key burst
-    still shows the caret at +5 while hardware walks  +1..+5.
-    """
-    hw = int(screen.x)
-    opt = getattr(screen, "optimistic_x", None)
-    base = getattr(screen, "optimistic_base_x", None)
-    if opt is not None and base is not None:
-        opt_i = int(opt)
-        base_i = int(base)
-        if hw == opt_i:
-            # Fully caught up to the display target.
-            clear_optimistic_caret(screen)
-            col = hw
-        elif opt_i > base_i:
-            # Insert/forward optimism.
-            if hw >= opt_i:
-                clear_optimistic_caret(screen)
-                col = hw
-            elif hw >= base_i:
-                # Still behind display target (incl. partial catch-up).
-                screen.optimistic_base_x = hw
-                col = opt_i
-            else:
-                # Cursor jumped backwards relative to optimism base.
-                clear_optimistic_caret(screen)
-                col = hw
-        elif opt_i < base_i:
-            # Backspace optimism.
-            if hw <= opt_i:
-                clear_optimistic_caret(screen)
-                col = hw
-            elif hw <= base_i:
-                screen.optimistic_base_x = hw
-                col = opt_i
-            else:
-                clear_optimistic_caret(screen)
-                col = hw
-        else:
-            clear_optimistic_caret(screen)
-            col = hw
-    else:
-        col = hw
-    return _clamp_live_col(screen, prompt_y, col)
-
-
-def note_hardware_on_prompt(screen):
-    """If hardware cursor is on the prompt, remember editable column.
-
-    Must remember the *live* column, including after a just-typed space.
-    content_end_col ignores trailing spaces (clock-gap logic); collapsing
-    input_caret_x to that made the caret sit on the last letter after Space
-    until the next non-space key redraws.
-    """
-    py = find_prompt_row(screen)
-    if py is None or screen.y != py:
-        return
-    col = _display_col_on_prompt(screen, py)
-    screen.input_caret_x = col
-
-
 def adjust_display_caret(screen, cy, cx):
     """Map PTY cursor to ST caret; pin to prompt when parked on status footer."""
     py = find_prompt_row(screen)
@@ -293,12 +170,9 @@ def adjust_display_caret(screen, cy, cx):
         return cy, cx
 
     hist = 0 if screen.alt_screen else len(screen.history)
-    note_hardware_on_prompt(screen)
 
     # Live on the prompt row: Terminus/pyte style — trust hardware cursor only.
-    # No optimistic column stack (that fought Grok line-1 typing).
     if screen.y == py:
-        clear_optimistic_caret(screen)
         col = _clamp_live_col(screen, py, int(screen.x))
         screen.input_caret_x = col
         return hist + py, col
@@ -311,7 +185,6 @@ def adjust_display_caret(screen, cy, cx):
     # are not dead. (Terminus does not do this; we keep a minimal pin only when
     # hardware is clearly off the input row.)
     if screen.y > py + 1:
-        clear_optimistic_caret(screen)
         col = getattr(screen, "input_caret_x", None)
         if col is None:
             col = content_end_col(screen, py)
@@ -320,25 +193,6 @@ def adjust_display_caret(screen, cy, cx):
         return hist + py, col
 
     return cy, cx
-
-
-def nudge_input_caret(screen, delta):
-    """Optimistic left/right for when hardware is parked on the status bar.
-
-    Returns True if display should refresh immediately.
-    """
-    py = find_prompt_row(screen)
-    if py is None:
-        return False
-    # Only nudge when we would pin (hardware not on the prompt).
-    if screen.y <= py + 1:
-        return False
-    clear_optimistic_caret(screen)
-    col = getattr(screen, "input_caret_x", None)
-    if col is None:
-        col = content_end_col(screen, py)
-    screen.input_caret_x = _clamp_live_col(screen, py, col + delta)
-    return True
 
 
 def pad_row_for_caret(rows, cy, cx):
