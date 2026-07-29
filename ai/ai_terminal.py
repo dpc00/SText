@@ -2178,13 +2178,10 @@ def _route_mouse_click(view, term, event, *, discrete_click=False):
 
 
 def _scroll_tick_count(amount):
-    """How many wheel/key ticks for one ST scroll_lines amount.
+    """How many fine scroll steps for one gesture (feel, not max throughput).
 
-    Trackpads often report fractional amounts (0.15, 0.5, …). Rounding those
-    to 0 and then clamping to 1 still works, but tiny repeated events should
-    not all collapse to identical single ticks with no feel — use ceil for
-    |amount| < 1 so any real gesture moves at least one step, and scale up
-    for flings.
+    Keep this low: stacking PageUp×N + arrows×N + dual wheel felt jumpy even
+    when the *direction* was correct.
     """
     try:
         a = abs(float(amount))
@@ -2194,16 +2191,18 @@ def _scroll_tick_count(amount):
         return 1
     if a < 1.0:
         return 1
-    return max(1, min(int(round(a)), 12))
+    if a < 2.5:
+        return 2
+    return min(3, int(round(a)))
 
 
 def _route_mouse_wheel(view, term, amount):
-    """Forward trackpad/mouse-wheel scroll to the PTY. Always tries to send.
+    """Forward trackpad/mouse-wheel scroll to the PTY.
 
-    amount > 0 → scroll toward *older* history (PageUp / wheel-up).
-    amount < 0 → scroll toward *newer* / live end (PageDown / wheel-down).
+    amount > 0 → older history; amount < 0 → newer / toward live end.
 
-    Returns True if any bytes were written.
+    Feel: prefer *fine* steps (wheel + a few arrows). Page keys only on a
+    real fling — PageUp every nudge was correct but harsh.
     """
     try:
         direction_up = float(amount) > 0  # older history
@@ -2214,19 +2213,13 @@ def _route_mouse_wheel(view, term, amount):
     term._last_scroll_send_t = time.time()
 
     parts = []
-    # Page keys — primary for chat history when scrolled back
-    try:
-        page = _get_key_code("pageup" if direction_up else "pagedown")
-    except Exception:
-        page = "\x1b[5~" if direction_up else "\x1b[6~"
-    parts.append(page * n)
-    # Arrows — finer steps
+    # Fine: arrows (1–3 lines) — main continuous feel on a pad
     try:
         arrow = _get_key_code("up" if direction_up else "down")
     except Exception:
         arrow = "\x1b[A" if direction_up else "\x1b[B"
-    parts.append(arrow * max(1, n))
-    # Xterm wheel (centre + right chrome) when mouse tracking is on
+    parts.append(arrow * n)
+    # Fine: single-locus wheel when the app asked for mouse tracking
     if term.screen.mouse_tracking:
         col, row = _wheel_locus(view, term)
         sgr = term.screen.mouse_sgr
@@ -2235,14 +2228,13 @@ def _route_mouse_wheel(view, term, amount):
                 _encode_wheel(direction_up, col, row, sgr=sgr) for _ in range(n)
             )
         )
-        edge_col = max(1, int(term.screen.cols))
-        if edge_col != col:
-            parts.append(
-                "".join(
-                    _encode_wheel(direction_up, edge_col, row, sgr=sgr)
-                    for _ in range(n)
-                )
-            )
+    # Coarse: one Page only on a fling (n >= 3), not every 6px pan
+    if n >= 3:
+        try:
+            page = _get_key_code("pageup" if direction_up else "pagedown")
+        except Exception:
+            page = "\x1b[5~" if direction_up else "\x1b[6~"
+        parts.append(page)
     term.send_string("".join(parts))
     return True
 
@@ -3130,21 +3122,22 @@ def _vp_pan_to_tui_scroll(view, term, dy):
     if dy < -lh * 2.5 and (now - last_pan) > 0.4:
         return False
     # Skip if scroll_lines / mousemap already fed the PTY for this gesture.
+    # Slightly longer gap → smoother continuous pad motion, less double-fire.
     last = float(getattr(term, "_last_scroll_send_t", 0.0) or 0.0)
-    if (now - last) < 0.05:
+    if (now - last) < 0.08:
         return False
-    ticks = max(1, min(int(round(abs(dy) / max(lh * 0.25, 3.0))), 6))
-    # INVERT relative to old mapping: dy > 0 → older (amount > 0)
+    # Soft steps: a 6–12px nudge = 1 step; bigger pan = 2. Never 6× Page spam.
+    ticks = 1 if abs(dy) < lh * 0.75 else 2
+    # dy > 0 → older (amount > 0); dy < 0 → newer
     amount = float(ticks) if dy > 0 else -float(ticks)
     term._last_user_pan_t = now
     try:
         n = int(getattr(term, "_vp_pan_log_n", 0) or 0)
-        if n < 12:
+        if n < 6:
             print(
                 f"[ai_terminal] trackpad pan→TUI scroll "
-                f"dy={dy:.1f}px ticks={ticks} amount={amount} "
-                f"({'older' if amount > 0 else 'newer'}) "
-                f"mouse={term.screen.mouse_tracking}"
+                f"dy={dy:.1f}px steps={ticks} "
+                f"({'older' if amount > 0 else 'newer'})"
             )
             term._vp_pan_log_n = n + 1
         _route_mouse_wheel(view, term, amount)
