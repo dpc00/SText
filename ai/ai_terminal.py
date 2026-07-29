@@ -1827,6 +1827,52 @@ def _plain_cells_signature(rows):
     return "".join(parts)
 
 
+def _clear_view_selection(view):
+    """Collapse to a single empty caret at the start of the buffer."""
+    try:
+        sel = view.sel()
+        sel.clear()
+        sel.add(sublime.Region(0))
+    except Exception:
+        pass
+
+
+def _selection_is_spurious(view, term):
+    """True for selections that should not freeze TUI paints.
+
+    Copy-first mode + an empty host-pad frame (or the tiny first paint before
+    Grok draws) makes a full-buffer drag select Region(0, size) trivial. That
+    selection then trips _selection_paint_blocked forever — screen keeps the
+    real TUI, the ST view stays blank. Detect pad-only / never-drawn frames.
+    """
+    try:
+        sels = list(view.sel())
+    except Exception:
+        return False
+    if not sels or all(s.empty() for s in sels):
+        return False
+    # Only the "selected the whole (tiny) buffer" case is treated as spurious.
+    if len(sels) != 1:
+        return False
+    s0 = sels[0]
+    size = view.size()
+    if size <= 0 or s0.begin() != 0 or s0.end() != size:
+        return False
+    # Real Grok/Claude frames are thousands of chars; pad+cursor first paint
+    # is ~2 * HOST_SCROLL_PAD + a few rows (often ~60).
+    tiny = size < max(120, int(term.screen.rows) + int(term.screen.cols))
+    if tiny:
+        return True
+    try:
+        text = view.substr(sublime.Region(0, size))
+    except Exception:
+        return True
+    # Whole buffer is only host pad / whitespace / host cursor block.
+    if sum(1 for c in text if c not in " \n\t\r\u2588") < 8:
+        return True
+    return False
+
+
 def _selection_paint_blocked(view, term):
     """True when a full paint would destroy an in-progress ST text selection.
 
@@ -1834,7 +1880,26 @@ def _selection_paint_blocked(view, term):
     often static. Without a guard, the first mousedown (still empty sel) loses
     to a 30ms paint that sel.clear()+caret-pins — selection never sticks
     except on quiet regions (e.g. finished thinking blocks).
+
+    Must NOT freeze forever on a full-buffer select of the empty host pad
+    (Grok trust modal / first frame under copy-first): clear that selection
+    and allow paint. First successful paint is also never blocked.
     """
+    # First paint always wins — otherwise a stuck pad selection leaves the
+    # TUI blank while the PTY screen already has the real frame.
+    if getattr(term, "_last_render_text", None) is None:
+        if _selection_is_spurious(view, term) or any(
+            not s.empty() for s in view.sel()
+        ):
+            _clear_view_selection(view)
+        term._st_select_guard_until = 0.0
+        return False
+
+    if _selection_is_spurious(view, term):
+        _clear_view_selection(view)
+        term._st_select_guard_until = 0.0
+        return False
+
     try:
         if any(not s.empty() for s in view.sel()):
             return True
