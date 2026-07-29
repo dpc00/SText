@@ -1770,7 +1770,17 @@ def _do_render(term):
             # Exclusive host scope: punch out any ai.fb.* covering this cell
             # so the grey block is visible mid-line, not only at EOL.
             regions = _punch_host_cursor_region(regions, off)
-    # Host-only pad: give ST a scroll runway so trackpad keeps firing.
+    # Host-only pads above+below: trackpad can pan both ways. Shift colour
+    # region offsets by the top pad length (newlines only).
+    top_pad_chars = _HOST_SCROLL_PAD_LINES  # "\n" * N → N chars
+    if top_pad_chars and regions:
+        regions = [
+            (b + top_pad_chars, e + top_pad_chars, scope)
+            for (b, e, scope) in regions
+        ]
+    if top_pad_chars and host_painted:
+        # host cursor punch already applied inside regions list
+        pass
     text = _append_host_scroll_pad(text)
     view.run_command("ai_terminal_render",
                      {"text": text, "cursor": [cy, cx], "regions": regions})
@@ -2245,25 +2255,26 @@ def _route_mouse_wheel(view, term, amount):
 
 
 def _pin_terminal_viewport(view, term):
-    """Kill ST view pan so trackpad gestures cannot bounce the framebuffer.
+    """Snap viewport back after a trackpad pan (kill visible jiggle).
 
-    Fullscreen TUIs (alt screen / mouse tracking) always pin to (0,0).
-    Otherwise pin when content fits, or stick to bottom while auto-following.
+    TUI / mouse-tracking: rest at top of real content (below top pad) so
+    both up and down pans still have headroom. Not y=0 — that blocked
+    down-drag forever.
     """
     try:
-        # Live-heal older tabs created with scroll_past_end=False (that setting
-        # stops ST from re-firing trackpad scroll_lines once content fits).
         view.settings().set("scroll_past_end", True)
         if term is not None and (
             term.screen.alt_screen or term.screen.mouse_tracking
         ):
-            view.set_viewport_position((0.0, 0.0), False)
+            rest = _host_rest_y(view)
+            view.set_viewport_position((0.0, rest), False)
             return
         le = view.layout_extent()
         ve = view.viewport_extent()
         lh = view.line_height() or 12.0
-        if le[1] - ve[1] <= lh:
-            view.set_viewport_position((0.0, 0.0), False)
+        # Near-fit including pads: still use rest position
+        if le[1] - ve[1] <= lh * (2 * _HOST_SCROLL_PAD_LINES + 1):
+            view.set_viewport_position((0.0, _host_rest_y(view)), False)
         elif term is not None and getattr(term, "_auto_follow", False):
             _scroll_to_bottom(view)
     except Exception:
@@ -2776,29 +2787,34 @@ class AiTerminalSendStringWindowCommand(sublime_plugin.WindowCommand):
             term.send_string(string)
 
 
-# Trailing blank lines appended only in the host view (not sent to the PTY).
-# They exist so Windows trackpad / ST core always has a real scroll range and
-# keeps emitting scroll_lines — without them a fullscreen TUI "fits" and ST
-# only rubber-bands a few px then stops. Viewport is kept at y=0 for TUI apps
-# so the pad is never visible. Keep pad modest: too large = longer visible
-# jiggle when core pans before we pin.
-_HOST_SCROLL_PAD_LINES = 16
+# Host-only blank lines above AND below the TUI (not sent to the PTY).
+# Pad *below* alone left rest_y=0, so ST could only pan dy>0 (one direction).
+# Pad *above* gives headroom for dy<0 (finger-down / content-down). Rest
+# viewport sits at the top of the real content so both drags produce signal.
+_HOST_SCROLL_PAD_LINES = 12  # each side
 
 
 def _append_host_scroll_pad(text):
-    """Append host-only blank lines so ST keeps generating trackpad scroll."""
+    """Wrap TUI text in host-only pads so trackpad can pan both ways."""
     if text is None:
         text = ""
     if text and not text.endswith("\n"):
         text += "\n"
-    return text + ("\n" * _HOST_SCROLL_PAD_LINES)
+    pad = "\n" * _HOST_SCROLL_PAD_LINES
+    return pad + text + pad
+
+
+def _host_rest_y(view):
+    """Viewport y that shows the top of real TUI content (below top pad)."""
+    lh = view.line_height() or 12.0
+    return float(_HOST_SCROLL_PAD_LINES) * lh
 
 
 def _real_content_height(view):
-    """layout height excluding the host scroll pad."""
+    """layout height of real terminal content (excludes both host pads)."""
     le = view.layout_extent()
     lh = view.line_height() or 12.0
-    return max(0.0, float(le[1]) - _HOST_SCROLL_PAD_LINES * lh)
+    return max(0.0, float(le[1]) - 2 * _HOST_SCROLL_PAD_LINES * lh)
 
 
 def _scroll_to_bottom(view):
@@ -2808,9 +2824,14 @@ def _scroll_to_bottom(view):
     scrolling up to read scrollback. No-op when real content fits the viewport.
     """
     ve = view.viewport_extent()
+    lh = view.line_height() or 12.0
+    top = _host_rest_y(view)
     real_h = _real_content_height(view)
     if real_h > ve[1]:
-        view.set_viewport_position((0.0, real_h - ve[1]), False)
+        # Bottom of real content = top pad + real_h
+        view.set_viewport_position((0.0, top + real_h - ve[1]), False)
+    else:
+        view.set_viewport_position((0.0, top), False)
 
 
 class AiTerminalKeypressCommand(sublime_plugin.TextCommand):
@@ -2887,26 +2908,14 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
         vp = view.viewport_position()
         ve = view.viewport_extent()
         lh = view.line_height() or 20
-        # near_bottom uses real content height (excludes host scroll pad).
-        real_h = max(0.0, view.layout_extent()[1] - _HOST_SCROLL_PAD_LINES * lh)
-        # Before replace, layout still has old size; recompute after replace.
         view.replace(edit, sublime.Region(0, view.size()), text)
         # Re-apply colour regions every frame: view.replace invalidates the old
         # regions, and add_regions with the same key replaces what was there.
         _apply_color_regions(view, regions or [])
+        rest = _host_rest_y(view)
         real_h = _real_content_height(view)
-        near_bottom = (vp[1] + ve[1]) >= (real_h - lh * 2)
-        # Real TUI/content fit (ignore host pad which always makes layout tall).
+        near_bottom = (vp[1] + ve[1]) >= (rest + real_h - lh * 2)
         content_fits = real_h <= ve[1] + 0.5
-        # Auto-follow (Terminus-style): scroll to the bottom on new Claude
-        # output when _auto_follow is True. The flag flips False when the user
-        # scrolls up to read scrollback (vp drifts below where we last pinned)
-        # and re-engages when they scroll back near the bottom or type. This
-        # replaces the old near_bottom-only gate, which never followed on a
-        # fresh restart (vp starts at the top so near_bottom was False) and
-        # stopped following the moment the viewport drifted a couple of lines
-        # above the bottom -- so Claude's output appeared below the fold and
-        # the user said "our terminal is not listening to Claude."
         term = _Terminal.from_id(view.id())
         tui_owns_scroll = bool(
             term is not None
@@ -2922,34 +2931,33 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
             if term is not None
             else near_bottom
         )
+        # View rows: [top pad][TUI rows…][bottom pad]. PTY cursor is 0-based
+        # in the TUI grid only.
+        pad = _HOST_SCROLL_PAD_LINES
         if cursor is not None:
-            # Caret is in the real grid — never in the host pad.
-            last_row = max(0, view.rowcol(view.size())[0] - _HOST_SCROLL_PAD_LINES)
-            row = min(int(cursor[0]), last_row)
+            last_real = max(0, view.rowcol(view.size())[0] - pad)
+            row = min(int(cursor[0]) + pad, last_real)
             line_start = view.text_point(row, 0)
             line_end = view.line(line_start).b
             pos = min(line_start + int(cursor[1]), line_end)
             sel = view.sel()
             sel.clear()
             sel.add(sublime.Region(pos, pos))
-            # Fullscreen / mouse-tracking TUIs: always pin y=0 (app paints its
-            # own scroll). Host pad stays off-screen and only exists so the
-            # trackpad keeps generating scroll events.
             if tui_owns_scroll:
-                view.set_viewport_position((0.0, 0.0), False)
+                # Rest under top pad — both trackpad directions have headroom.
+                view.set_viewport_position((0.0, rest), False)
                 if term is not None:
-                    term._last_vp_y = 0.0
+                    term._last_vp_y = rest
             elif do_follow and not content_fits:
                 _scroll_to_bottom(view)
                 if term is not None:
                     term._last_vp_y = view.viewport_position()[1]
         else:
             if tui_owns_scroll:
-                view.set_viewport_position((0.0, 0.0), False)
+                view.set_viewport_position((0.0, rest), False)
             else:
-                # Stay out of the pad: move caret to last real line, not EOF.
-                last_row = max(0, view.rowcol(view.size())[0] - _HOST_SCROLL_PAD_LINES)
-                pt = view.text_point(last_row, 0)
+                last_real = max(0, view.rowcol(view.size())[0] - pad)
+                pt = view.text_point(last_real, 0)
                 sel = view.sel()
                 sel.clear()
                 sel.add(sublime.Region(pt, pt))
@@ -2958,7 +2966,7 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
                     if term is not None:
                         term._last_vp_y = view.viewport_position()[1]
         if content_fits or tui_owns_scroll:
-            view.set_viewport_position((0.0, 0.0), False)
+            view.set_viewport_position((0.0, rest), False)
 
 
 class AiTerminalNukeCommand(sublime_plugin.TextCommand):
@@ -3105,39 +3113,35 @@ def _poll_loop():
 _clamp_token = None
 
 
-def _vp_pan_to_tui_scroll(view, term, dy):
-    """Turn an ST viewport y-dip into PTY scroll — *content-grab* model.
+def _vp_pan_to_tui_scroll(view, term, dy_from_rest):
+    """Turn ST viewport drift from rest into PTY scroll — content-grab model.
 
-    ST core pans the view; visually the text slides with the fingers (grab
-    the buffer). That is the opposite of the TUI scroll-button (move view):
+    dy_from_rest = viewport_y - rest_y (rest = top of real TUI, below top pad).
 
-      dy > 0  text slides UP on screen   → reveal newer below  → amount < 0
-      dy < 0  text slides DOWN on screen → reveal older above  → amount > 0
+      dy > 0  text slides UP   → reveal newer below → amount < 0
+      dy < 0  text slides DOWN → reveal older above → amount > 0
 
-    (Scroll-button "up" would do the inverse; we deliberately do not match it.)
+    Opposite of the TUI scroll-button (view move). Both signs must work:
+    rest is not y=0 so finger-down can produce dy < 0.
     """
     lh = view.line_height() or 12.0
+    dy = float(dy_from_rest)
     if abs(dy) < 1.5:
         return False
     now = time.time()
-    # True focus overshoot is a large one-shot negative jump with no recent
-    # user pan. Normal trackpad content-drags are small and must pass through.
-    last_pan = float(getattr(term, "_last_user_pan_t", 0.0) or 0.0)
-    if dy < -lh * 2.5 and (now - last_pan) > 0.4:
-        return False
     last = float(getattr(term, "_last_scroll_send_t", 0.0) or 0.0)
     if (now - last) < 0.08:
         return False
     ticks = 1 if abs(dy) < lh * 0.75 else 2
-    # Content-grab: same direction the text moved on screen.
+    # Content-grab: text moves with fingers.
     amount = -float(ticks) if dy > 0 else float(ticks)
     term._last_user_pan_t = now
     try:
         n = int(getattr(term, "_vp_pan_log_n", 0) or 0)
-        if n < 6:
+        if n < 8:
             print(
                 f"[ai_terminal] content-grab pan→TUI "
-                f"dy={dy:.1f}px steps={ticks} "
+                f"dy_rest={dy:.1f}px steps={ticks} "
                 f"({'older' if amount > 0 else 'newer'})"
             )
             term._vp_pan_log_n = n + 1
@@ -3165,7 +3169,8 @@ def _clamp_vp_loop():
                 pass
             try:
                 vp = v.viewport_position()
-                dy = float(vp[1])
+                rest = _host_rest_y(v)
+                dy_rest = float(vp[1]) - rest
                 dx = float(vp[0])
             except Exception:
                 continue
@@ -3174,28 +3179,27 @@ def _clamp_vp_loop():
                 term.screen.alt_screen
                 or term.screen.mouse_tracking
             )
-            # Also treat near-fit buffers as TUI (Grok with force_main_screen
-            # often has little host scrollback and only core-pan room).
             try:
                 le = v.layout_extent()
                 ve = v.viewport_extent()
                 lh = v.line_height() or 12.0
-                near_fit = (le[1] - ve[1]) <= lh * 3
+                # Near-fit relative to real content (pads always add height).
+                near_fit = _real_content_height(v) <= ve[1] + lh * 2
             except Exception:
                 near_fit = False
                 lh = 12.0
 
             if tui_like or near_fit:
-                if abs(dy) >= 1.5:
-                    _vp_pan_to_tui_scroll(v, term, dy)
-                if abs(dy) >= 0.5 or abs(dx) >= 0.5:
-                    v.set_viewport_position((0.0, 0.0), False)
+                if abs(dy_rest) >= 1.5:
+                    _vp_pan_to_tui_scroll(v, term, dy_rest)
+                if abs(dy_rest) >= 0.5 or abs(dx) >= 0.5:
+                    v.set_viewport_position((0.0, rest), False)
                 continue
 
             # Tall scrollback shell: only kill tiny overflow dips, don't steal
             # real user scrollback browsing.
-            if le[1] - ve[1] <= lh and (dx != 0.0 or dy != 0.0):
-                v.set_viewport_position((0.0, 0.0), False)
+            if le[1] - ve[1] <= lh and (dx != 0.0 or abs(dy_rest) >= 0.5):
+                v.set_viewport_position((0.0, rest), False)
     except Exception as e:
         print(f"[ai_terminal] clamp loop error: {e}")
     # 8ms: catch the brief pan before the next paint eats it
