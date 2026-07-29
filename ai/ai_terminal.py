@@ -1273,6 +1273,11 @@ class _Terminal:
         # caret is usually on the command line, which makes TUI scrollbars
         # ignore the wheel. Updated on every routed mouse event.
         self._last_mouse_cell = None
+        # Pixel pan accumulator: ST trackpad often only nudges viewport_position
+        # (no scroll_lines / no mousemap scroll_up). Clamp converts that dip
+        # into TUI wheel ticks before pinning back to (0,0).
+        self._vp_pan_accum = 0.0
+        self._vp_pan_armed = False  # True after we accept a pan as user scroll
         # Asciicast v3 recording (recording patch). When recording is on,
         # start() opens a per-session .cast file and writes the v3 header;
         # _on_data / send_string / resize / kill append timed events. Off
@@ -1425,6 +1430,7 @@ class _Terminal:
             _MOUSE_HOLD.pop(vid, None)
         _MOUSE_LAST_CLICK.pop(vid, None)
         self._last_mouse_cell = None
+        self._vp_pan_accum = 0.0
         # Recording patch: emit an "x" (exit) event and close the .cast
         # file so the recording ends cleanly. The stream-layer "o" events
         # already captured everything Claude emitted, so there's no need
@@ -3047,6 +3053,40 @@ def _poll_loop():
 _clamp_token = None
 
 
+def _vp_pan_to_tui_scroll(view, term, dy):
+    """Turn an ST viewport y-dip into PTY wheel/Page ticks, then pin.
+
+    Windows trackpads often never fire scroll_lines or mousemap scroll_up;
+    they only shove viewport_position a few pixels. That dip *is* the gesture.
+    """
+    lh = view.line_height() or 12.0
+    # Large negative y is ST view.show() overshoot on focus/hover — not a
+    # user scroll. Pin only; do not PageDown the TUI on every focus.
+    if dy < -lh * 1.5:
+        return
+    term._vp_pan_accum = float(getattr(term, "_vp_pan_accum", 0.0) or 0.0) + float(dy)
+    # ~1/3 line or 4px — enough to reject noise, low enough for a 6px nudge
+    threshold = max(4.0, lh * 0.3)
+    accum = term._vp_pan_accum
+    if abs(accum) < threshold:
+        return
+    ticks = max(1, min(int(round(abs(accum) / max(lh * 0.35, 4.0))), 8))
+    # dy/accum > 0: viewport moved down → user scrolled toward later content
+    # → wheel-down → negative amount for _route_mouse_wheel.
+    amount = -float(ticks) if accum > 0 else float(ticks)
+    term._vp_pan_accum = 0.0
+    try:
+        if not getattr(term, "_vp_pan_logged", False):
+            print(
+                f"[ai_terminal] trackpad pan→TUI scroll "
+                f"accum={accum:.1f}px ticks={ticks} amount={amount}"
+            )
+            term._vp_pan_logged = True
+        _route_mouse_wheel(view, term, amount)
+    except Exception as e:
+        print(f"[ai_terminal] vp-pan scroll failed: {e}")
+
+
 def _clamp_vp_loop():
     global _clamp_token
     try:
@@ -3054,13 +3094,23 @@ def _clamp_vp_loop():
             v = term.view
             if not v or not v.is_valid():
                 continue
-            # Fullscreen TUI / mouse-tracking apps own all scrolling. Never let
-            # ST trackpad pan leave the viewport off (0,0) — that is the bounce
-            # the user sees as "whole tab moves a few pixels then restores".
+            # Fullscreen TUI / mouse-tracking apps own all scrolling.
+            # Trackpad path on Windows: core pans vp a few px (no reliable
+            # scroll_lines). Convert that pan into TUI scroll, then pin (0,0)
+            # so the user never sees a lasting dip — only the TUI moves.
             try:
                 if term.screen.alt_screen or term.screen.mouse_tracking:
+                    # Keep scroll_past_end on so ST continues to allow a brief
+                    # pan (our signal). Without it, pan dies after one nudge.
+                    try:
+                        v.settings().set("scroll_past_end", True)
+                    except Exception:
+                        pass
                     vp = v.viewport_position()
-                    if vp[0] != 0.0 or vp[1] != 0.0:
+                    dy = float(vp[1])
+                    if abs(dy) >= 0.5 or abs(float(vp[0])) >= 0.5:
+                        if abs(dy) >= 0.5:
+                            _vp_pan_to_tui_scroll(v, term, dy)
                         v.set_viewport_position((0.0, 0.0), False)
                     continue
             except Exception:
