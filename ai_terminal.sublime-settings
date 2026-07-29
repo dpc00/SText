@@ -179,6 +179,17 @@
                 "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
             }
         },
+        "Junie": {
+            // JetBrains Junie CLI (shim: ~/.local/bin/junie.bat). Interactive TUI
+            // in the project cwd — not the PyCharm plugin panel. Prefer full
+            // path so a long-lived ST process still finds the shim.
+            "launch_command": [
+                "C:\\Users\\donal\\.local\\bin\\junie.bat"
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1"
+            }
+        },
         "Kimi": {
             "launch_command": [
                 "kimi"

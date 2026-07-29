@@ -132,6 +132,11 @@
                                 "args": { "profile": "JCode" }
                             },
                             {
+                                "caption": "Junie",
+                                "command": "ai_terminal_open_here",
+                                "args": { "profile": "Junie" }
+                            },
+                            {
                                 "caption": "Kimi",
                                 "command": "ai_terminal_open_here",
                                 "args": { "profile": "Kimi" }
