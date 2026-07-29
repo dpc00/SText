@@ -421,6 +421,10 @@ try:
         HEX as _HEX,
         scope_name_for as _scope_name_for,
         rstrip_cells as _rstrip_cells,
+        scheme_colors_for as _scheme_colors_for,
+        ensure_contrast as _ensure_contrast,
+        DEFAULT_FG_HEX as _DEFAULT_FG_HEX,
+        BG_NEAR_BLACK as _BG_NEAR_BLACK,
         _ANSI16_RGB,
     )
     from .terminal.screen import Screen as _Screen, BLANK as _BLANK
@@ -478,6 +482,10 @@ except ImportError as _term_imp_err:
             HEX as _HEX,
             scope_name_for as _scope_name_for,
             rstrip_cells as _rstrip_cells,
+            scheme_colors_for as _scheme_colors_for,
+            ensure_contrast as _ensure_contrast,
+            DEFAULT_FG_HEX as _DEFAULT_FG_HEX,
+            BG_NEAR_BLACK as _BG_NEAR_BLACK,
             _ANSI16_RGB,
         )
         from ai.terminal.screen import Screen as _Screen, BLANK as _BLANK
@@ -585,6 +593,58 @@ def _ensure_host_cursor_rule(scheme_data):
     return True
 
 
+def _make_fb_rule(fg, bg):
+    """Build one ai.fb.* colour-scheme rule with readable contrast."""
+    fh, bh = _scheme_colors_for(fg, bg)
+    return {"scope": f"ai.fb.{fg}.{bg}", "background": bh, "foreground": fh}
+
+
+def _repair_scheme_rules(scheme_data):
+    """Fix legacy ai.fb.* rules missing fg or with black-on-black contrast.
+
+    Older dynamic registration wrote background-only rules for default-fg
+    scopes (ai.fb.0.*). Sublime's region painter then swaps/drops fg so
+    Grok input text on a tinted panel becomes invisible. Also lift any
+    near-black-on-near-black pair that survived from ANSI black on dark bg.
+
+    Returns number of rules mutated.
+    """
+    if not isinstance(scheme_data, dict):
+        return 0
+    fixed = 0
+    rules = scheme_data.setdefault("rules", [])
+    for r in rules:
+        sc = r.get("scope") or ""
+        if not sc.startswith("ai.fb."):
+            continue
+        parts = sc.split(".")
+        if len(parts) != 4:
+            continue
+        try:
+            fg_id, bg_id = int(parts[2]), int(parts[3])
+        except ValueError:
+            continue
+        want_fg, want_bg = _scheme_colors_for(fg_id, bg_id)
+        changed = False
+        if r.get("background") != want_bg:
+            r["background"] = want_bg
+            changed = True
+        # Always ensure a foreground; repair low-contrast / missing.
+        cur_fg = r.get("foreground")
+        if not cur_fg:
+            r["foreground"] = want_fg
+            changed = True
+        else:
+            fixed_fg = _ensure_contrast(cur_fg, r.get("background") or want_bg)
+            if fixed_fg != cur_fg:
+                r["foreground"] = fixed_fg
+                changed = True
+            # Prefer canonical palette fg when we had to invent one from missing.
+        if changed:
+            fixed += 1
+    return fixed
+
+
 def _init_dynamic_color_scheme():
     global _SCHEME_PATH, _REGISTERED_SCOPES
     try:
@@ -616,6 +676,13 @@ def _init_dynamic_color_scheme():
                 if _ensure_host_cursor_rule(data):
                     dirty = True
                     _color_scheme_log("[init] Ensured ai.terminal.host_cursor rule.")
+                n_fix = _repair_scheme_rules(data)
+                if n_fix:
+                    dirty = True
+                    _color_scheme_log(
+                        f"[init] Repaired {n_fix} ai.fb.* rules "
+                        f"(missing fg / low contrast)."
+                    )
                 if dirty:
                     _save_color_scheme(data)
                 _REGISTERED_SCOPES.add(_HOST_CURSOR_RULE["scope"])
@@ -805,22 +872,8 @@ def _register_scope_async(fg, bg):
             f"[register] Encountered new scope: {scope} "
             f"(Memory registered count: {len(_REGISTERED_SCOPES)})"
         )
-        
-        # Calculate colors
-        fh = _HEX[fg] if fg < len(_HEX) else None
-        bh = _HEX[bg] if bg < len(_HEX) else None
-        
-        # Decide background color
-        if bh is None:
-            bg_fill = "#000001"
-        else:
-            bsum = int(bh[1:3], 16) + int(bh[3:5], 16) + int(bh[5:7], 16)
-            bg_fill = bh if bsum >= _BG_LUMA_THRESHOLD else "#000001"
-            
-        # Define both foreground and background to fully avoid the ST foreground-swap bug
-        kw = {"scope": scope, "background": bg_fill, "foreground": fh or "#FFFFFF"}
-            
-        _PENDING_RULES.append(kw)
+        # Always set fg+bg with minimum contrast (ST bg-only rules hide text).
+        _PENDING_RULES.append(_make_fb_rule(fg, bg))
         
         if _WRITE_PENDING:
             return
@@ -882,6 +935,9 @@ def _flush_pending_rules():
     bg = g.get("background", "#000000")
     g["caret"] = bg
     _ensure_host_cursor_rule(scheme_data)
+    n_fix = _repair_scheme_rules(scheme_data)
+    if n_fix:
+        _color_scheme_log(f"[flush] Repaired {n_fix} legacy ai.fb.* rules.")
 
     _save_color_scheme(scheme_data)
     msg = (

@@ -87,6 +87,62 @@ HEX = [None] + [xterm_hex(i) for i in range(256)]
 _DEFAULT_FG_ID = 16  # xterm 15 bright white
 _DEFAULT_BG_ID = 1   # xterm 0 black
 
+# Near-black fill used instead of #000000 so ST still treats the region as
+# having a real background (Terminus-style). Below this channel-sum, dark
+# palette backgrounds collapse to the near-black fill.
+BG_NEAR_BLACK = "#000001"
+DEFAULT_FG_HEX = "#FFFFFF"
+
+
+def hex_channel_sum(h):
+    """Sum of R+G+B for a #RRGGBB string; 0 if malformed."""
+    if not h or len(h) < 7 or h[0] != "#":
+        return 0
+    try:
+        return int(h[1:3], 16) + int(h[3:5], 16) + int(h[5:7], 16)
+    except ValueError:
+        return 0
+
+
+def hex_luma(h):
+    """Perceptual luma 0..255 for #RRGGBB."""
+    if not h or len(h) < 7 or h[0] != "#":
+        return 0
+    try:
+        r, g, b = int(h[1:3], 16), int(h[3:5], 16), int(h[5:7], 16)
+    except ValueError:
+        return 0
+    return (299 * r + 587 * g + 114 * b) // 1000
+
+
+def ensure_contrast(fg_hex, bg_hex, min_delta=48):
+    """Return a readable fg against bg_hex (white or black if too close).
+
+    Grok and other dark TUIs often paint ANSI black (or near-black truecolor)
+    on a dark panel. After we collapse dark backgrounds to near-black for the
+    ST region bug, that becomes black-on-black — typed text vanishes.
+    """
+    fg_hex = fg_hex or DEFAULT_FG_HEX
+    bg_hex = bg_hex or BG_NEAR_BLACK
+    if abs(hex_luma(fg_hex) - hex_luma(bg_hex)) >= min_delta:
+        return fg_hex
+    return DEFAULT_FG_HEX if hex_luma(bg_hex) < 128 else "#000000"
+
+
+def scheme_colors_for(fg_id, bg_id):
+    """Map 1-based palette ids (0 = default) -> (fg_hex, bg_fill_hex).
+
+    Pure helper used by the Sublime scheme registrar and unit tests.
+    """
+    fh = HEX[fg_id] if 0 < fg_id < len(HEX) else None
+    bh = HEX[bg_id] if 0 < bg_id < len(HEX) else None
+    if bh is None:
+        bg_fill = BG_NEAR_BLACK
+    else:
+        bg_fill = bh if hex_channel_sum(bh) >= BG_LUMA_THRESHOLD else BG_NEAR_BLACK
+    fg_fill = ensure_contrast(fh or DEFAULT_FG_HEX, bg_fill)
+    return fg_fill, bg_fill
+
 
 def scope_name_for(attr):
     """Map packed cell attr -> scope name, or None for default.

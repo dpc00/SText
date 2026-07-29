@@ -166,6 +166,56 @@ class TestParser(unittest.TestCase):
         self.assertEqual(s.grid[0][0], "X")
         self.assertTrue(s.attrs[0][0] & REVERSE)
 
+    def test_truecolor_semicolon_rgb(self):
+        s = Screen(10, 3)
+        p = Parser(s)
+        p.feed("\x1b[38;2;255;0;0mR")
+        from ai.terminal.colors import scope_name_for
+        scope = scope_name_for(s.attrs[0][0])
+        self.assertIsNotNone(scope)
+        # Quantized red should be a non-default fg on default bg.
+        self.assertTrue(scope.startswith("ai.fb."))
+        self.assertTrue(scope.endswith(".0"))
+
+    def test_truecolor_colon_rgb(self):
+        """Junie/Compose: 38:2:r:g:b without colour-space id."""
+        s = Screen(10, 3)
+        p = Parser(s)
+        p.feed("\x1b[38:2:255:255:255mW")
+        from ai.terminal.colors import scope_name_for, quantize256
+        scope = scope_name_for(s.attrs[0][0])
+        # white → palette index 15 or nearby grey/white (1-based in scope)
+        fg = int(scope.split(".")[2])
+        self.assertEqual(fg, quantize256(255, 255, 255) + 1)
+
+    def test_truecolor_colon_with_colorspace(self):
+        """ISO-8613-6 empty CS: 38:2::R:G:B must not eat R as green."""
+        s = Screen(10, 3)
+        p = Parser(s)
+        p.feed("\x1b[38:2::255:128:64mX")
+        from ai.terminal.colors import scope_name_for, quantize256
+        scope = scope_name_for(s.attrs[0][0])
+        fg = int(scope.split(".")[2])
+        self.assertEqual(fg, quantize256(255, 128, 64) + 1)
+
+
+class TestSchemeContrast(unittest.TestCase):
+    def test_black_on_default_bg_becomes_readable(self):
+        from ai.terminal.colors import scheme_colors_for, hex_luma
+        fg, bg = scheme_colors_for(1, 0)  # ANSI black on default
+        self.assertGreaterEqual(abs(hex_luma(fg) - hex_luma(bg)), 48)
+
+    def test_default_fg_on_dark_bg_has_foreground(self):
+        from ai.terminal.colors import scheme_colors_for, DEFAULT_FG_HEX
+        fg, bg = scheme_colors_for(0, 2)  # default fg on red bg
+        self.assertEqual(fg, DEFAULT_FG_HEX)
+        self.assertTrue(fg.startswith("#"))
+        self.assertTrue(bg.startswith("#"))
+
+    def test_ensure_contrast_lifts_black_on_nearblack(self):
+        from ai.terminal.colors import ensure_contrast
+        self.assertEqual(ensure_contrast("#000000", "#000001"), "#FFFFFF")
+
 
 class TestRender(unittest.TestCase):
     def test_coalesce_regions(self):

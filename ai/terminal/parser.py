@@ -119,17 +119,37 @@ class Parser:
 
         ;5;N (256-colour) is taken directly (N is already a 256-palette index);
         ;2;r;g;b (truecolour) is quantized to the nearest xterm 256 entry.
-        Returns 0 (default) on a malformed spec."""
+
+        ISO-8613-6 colon form may include a colour-space id:
+          38:2:R:G:B       → RGB only (3 components after 2)
+          38:2::R:G:B      → empty CS + RGB (4 components; CS skipped)
+          38:2:0:R:G:B     → CS 0 + RGB
+        Semicolon form is almost always 38;2;R;G;B (no CS). When exactly 3
+        values follow 2, treat them as RGB; when 4+, skip the first as CS.
+
+        Returns (color_id, params_consumed_after_38_or_48) where color_id is
+        1-based xterm id or 0 (default). consumed counts the mode + args
+        (not including the 38/48 itself) so the SGR loop can advance.
+        """
         if j >= len(p):
-            return 0
-        if p[j] == 5 and j + 1 < len(p):
+            return 0, 0
+        mode = p[j]
+        if mode == 5 and j + 1 < len(p):
             n = p[j + 1]
             if 0 <= n <= 255:
-                return n + 1
-            return 0
-        if p[j] == 2 and j + 3 < len(p):
-            return quantize256(p[j + 1], p[j + 2], p[j + 3]) + 1
-        return 0
+                return n + 1, 2
+            return 0, 2
+        if mode == 2:
+            rest = len(p) - (j + 1)
+            if rest >= 4:
+                # CS + R + G + B (ISO / empty-CS colon form).
+                r, g, b = p[j + 2], p[j + 3], p[j + 4]
+                return quantize256(r, g, b) + 1, 5
+            if rest >= 3:
+                r, g, b = p[j + 1], p[j + 2], p[j + 3]
+                return quantize256(r, g, b) + 1, 4
+            return 0, 1
+        return 0, 0
 
     def _sgr(self, p):
         """Apply an SGR parameter list to the current fg/bg/flags.
@@ -163,21 +183,19 @@ class Parser:
             elif 30 <= c <= 37:
                 self._fg = c - 30 + 1
             elif c == 38 and i + 1 < n:
-                self._fg = self._parse_ext_color(p, i + 1)
-                if p[i + 1] == 5 and i + 2 < n:
-                    i += 2
-                elif p[i + 1] == 2 and i + 4 < n:
-                    i += 4
+                cid, consumed = self._parse_ext_color(p, i + 1)
+                self._fg = cid
+                if consumed:
+                    i += consumed
             elif c == 39:
                 self._fg = 0
             elif 40 <= c <= 47:
                 self._bg = c - 40 + 1
             elif c == 48 and i + 1 < n:
-                self._bg = self._parse_ext_color(p, i + 1)
-                if p[i + 1] == 5 and i + 2 < n:
-                    i += 2
-                elif p[i + 1] == 2 and i + 4 < n:
-                    i += 4
+                cid, consumed = self._parse_ext_color(p, i + 1)
+                self._bg = cid
+                if consumed:
+                    i += consumed
             elif c == 49:
                 self._bg = 0
             elif 90 <= c <= 97:
