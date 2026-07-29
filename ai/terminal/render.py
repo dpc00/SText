@@ -24,6 +24,11 @@ def cell_needs_host_cursor(rows, cy, cx):
     return not bool(attr & REVERSE)
 
 
+# Full block: ST add_regions often paints no fill on a lone space, so a
+# reverse-video space at EOL is invisible even when the region/scope is correct.
+_HOST_CURSOR_GLYPH = "\u2588"  # █
+
+
 def paint_host_cursor(rows, cy, cx):
     """Ensure a visible cursor cell when the app did not SGR-reverse it.
 
@@ -33,13 +38,12 @@ def paint_host_cursor(rows, cy, cx):
     no insertion point until a keystroke.
 
     Host synthesis ORs REVERSE onto the cell so it rides the normal ai.fb.*
-    colour path (same as app-drawn block cursors). A dedicated
-    ai.terminal.host_cursor add_regions scope was tried and abandoned for
-    the paint step: the region was present but often produced no visible
-    fill, so the command line looked cursorless.
+    colour path. Blank/space cells also become a full-block glyph (█): reverse
+    on a space is frequently invisible under ST add_regions, while reverse on
+    █ is a solid block. Display-only — never written to the PTY.
 
     Returns (rows, host_painted). host_painted is True when we synthesized
-    reverse (caller may skip double-applying a host scope).
+    the cursor cell (caller may skip double-applying a host scope).
     """
     if rows is None or cy is None or cx is None:
         return rows, False
@@ -47,16 +51,15 @@ def paint_host_cursor(rows, cy, cx):
         return rows, False
     rows = list(rows)
     row = list(rows[cy])
-    # Cursor often sits past rstripped trailing spaces; pad so the cell exists
-    # for cursor_text_offset + a one-cell reverse block.
+    # Cursor often sits past rstripped trailing spaces; pad so the cell exists.
     while len(row) <= cx:
         row.append((" ", 0))
     ch, attr = row[cx]
     if attr & REVERSE:
         rows[cy] = row
         return rows, False
-    if not ch:
-        ch = " "
+    if not ch or ch in (" ", "\u00a0"):
+        ch = _HOST_CURSOR_GLYPH
     row[cx] = (ch, attr | REVERSE)
     rows[cy] = row
     return rows, True
