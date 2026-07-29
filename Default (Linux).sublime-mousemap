@@ -1,0 +1,14 @@
+[
+	// Same as Windows: capture bare wheel/trackpad for ai_terminal, fall
+	// through to native scroll on other views (handled in the command).
+	{
+		"button": "scroll_up",
+		"command": "ai_terminal_trackpad_scroll",
+		"args": { "direction": "up", "amount": 3.0 }
+	},
+	{
+		"button": "scroll_down",
+		"command": "ai_terminal_trackpad_scroll",
+		"args": { "direction": "down", "amount": 3.0 }
+	}
+]

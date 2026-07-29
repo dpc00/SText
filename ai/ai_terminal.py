@@ -2936,6 +2936,44 @@ class AiTerminalNoopCommand(sublime_plugin.TextCommand):
         pass
 
 
+class AiTerminalTrackpadScrollCommand(sublime_plugin.TextCommand):
+    """Receive mouse-wheel / two-finger trackpad via the mousemap.
+
+    ST's Default (Windows) mousemap does not bind bare scroll_up/scroll_down;
+    the core pans the view instead, and scroll_lines is often never fired (or
+    fires once then dies when content fits). User mousemap routes those buttons
+    here. On a terminal view: forward to the PTY and pin the viewport. On any
+    other view: fall through to native scroll_lines so normal editors still
+    scroll.
+    """
+
+    def run(self, edit, direction="up", amount=3.0):
+        view = self.view
+        try:
+            amt = abs(float(amount))
+        except (TypeError, ValueError):
+            amt = 3.0
+        if amt <= 0:
+            amt = 1.0
+        # ST scroll_lines: positive = content moves down = "scroll up"
+        signed = amt if direction == "up" else -amt
+
+        if not view.settings().get(_VIEW_SETTING):
+            view.run_command("scroll_lines", {"amount": signed})
+            return
+
+        term = _Terminal.from_id(view.id())
+        if term is None:
+            view.run_command("scroll_lines", {"amount": signed})
+            return
+
+        _route_mouse_wheel(view, term, signed)
+        _pin_terminal_viewport(view, term)
+        sublime.set_timeout(
+            lambda v=view, t=term: _pin_terminal_viewport(v, t), 0
+        )
+
+
 class AiTerminalDumpScreenCommand(sublime_plugin.TextCommand):
     """Print the current screen grid and cursor to the ST console for debugging.
 
