@@ -1337,7 +1337,11 @@ class _Terminal:
         # (no scroll_lines / no mousemap scroll_up). Clamp converts that dip
         # into TUI wheel ticks before pinning back to (0,0).
         self._vp_pan_accum = 0.0
-        self._vp_pan_armed = False  # True after we accept a pan as user scroll
+        # False until viewport has settled at rest after spawn. Without this,
+        # clamp sees dy_rest ≈ -pad_height on the empty first frame and injects
+        # Up×N into the PTY before Grok draws (casts start with \x1b[A\x1b[A).
+        self._vp_pan_armed = False
+        self._spawn_mono = time.monotonic()
         # Asciicast v3 recording (recording patch). When recording is on,
         # start() opens a per-session .cast file and writes the v3 header;
         # _on_data / send_string / resize / kill append timed events. Off
@@ -1837,6 +1841,26 @@ def _clear_view_selection(view):
         pass
 
 
+def _text_is_pad_only(text):
+    """True when text is only host pad / whitespace / host cursor block █."""
+    if text is None:
+        return True
+    return sum(1 for c in text if c not in " \n\t\r\u2588") < 8
+
+
+def _view_lags_screen(term):
+    """True when ST still shows the empty host-pad frame (or never painted).
+
+    Grok can fill the PTY screen while the view stays on the first pad-only
+    paint if a selection/guard aborts later frames. Never treat that as a
+    user copy-selection worth freezing for.
+    """
+    last = getattr(term, "_last_render_text", None)
+    if last is None:
+        return True
+    return _text_is_pad_only(last)
+
+
 def _selection_is_spurious(view, term):
     """True for selections that should not freeze TUI paints.
 
@@ -1867,10 +1891,7 @@ def _selection_is_spurious(view, term):
         text = view.substr(sublime.Region(0, size))
     except Exception:
         return True
-    # Whole buffer is only host pad / whitespace / host cursor block.
-    if sum(1 for c in text if c not in " \n\t\r\u2588") < 8:
-        return True
-    return False
+    return _text_is_pad_only(text)
 
 
 def _selection_paint_blocked(view, term):
@@ -1883,14 +1904,16 @@ def _selection_paint_blocked(view, term):
 
     Must NOT freeze forever on a full-buffer select of the empty host pad
     (Grok trust modal / first frame under copy-first): clear that selection
-    and allow paint. First successful paint is also never blocked.
+    and allow paint. First successful paint is also never blocked. While the
+    ST view still lags the PTY (pad-only last paint), never block either.
     """
-    # First paint always wins — otherwise a stuck pad selection leaves the
-    # TUI blank while the PTY screen already has the real frame.
-    if getattr(term, "_last_render_text", None) is None:
-        if _selection_is_spurious(view, term) or any(
-            not s.empty() for s in view.sel()
-        ):
+    # Pad-only / never-painted view: always paint. Clear any accidental full
+    # select so copy-first drag on the empty frame cannot freeze forever.
+    if _view_lags_screen(term):
+        try:
+            if any(not s.empty() for s in view.sel()):
+                _clear_view_selection(view)
+        except Exception:
             _clear_view_selection(view)
         term._st_select_guard_until = 0.0
         return False
@@ -3234,7 +3257,19 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
 
         # Abort buffer mutation while the user is selecting text. Even a
         # single-char patch shifts offsets and kills a drag mid-response.
+        # Critical: _do_render already cleared screen.dirty before invoking us.
+        # If we return without painting, re-dirty + re-arm or the view freezes
+        # on the empty pad frame until the next PTY byte (Grok often silent).
         if term is not None and _selection_paint_blocked(view, term):
+            try:
+                term.screen.dirty = True
+            except Exception:
+                pass
+            try:
+                term._render_pending = False
+                _schedule_render(term)
+            except Exception:
+                pass
             return
 
         patched = False
@@ -3561,6 +3596,20 @@ def _clamp_vp_loop():
                 lh = 12.0
 
             if tui_like or near_fit:
+                # Spawn settle: pin only until viewport sits at rest once
+                # after a short grace. Sending pan→TUI keys on the first
+                # dy_rest=-pad_height injects Up arrows into Grok at t=0.
+                armed = bool(getattr(term, "_vp_pan_armed", False))
+                if not armed:
+                    if abs(dy_rest) < 1.5 and abs(dx) < 0.5:
+                        age = time.monotonic() - float(
+                            getattr(term, "_spawn_mono", 0.0) or 0.0
+                        )
+                        if age >= 0.4:
+                            term._vp_pan_armed = True
+                    elif abs(dy_rest) >= 0.5 or abs(dx) >= 0.5:
+                        v.set_viewport_position((0.0, rest), False)
+                    continue
                 if abs(dy_rest) >= 1.5:
                     _vp_pan_to_tui_scroll(v, term, dy_rest)
                 if abs(dy_rest) >= 0.5 or abs(dx) >= 0.5:
