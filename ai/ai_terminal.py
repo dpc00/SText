@@ -1808,11 +1808,10 @@ def _do_render(term):
     term._render_pending = False
     if not term.screen.dirty:
         return
-    # Stable host cursor (2026-07-28 design, still current):
-    #   ST caret invisible; app reverse-video is the Claude cursor; otherwise
-    #   paint_host_cursor pads a cell and we exclusive-tag ai.terminal.host_cursor
-    #   (punch mid-line colour so the grey block wins). Do not OR REVERSE /
-    #   ai.fb.1.16 for host synthesis — that was tried and abandoned.
+    # Host cursor: ST caret stays invisible (Claude reverse-video is the only
+    # cursor when the app paints it). When the app does not reverse the cell
+    # (Grok / shells), paint_host_cursor pads the cell and we place an HTML
+    # phantom block — colour-scheme add_regions one-cell fills were unreliable.
     # adjust_display_caret remaps when Claude parks the hardware cursor on
     # the status footer while the edit buffer is still on the `>` row.
     with term._lock:
@@ -1823,9 +1822,6 @@ def _do_render(term):
     rows, host_painted = _paint_host_cursor(rows, cy, cx)
     text, regions = _build_text_and_regions(rows)
     caret_off = _cursor_text_offset(rows, cy, cx)
-    if host_painted and caret_off is not None and 0 <= caret_off < len(text):
-        # Exclusive host scope so mid-line ai.fb.* does not hide the block.
-        regions = _punch_host_cursor_region(regions, caret_off)
     # Host-only pads above+below: trackpad can pan both ways. Shift colour
     # region offsets and caret by the top pad length (newlines only).
     top_pad_chars = _HOST_SCROLL_PAD_LINES  # "\n" * N → N chars
@@ -1847,6 +1843,11 @@ def _do_render(term):
             "regions": regions,
         },
     )
+    # Phantom after replace so positions match the new buffer.
+    if host_painted and caret_off is not None and 0 <= caret_off < view.size():
+        _set_host_cursor_phantom(view, caret_off)
+    else:
+        _clear_host_cursor_phantom(view)
 
 
 def _build_text_and_regions(rows):
@@ -1863,20 +1864,52 @@ def _build_text_and_regions(rows):
 # scopes (whose cells scrolled away or changed attr) on the next render.
 _LAST_COLOR_KEYS = {}
 _COLOR_KEY_PREFIX = "ai_term_c_"
+_HOST_CURSOR_PHANTOM = "ai_term_host_cursor"
+
+
+def _clear_host_cursor_phantom(view):
+    try:
+        view.erase_phantoms(_HOST_CURSOR_PHANTOM)
+    except Exception:
+        pass
+
+
+def _set_host_cursor_phantom(view, pos):
+    """Draw a grey block at pos via HTML phantom (always visible).
+
+    Colour-scheme add_regions fills for a one-cell space proved unreliable
+    across scheme repairs / ST region painting. Phantoms are independent.
+    """
+    _clear_host_cursor_phantom(view)
+    if view is None or not view.is_valid():
+        return
+    pos = int(pos)
+    if pos < 0 or pos >= view.size():
+        return
+    end = min(pos + 1, view.size())
+    # Inline grey cell; &nbsp; keeps a full em-box so it reads as a block cursor.
+    html = (
+        '<body id="ai-term-host-cursor" style="margin:0;padding:0;">'
+        '<span style="background-color:#cccccc;color:#000000;'
+        'padding:0 0.15em;border-radius:1px;">&nbsp;</span>'
+        "</body>"
+    )
+    try:
+        view.add_phantom(
+            _HOST_CURSOR_PHANTOM,
+            sublime.Region(pos, end),
+            html,
+            sublime.LAYOUT_INLINE,
+        )
+    except Exception:
+        pass
 
 
 def _apply_color_regions(view, regs):
     """Group regions by scope and add them; erase any scope keys we added last
-    frame but did not re-add this frame, so stale colour doesn't linger.
-
-    Host cursor is applied last so its fill wins ST's undefined region z-order.
-    """
+    frame but did not re-add this frame, so stale colour doesn't linger."""
     by_scope = {}
-    host_rs = []
     for begin, end, scope in regs:
-        if scope == _HOST_CURSOR_SCOPE:
-            host_rs.append(sublime.Region(begin, end))
-            continue
         by_scope.setdefault(scope, []).append(sublime.Region(begin, end))
     used = set()
     for scope, rs in by_scope.items():
@@ -1892,13 +1925,6 @@ def _apply_color_regions(view, regs):
         # is invisible and the foreground renders on the text. DRAW_NO_OUTLINE:
         # no border around the run.
         view.add_regions(key, rs, scope=scope, flags=sublime.DRAW_NO_OUTLINE)
-        used.add(key)
-    # Permanent grey block last (z-order). Same flags as colour runs.
-    if host_rs:
-        key = _COLOR_KEY_PREFIX + _HOST_CURSOR_SCOPE
-        view.add_regions(
-            key, host_rs, scope=_HOST_CURSOR_SCOPE, flags=sublime.DRAW_NO_OUTLINE
-        )
         used.add(key)
     vid = view.id()
     last = _LAST_COLOR_KEYS.get(vid, ())

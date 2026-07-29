@@ -24,23 +24,16 @@ def cell_needs_host_cursor(rows, cy, cx):
     return not bool(attr & REVERSE)
 
 
-# ST often paints no fill on a lone space under add_regions, so a blank
-# host-cursor cell is invisible. Use a full block glyph (display-only).
-_HOST_CURSOR_GLYPH = "\u2588"  # █
-
-
 def paint_host_cursor(rows, cy, cx):
-    """Ensure a drawable cell at the PTY cursor for host visibility.
+    """Pad the PTY cursor cell; report whether the host must draw a block.
 
-    Stable design (2026-07-28, permanent host_cursor scope):
-      - ST host caret is invisible so Claude reverse-video is not doubled.
-      - If the app already SGR-reversed the cell, do nothing (app cursor).
-      - Otherwise pad the cell and leave attrs alone; caller tags
-        HOST_CURSOR_SCOPE (not reverse/ai.fb.1.16 — that raced and looked stuck).
-      - Blank/space cells use █ so the host scope has a solid glyph to paint
-        (space-only regions frequently show no fill in ST).
+    ST host caret stays invisible so Claude reverse-video is not doubled.
+    If the app already SGR-reversed the cell, host_painted=False (app cursor).
+    Otherwise pad past rstrip so cursor_text_offset is valid and return
+    host_painted=True — the ST host draws an HTML phantom block (not
+    colour-scheme regions: one-cell fills proved unreliable).
 
-    Returns (rows, host_painted). host_painted True → apply HOST_CURSOR_SCOPE.
+    Returns (rows, host_painted).
     """
     if rows is None or cy is None or cx is None:
         return rows, False
@@ -48,19 +41,13 @@ def paint_host_cursor(rows, cy, cx):
         return rows, False
     rows = list(rows)
     row = list(rows[cy])
-    # Cursor often sits past rstripped trailing spaces; pad so the cell exists
-    # for cursor_text_offset + a one-cell host_cursor region.
+    # Cursor often sits past rstripped trailing spaces; pad so the cell exists.
     while len(row) <= cx:
         row.append((" ", 0))
-    ch, attr = row[cx]
-    if attr & REVERSE:
-        rows[cy] = row
-        return rows, False
-    # Display-only glyph on blanks so host_cursor fill is visible.
-    if not ch or ch in (" ", "\u00a0"):
-        ch = _HOST_CURSOR_GLYPH
-    row[cx] = (ch, 0)
+    _ch, attr = row[cx]
     rows[cy] = row
+    if attr & REVERSE:
+        return rows, False
     return rows, True
 
 
