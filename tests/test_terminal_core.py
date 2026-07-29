@@ -14,12 +14,18 @@ from ai.terminal import (
     build_text_and_regions,
     cell_needs_host_cursor,
     cursor_text_offset,
+    encode_click,
+    encode_mouse,
+    encode_wheel,
     pack_attr,
     paint_host_cursor,
+    punch_host_cursor_region,
     quantize256,
     sanitize_pty_env,
     scope_name_for,
+    st_button_to_proto,
     translate_key,
+    view_point_to_cell,
 )
 from ai.terminal.colors import FAINT, REVERSE
 
@@ -211,6 +217,81 @@ class TestHostCursor(unittest.TestCase):
         self.assertEqual(out[0][1][1], 0)
         self.assertEqual(out[0][0][1], 0)
         self.assertEqual(HOST_CURSOR_SCOPE, "ai.terminal.host_cursor")
+
+    def test_punch_exclusive_over_color_run(self):
+        """Mid-line host cursor must not share the cell with ai.fb.* scopes."""
+        # Three cells, one colour run covering all; cursor on middle.
+        rows = [[("a", pack_attr(fg=2)), ("b", pack_attr(fg=2)), ("c", pack_attr(fg=2))]]
+        out, painted = paint_host_cursor(rows, 0, 1)
+        self.assertTrue(painted)
+        text, regs = build_text_and_regions(out)
+        off = cursor_text_offset(out, 0, 1)
+        self.assertEqual(off, 1)
+        punched = punch_host_cursor_region(regs, off)
+        # Exactly one host region covering the cell.
+        host = [r for r in punched if r[2] == HOST_CURSOR_SCOPE]
+        self.assertEqual(len(host), 1)
+        self.assertEqual(host[0][:2], [1, 2])
+        # No colour region still covers offset 1.
+        for b, e, scope in punched:
+            if scope == HOST_CURSOR_SCOPE:
+                continue
+            self.assertFalse(b <= 1 < e, f"{scope} still covers cursor cell")
+        self.assertEqual(text[1], "b")
+
+
+class TestMouseModes(unittest.TestCase):
+    def test_decset_mouse_modes(self):
+        s = Screen(40, 10)
+        p = Parser(s)
+        self.assertEqual(s.mouse_tracking, 0)
+        self.assertFalse(s.mouse_sgr)
+        p.feed("\x1b[?1000h\x1b[?1006h")
+        self.assertEqual(s.mouse_tracking, 1000)
+        self.assertTrue(s.mouse_sgr)
+        p.feed("\x1b[?1002h")
+        self.assertEqual(s.mouse_tracking, 1002)
+        p.feed("\x1b[?1002l\x1b[?1000l")
+        self.assertEqual(s.mouse_tracking, 0)
+        self.assertTrue(s.mouse_sgr)  # 1006 still on
+        p.feed("\x1b[?1006l")
+        self.assertFalse(s.mouse_sgr)
+
+    def test_ris_clears_modes(self):
+        s = Screen(10, 5)
+        p = Parser(s)
+        p.feed("\x1b[?1000h\x1b[?1006h")
+        p.feed("\x1bc")
+        self.assertEqual(s.mouse_tracking, 0)
+        self.assertFalse(s.mouse_sgr)
+
+    def test_encode_sgr_click(self):
+        seq = encode_click(0, 5, 12, sgr=True)
+        self.assertEqual(seq, "\x1b[<0;5;12M\x1b[<0;5;12m")
+
+    def test_encode_wheel(self):
+        self.assertEqual(encode_wheel(True, 1, 1, sgr=True), "\x1b[<64;1;1M")
+        self.assertEqual(encode_wheel(False, 2, 3, sgr=True), "\x1b[<65;2;3M")
+
+    def test_encode_x10(self):
+        seq = encode_mouse(0, 1, 1, press=True, sgr=False)
+        self.assertEqual(seq, "\x1b[M" + chr(32) + chr(33) + chr(33))
+
+    def test_view_point_to_cell(self):
+        # history=2, click on view row 3 → screen row 1 (0-based) → cy=2
+        self.assertEqual(
+            view_point_to_cell(3, 4, hist_len=2, screen_rows=10, screen_cols=80),
+            (5, 2),
+        )
+        # Click in scrollback
+        self.assertIsNone(
+            view_point_to_cell(0, 0, hist_len=2, screen_rows=10, screen_cols=80)
+        )
+
+    def test_st_button_map(self):
+        self.assertEqual(st_button_to_proto(1), 0)
+        self.assertEqual(st_button_to_proto(3), 2)
+        self.assertIsNone(st_button_to_proto(9))
 
 
 class TestSanitizePtyEnv(unittest.TestCase):

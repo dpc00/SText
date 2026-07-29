@@ -443,6 +443,17 @@ try:
         build_text_and_regions as _build_text_and_regions_pure,
         cursor_text_offset as _cursor_text_offset,
         paint_host_cursor as _paint_host_cursor,
+        punch_host_cursor_region as _punch_host_cursor_region,
+    )
+    from .terminal.caret import (
+        adjust_display_caret as _adjust_display_caret,
+        pad_row_for_caret as _pad_row_for_caret,
+    )
+    from .terminal.mouse import (
+        encode_click as _encode_click,
+        encode_wheel as _encode_wheel,
+        st_button_to_proto as _st_button_to_proto,
+        view_point_to_cell as _view_point_to_cell,
     )
 except ImportError as _term_imp_err:
     # Unit tests / scripts outside Packages/User use top-level `ai.*`.
@@ -488,6 +499,17 @@ except ImportError as _term_imp_err:
             build_text_and_regions as _build_text_and_regions_pure,
             cursor_text_offset as _cursor_text_offset,
             paint_host_cursor as _paint_host_cursor,
+            punch_host_cursor_region as _punch_host_cursor_region,
+        )
+        from ai.terminal.caret import (
+            adjust_display_caret as _adjust_display_caret,
+            pad_row_for_caret as _pad_row_for_caret,
+        )
+        from ai.terminal.mouse import (
+            encode_click as _encode_click,
+            encode_wheel as _encode_wheel,
+            st_button_to_proto as _st_button_to_proto,
+            view_point_to_cell as _view_point_to_cell,
         )
     except ImportError:
         raise _term_imp_err
@@ -1710,16 +1732,21 @@ def _do_render(term):
     # ai.terminal.host_cursor — do not synthesize reverse/ai.fb.1.16 (that
     # white block raced with the permanent host rule and looked like a
     # "stuck on 16" cursor).
+    # adjust_display_caret remaps when Claude parks the hardware cursor on
+    # the status footer while the edit buffer is still on the `>` row.
     with term._lock:
         rows, cy, cx = term.screen.render_cells()
+        cy, cx = _adjust_display_caret(term.screen, cy, cx)
+        rows = _pad_row_for_caret(rows, cy, cx)
     term.screen.dirty = False
     rows, host_painted = _paint_host_cursor(rows, cy, cx)
     text, regions = _build_text_and_regions(rows)
     if host_painted:
         off = _cursor_text_offset(rows, cy, cx)
         if off is not None and 0 <= off < len(text):
-            regions = list(regions)
-            regions.append([off, off + 1, _HOST_CURSOR_SCOPE])
+            # Exclusive host scope: punch out any ai.fb.* covering this cell
+            # so the grey block is visible mid-line, not only at EOL.
+            regions = _punch_host_cursor_region(regions, off)
     view.run_command("ai_terminal_render",
                      {"text": text, "cursor": [cy, cx], "regions": regions})
 
@@ -1932,8 +1959,85 @@ class AiTerminalViewListener(sublime_plugin.ViewEventListener):
         self._preclamp_vp()
 
 
+def _mouse_hist_len(term):
+    """Scrollback lines prepended in the view (0 on alt / fullscreen TUI)."""
+    if term.screen.alt_screen:
+        return 0
+    return len(term.screen.history)
+
+
+def _event_to_pty_cell(view, term, event):
+    """Map a ST mouse event to 1-based (col, row) in the PTY grid, or None."""
+    if not event or "x" not in event or "y" not in event:
+        return None
+    try:
+        pt = view.window_to_text((event["x"], event["y"]))
+        row, col = view.rowcol(pt)
+    except Exception:
+        return None
+    return _view_point_to_cell(
+        row,
+        col,
+        hist_len=_mouse_hist_len(term),
+        screen_rows=term.screen.rows,
+        screen_cols=term.screen.cols,
+    )
+
+
+def _route_mouse_click(view, term, event):
+    """If the app enabled mouse tracking, send a click report. Return True if handled."""
+    if not term.screen.mouse_tracking:
+        return False
+    cell = _event_to_pty_cell(view, term, event)
+    if cell is None:
+        # Click in scrollback (or off-grid): let ST select text.
+        return False
+    st_btn = event.get("button", 1)
+    proto = _st_button_to_proto(st_btn)
+    if proto is None:
+        return False
+    col, row = cell
+    seq = _encode_click(proto, col, row, sgr=term.screen.mouse_sgr)
+    term.send_string(seq)
+    return True
+
+
+def _route_mouse_wheel(view, term, amount):
+    """Send wheel-up/down when mouse tracking is on. Return True if handled."""
+    if not term.screen.mouse_tracking:
+        return False
+    # Prefer the caret/last selection point as the wheel locus (xterm uses
+    # the cell under the pointer; ST does not pass pointer coords on
+    # scroll_lines, so the insertion point is the best available proxy).
+    try:
+        pt = view.sel()[0].b if view.sel() else 0
+        row, col = view.rowcol(pt)
+    except Exception:
+        row, col = 0, 0
+    cell = _view_point_to_cell(
+        row,
+        col,
+        hist_len=_mouse_hist_len(term),
+        screen_rows=term.screen.rows,
+        screen_cols=term.screen.cols,
+    )
+    if cell is None:
+        # Viewport scrolled into history: pin reports to bottom-right of grid.
+        col, row = term.screen.cols, term.screen.rows
+    else:
+        col, row = cell
+    # ST scroll_lines: positive amount moves content down (wheel up).
+    direction_up = float(amount) > 0
+    # One report per notch; multi-line amounts fire multiple wheel ticks.
+    n = max(1, min(abs(int(round(float(amount)))), 5))
+    sgr = term.screen.mouse_sgr
+    seq = "".join(_encode_wheel(direction_up, col, row, sgr=sgr) for _ in range(n))
+    term.send_string(seq)
+    return True
+
+
 class AiTerminalKeyInterceptor(sublime_plugin.EventListener):
-    """Ctrl+C -> SIGINT (\\x03), Ctrl+V -> paste into the PTY."""
+    """Ctrl+C/V, and mouse → PTY when the app enabled DEC mouse tracking."""
 
     def on_text_command(self, view, command_name, args):
         if not view.settings().get(_VIEW_SETTING):
@@ -1953,6 +2057,27 @@ class AiTerminalKeyInterceptor(sublime_plugin.EventListener):
                 # an Enter and a multi-line paste auto-submits on the first line.
                 term.send_string("\x1b[200~" + text + "\x1b[201~")
             return ("ai_terminal_noop", {})
+        # ── Xterm mouse tracking (Grok / fullscreen TUIs) ──────────────────
+        # Apps enable via CSI ?1000/1002/1003 h (+ usually ?1006 h SGR).
+        # Without this, clicks only move ST's selection and never reach the PTY.
+        # Shift+click / extend / multi-click keep ST selection (xterm bypass).
+        if command_name == "drag_select":
+            args = args or {}
+            event = args.get("event") or {}
+            # Bypass when user is extending/additive selecting, or multi-click.
+            if args.get("extend") or args.get("additive") or args.get("subtractive"):
+                return None
+            if args.get("by") in ("words", "lines", "columns"):
+                return None
+            if _route_mouse_click(view, term, event):
+                return ("ai_terminal_noop", {})
+            return None
+        if command_name == "scroll_lines":
+            args = args or {}
+            amount = args.get("amount", 1)
+            if _route_mouse_wheel(view, term, amount):
+                return ("ai_terminal_noop", {})
+            return None
         return None
 
 

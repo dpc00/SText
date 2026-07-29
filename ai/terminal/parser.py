@@ -71,6 +71,7 @@ class Parser:
             elif ch == "c":  # RIS
                 self.s.reset()
                 self._fg = self._bg = self._flags = 0
+                # private_modes cleared inside Screen.reset()
                 self.state = _GROUND
             elif ch == "M":  # RI -- reverse index; rare, no-op for MVP
                 self.state = _GROUND
@@ -219,10 +220,24 @@ class Parser:
         elif final == "u":
             s.restore_cursor()
         elif final in ("h", "l"):  # set / reset mode (private: 1049/2004/mouse/sync)
-            if priv and "1049" in self.params:
-                if not self.force_main_screen:
-                    s.alt_screen = (final == "h")
-            # all others consumed-and-dropped so the stream stays in sync
+            enable = final == "h"
+            if priv:
+                raw = self.params.lstrip("?")
+                for part in (raw.split(";") if raw else []):
+                    if not part.isdigit():
+                        continue
+                    mode = int(part)
+                    if mode == 1049:
+                        if not self.force_main_screen:
+                            s.alt_screen = enable
+                        # Still record the mode for introspection.
+                        s.set_private_mode(mode, enable)
+                    else:
+                        # Track mouse (1000/1002/1003/1006), bracketed paste
+                        # (2004), focus (1004), sync (2026), etc. Unknown modes
+                        # are recorded harmlessly so the stream stays in sync.
+                        s.set_private_mode(mode, enable)
+            # non-private SM/RM: consumed-and-dropped
         elif final == "S":  # SU -- Scroll Up
             n = p[0] if p and p[0] else 1
             for _ in range(n):

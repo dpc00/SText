@@ -29,6 +29,10 @@ class Screen:
         # adjust_display_caret when Claude parks the cursor on the status bar
         # so ST restores the exact input column (not end-of-text - 1).
         self.input_caret_x = None
+        # DEC private modes the app enabled (e.g. 1000/1002/1003 mouse,
+        # 1006 SGR coords, 2004 bracketed paste, 1049 alt screen). Parser
+        # mutates this set; mouse routing reads it.
+        self.private_modes = set()
 
     def resize(self, cols, rows):
         cols, rows = max(1, cols), max(1, rows)
@@ -58,7 +62,38 @@ class Screen:
         self.attrs = [[0] * self.cols for _ in range(self.rows)]
         self.history.clear()
         self.x = self.y = 0
+        self.private_modes.clear()
+        self.input_caret_x = None
         self.dirty = True
+
+    def set_private_mode(self, mode, enable):
+        """Enable or disable a DEC private mode number (e.g. 1000, 1006)."""
+        mode = int(mode)
+        if enable:
+            self.private_modes.add(mode)
+        else:
+            self.private_modes.discard(mode)
+        self.dirty = True
+
+    @property
+    def mouse_tracking(self):
+        """Highest active Xterm mouse tracking mode, or 0 if off.
+
+        1000 = click, 1002 = click+drag, 1003 = any-event (motion).
+        """
+        modes = self.private_modes
+        if 1003 in modes:
+            return 1003
+        if 1002 in modes:
+            return 1002
+        if 1000 in modes:
+            return 1000
+        return 0
+
+    @property
+    def mouse_sgr(self):
+        """True when SGR extended mouse coordinates (1006) are enabled."""
+        return 1006 in self.private_modes
 
     def set_history_cap(self, cap):
         """Swap the scrollback deque to a new maxlen, preserving contents."""

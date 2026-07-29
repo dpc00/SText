@@ -71,6 +71,33 @@ def cursor_text_offset(rows, cy, cx):
     return off + cx
 
 
+def punch_host_cursor_region(regions, off, end=None):
+    """Make HOST_CURSOR_SCOPE exclusive over [off, end).
+
+    ST draws overlapping add_regions scopes with undefined z-order: an ai.fb.*
+    run that covers the cursor cell often wins mid-line (styled prompt text),
+    so the grey host block only shows at EOL where no colour run exists.
+    Split/remove any region covering the cell, then append host_cursor alone.
+    """
+    if off is None:
+        return regions
+    end = off + 1 if end is None else end
+    if end <= off:
+        return regions
+    out = []
+    for item in regions or []:
+        b, e, scope = item[0], item[1], item[2]
+        if e <= off or b >= end:
+            out.append([b, e, scope])
+            continue
+        if b < off:
+            out.append([b, off, scope])
+        if e > end:
+            out.append([end, e, scope])
+    out.append([off, end, HOST_CURSOR_SCOPE])
+    return out
+
+
 def build_text_and_regions(rows, scope_for=None):
     """Flatten structured rows into view text + [begin, end, scope] regions.
 
