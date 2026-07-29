@@ -295,20 +295,23 @@ def adjust_display_caret(screen, cy, cx):
     hist = 0 if screen.alt_screen else len(screen.history)
     note_hardware_on_prompt(screen)
 
-    # Live on the prompt row: hardware column + optimistic Space/print advance.
-    # Never collapse to content_end — trailing spaces are real insertion points.
+    # Live on the prompt row: Terminus/pyte style — trust hardware cursor only.
+    # No optimistic column stack (that fought Grok line-1 typing).
     if screen.y == py:
-        col = _display_col_on_prompt(screen, py)
+        clear_optimistic_caret(screen)
+        col = _clamp_live_col(screen, py, int(screen.x))
         screen.input_caret_x = col
         return hist + py, col
     if screen.y == py + 1:
         # Border under the input box — leave hardware as-is (rare).
         return cy, cx
 
-    # Below the input box (status footer): pin to prompt at remembered column.
-    # Use live-field clamp (not content_end) so a remembered "after space"
-    # position is not snapped back to the last non-blank.
+    # Below the input box (status footer): Claude often parks here while the
+    # edit buffer is still on `>`. Pin display caret to the prompt so left/right
+    # are not dead. (Terminus does not do this; we keep a minimal pin only when
+    # hardware is clearly off the input row.)
     if screen.y > py + 1:
+        clear_optimistic_caret(screen)
         col = getattr(screen, "input_caret_x", None)
         if col is None:
             col = content_end_col(screen, py)

@@ -452,7 +452,6 @@ try:
     from .terminal.caret import (
         adjust_display_caret as _adjust_display_caret,
         clear_optimistic_caret as _clear_optimistic_caret,
-        note_optimistic_insert as _note_optimistic_insert,
         pad_row_for_caret as _pad_row_for_caret,
     )
     from .terminal.mouse import (
@@ -515,7 +514,6 @@ except ImportError as _term_imp_err:
         from ai.terminal.caret import (
             adjust_display_caret as _adjust_display_caret,
             clear_optimistic_caret as _clear_optimistic_caret,
-            note_optimistic_insert as _note_optimistic_insert,
             pad_row_for_caret as _pad_row_for_caret,
         )
         from ai.terminal.mouse import (
@@ -1789,16 +1787,14 @@ def _measure(view):
 
 # ─── debounced renderer ──────────────────────────────────────────────────────
 
-# Throttle full paints. 40ms was fine for single keys; under burst typing each
-# frame does view.replace + add_regions on the whole TUI and starves ST's
-# key dispatch on Windows. Keep ~40ms for snappy single keys, but never paint
-# faster than MIN_INTERVAL during a continuous stream.
-_RENDER_MS = 40
-_RENDER_MIN_INTERVAL_MS = 55
+# Match Terminus renderer cadence (intermission period=0.03s). Faster full
+# replaces starve ST key dispatch on Windows; slower feels laggy vs Terminus.
+_RENDER_MS = 30
+_RENDER_MIN_INTERVAL_MS = 30
 
 
 def _schedule_render(term, delay_ms=None):
-    """Arm a paint. delay_ms=0 for optimistic caret (still min-interval capped)."""
+    """Arm a paint from PTY/screen dirty (Terminus-style: no pre-PTY caret)."""
     if term._render_pending:
         # Mark that more work arrived while armed; _do_render re-arms if dirty.
         term._render_coalesce = True
@@ -3070,32 +3066,12 @@ class AiTerminalKeypressCommand(sublime_plugin.TextCommand):
                 "left", "right", "up", "down",
             ))
             kl = key.lower()
-            # Optimistic caret: Grok often leaves hardware x on the last glyph
-            # for a frame after Space/printables — host block looked stuck on
-            # the word until the next key. Same for left/right: cast shows Grok
-            # only emits BS (\x08) for arrows (no full redraw); waiting on the
-            # 40ms paint + full view.replace felt laggy and left reverse/█
-            # artifacts. Advance display immediately; PTY catch-up clears opt.
+            # Terminus-style input: keys go to the PTY only. Do NOT advance a
+            # host-side "optimistic" caret or force a paint before echo.
+            # Pre-PTY caret/█ was the line-1 lag/flash path (July thrash); the
+            # reference terminal waits on screen.cursor from the stream.
             if not ctrl and not alt:
-                if kl in ("escape", "enter", "tab", "insert", "delete", "up", "down",
-                          "pageup", "pagedown", "home", "end"):
-                    _clear_optimistic_caret(term.screen)
-                elif kl == "left":
-                    if _note_optimistic_insert(term.screen, -1):
-                        term.screen.dirty = True
-                        _schedule_render(term, delay_ms=0)
-                elif kl == "right":
-                    if _note_optimistic_insert(term.screen, +1):
-                        term.screen.dirty = True
-                        _schedule_render(term, delay_ms=0)
-                elif kl == "backspace":
-                    if _note_optimistic_insert(term.screen, -1):
-                        term.screen.dirty = True
-                        _schedule_render(term, delay_ms=0)
-                elif kl == "space" or (len(key) == 1 and key.isprintable()):
-                    if _note_optimistic_insert(term.screen, +1):
-                        term.screen.dirty = True
-                        _schedule_render(term, delay_ms=0)
+                _clear_optimistic_caret(term.screen)
             # Fullscreen / mouse-tracking TUIs (Junie, Grok): never yank the
             # viewport on every printable — that fought mid-line caret and
             # made the next char land at EOL. Pin to rest instead.

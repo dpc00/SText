@@ -35,13 +35,10 @@ _HOST_CURSOR_ATTR = pack_attr(fg=16, bg=1)  # → ai.fb.16.1 white on near-black
 def paint_host_cursor(rows, cy, cx):
     """Ensure a visible cursor cell when the app did not SGR-reverse it.
 
-    ST host caret is invisible so Claude/ratatui reverse-video is not doubled.
-    Grok/shells that never reverse the cursor cell get a host-synthesized
-    white █ (ai.fb.16.1). Mid-line keeps the real character with REVERSE
-    (Claude's path; fill failure still often leaves readable inverted text).
-
-    No HTML phantom (inserts a fake command-line char). No HOST_CURSOR_SCOPE
-    punch (that permanent scope's one-cell fill often paints nothing).
+    Terminus shows cursor via selection + pyte cursor; it does not rewrite
+    mid-line glyphs. We only synthesize a block on *blank* insertion cells
+    (EOL). Mid-line: leave the cell alone so typing does not flash reverse/█
+    against Grok's per-key glyph paints.
 
     Returns (rows, host_painted).
     """
@@ -59,13 +56,14 @@ def paint_host_cursor(rows, cy, cx):
         rows[cy] = row
         return rows, False
     if not ch or ch in (" ", "\u00a0"):
-        # EOL / blank insertion point — white block, always-on glyph path.
+        # EOL / blank insertion point — white block only (no mid-line rewrite).
         row[cx] = (_HOST_CURSOR_GLYPH, _HOST_CURSOR_ATTR)
-    else:
-        # Mid-line — invert the real character (do not replace with █).
-        row[cx] = (ch, attr | REVERSE)
+        rows[cy] = row
+        return rows, True
+    # Mid-line with real glyph: trust the app cell (Terminus-like). ST selection
+    # still tracks caret_offset in the host adapter.
     rows[cy] = row
-    return rows, True
+    return rows, False
 
 
 def cursor_text_offset(rows, cy, cx):
