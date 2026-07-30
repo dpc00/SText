@@ -428,7 +428,7 @@ try:
         _ANSI16_RGB,
     )
     from .terminal.screen import Screen as _Screen, BLANK as _BLANK
-    from .terminal.parser import Parser as _Parser
+    from .terminal.pyte_engine import PyteParser as _Parser
     from .terminal.keys import (
         KEY_MAP as _KEY_MAP,
         APP_MODE_KEY_MAP as _APP_MODE_KEY_MAP,
@@ -440,6 +440,7 @@ try:
         get_alt_key_code as _get_alt_key_code,
         get_shift_key_code as _get_shift_key_code,
         translate_key as _translate_key,
+        encode_win32_key as _encode_win32_key,
     )
     from .terminal.pty_env import sanitize_pty_env as _sanitize_pty_env
     from .terminal.render import (
@@ -489,7 +490,7 @@ except ImportError as _term_imp_err:
             _ANSI16_RGB,
         )
         from ai.terminal.screen import Screen as _Screen, BLANK as _BLANK
-        from ai.terminal.parser import Parser as _Parser
+        from ai.terminal.pyte_engine import PyteParser as _Parser
         from ai.terminal.keys import (
             KEY_MAP as _KEY_MAP,
             APP_MODE_KEY_MAP as _APP_MODE_KEY_MAP,
@@ -501,6 +502,7 @@ except ImportError as _term_imp_err:
             get_alt_key_code as _get_alt_key_code,
             get_shift_key_code as _get_shift_key_code,
             translate_key as _translate_key,
+            encode_win32_key as _encode_win32_key,
         )
         from ai.terminal.pty_env import sanitize_pty_env as _sanitize_pty_env
         from ai.terminal.render import (
@@ -992,6 +994,37 @@ _settings = None  # sublime.Settings; (re)bound in plugin_loaded
 
 _DEFAULT_SCROLLBACK = 300
 _DEFAULT_MIN_COLS = 20
+_DEFAULT_MIN_ROWS = 1
+
+# Kill switch per user directive: mouse handling (DEC mouse-tracking click/
+# drag forwarding to the PTY, and the always-swallow wheel-scroll routing)
+# judged buggy and disabled outright. False = ST's native mouse/selection/
+# scroll behavior applies everywhere; nothing mouse-related is ever forwarded
+# to a PTY, regardless of whether the app requested DEC mouse tracking.
+_MOUSE_HANDLING_ENABLED = False
+
+
+def _tui_like(term):
+    """True when the view should be treated as an app-owned fullscreen TUI
+    (pin viewport to rest, never let it scroll away on its own).
+
+    mouse_tracking only counts when _MOUSE_HANDLING_ENABLED -- with mouse
+    handling off, an app merely requesting DEC mouse tracking (but not
+    alt-screen) is no different from a plain scrollback shell: nothing is
+    forwarded to it either way, so there is no reason to permanently pin the
+    viewport to the top and block real scrollable content below the fold.
+    Was previously `alt_screen or mouse_tracking` unconditionally -- with the
+    host scroll pad removed (_host_rest_y always 0.0 now), that pinned every
+    mouse-tracking app's viewport to literal y=0 forever, on every 8ms clamp
+    tick, regardless of how the viewport got moved (scroll wheel, keyboard,
+    even a direct minimap/scrollbar drag). Confirmed live as the actual cause
+    of Qwen's "can't scroll past the top" symptom.
+    """
+    if term is None:
+        return False
+    if term.screen.alt_screen:
+        return True
+    return bool(term.screen.mouse_tracking) and _MOUSE_HANDLING_ENABLED
 _DEFAULT_LAUNCH_COMMAND = ["cmd.exe"]
 _DEFAULT_SPAWN_ENV = {
     "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
@@ -1026,6 +1059,23 @@ def _cols_bounds():
         except (TypeError, ValueError):
             mx = None
     return mn, mx
+
+
+def _min_rows():
+    """Floor for the row count told to the PTY. Per user directive: there is
+    no "comfortable minimum" -- rows must never exceed the pane's actual
+    computed height (build_text_and_regions always emits every PTY row, so
+    forcing rows above the visible pane leaves trailing blank rows that
+    _scroll_to_bottom/_tui_like rest-pin logic can land on, hiding real
+    content -- confirmed live as the cause of Claude Code's TUI going blank
+    after typing). Floor is 1; the pane-height computation in _measure()
+    is the only ceiling.
+    """
+    s = _settings or sublime.load_settings(_SETTINGS_NAME)
+    try:
+        return max(1, int(s.get("min_rows", _DEFAULT_MIN_ROWS)))
+    except (TypeError, ValueError):
+        return _DEFAULT_MIN_ROWS
 
 
 def _launch_command():
@@ -1466,7 +1516,13 @@ class _Terminal:
             return
         self._last_cols, self._last_rows = cols, rows
         with self._lock:
-            self.screen.resize(cols, rows)
+            if hasattr(self.parser, "resize"):
+                # PyteParser owns a second (pyte) screen mirroring self.screen's
+                # size; it must stay in lockstep or _sync() reads past pyte's
+                # actual column/row range next feed().
+                self.parser.resize(cols, rows)
+            else:
+                self.screen.resize(cols, rows)
         self.pty.resize(cols, rows)
         # Recording patch: emit an "r" (resize) event so the .cast records
         # geometry changes for accurate replay.
@@ -1783,7 +1839,7 @@ def _measure(view):
     # this calc: ST itself reserves a 1-line top margin, and Claude's TUI
     # independently leaves text line 1 (and sometimes line 2) blank. Those
     # stack; neither is ai_terminal's doing.
-    rows = max(4, int(ex[1] / lh) - 1)
+    rows = max(_min_rows(), int(ex[1] / lh) - 1)
     return cols, rows
 
 
@@ -2317,6 +2373,9 @@ _WHEEL_AVOID_BOTTOM_ROWS = 4
 
 def _mouse_force_release(term, view_id):
     """Emit SGR/X10 release for any held button and clear hold state."""
+    if not _MOUSE_HANDLING_ENABLED:
+        _MOUSE_HOLD.pop(view_id, None)
+        return
     hold = _MOUSE_HOLD.pop(view_id, None)
     if not hold or term is None:
         return
@@ -2347,6 +2406,8 @@ def _schedule_mouse_release(view, gen, delay_ms):
 
 def _send_full_click(term, view_id, proto, col, row, sgr):
     """Press+release one click and remember it for double-tap detection."""
+    if not _MOUSE_HANDLING_ENABLED:
+        return
     _mouse_force_release(term, view_id)
     term.send_string(_encode_click(proto, col, row, sgr=sgr))
     _MOUSE_LAST_CLICK[view_id] = (col, row, time.time())
@@ -2460,6 +2521,8 @@ def _route_mouse_click(view, term, event, *, discrete_click=False):
     Touchpad notes: taps are short; we auto-release quickly until motion is
     seen, then keep the hold longer for drag-grab. Double-tap window is wide.
     """
+    if not _MOUSE_HANDLING_ENABLED:
+        return False
     mode = term.screen.mouse_tracking
     if not mode:
         return False
@@ -2570,6 +2633,14 @@ def _route_mouse_wheel(view, term, amount):
 
     Feel: fine steps (wheel + arrows); one Page only on a fling.
     """
+    if not _MOUSE_HANDLING_ENABLED:
+        # Single choke point: gating every caller individually missed
+        # _clamp_vp_loop's near_fit branch (fires independent of tui_like),
+        # which kept sending mouse/arrow sequences to the PTY even after the
+        # input-command interceptors were disabled. Confirmed live: SGR mouse
+        # click/release sequences ("\x1b[<0;N;M" / "m") were still present in
+        # the recorded 'i' stream for a Qwen session after that first fix.
+        return True
     try:
         # amount > 0 → older history (keys/wheel "up")
         see_older = float(amount) > 0
@@ -2579,11 +2650,15 @@ def _route_mouse_wheel(view, term, amount):
     term._auto_follow = False
     term._last_scroll_send_t = time.time()
 
+    win32 = 9001 in term.screen.private_modes
     parts = []
-    try:
-        arrow = _get_key_code("up" if see_older else "down")
-    except Exception:
-        arrow = "\x1b[A" if see_older else "\x1b[B"
+    if win32:
+        arrow = _encode_win32_key("up" if see_older else "down")
+    else:
+        try:
+            arrow = _get_key_code("up" if see_older else "down")
+        except Exception:
+            arrow = "\x1b[A" if see_older else "\x1b[B"
     parts.append(arrow * n)
     if term.screen.mouse_tracking:
         col, row = _wheel_locus(view, term)
@@ -2594,10 +2669,13 @@ def _route_mouse_wheel(view, term, amount):
             )
         )
     if n >= 3:
-        try:
-            page = _get_key_code("pageup" if see_older else "pagedown")
-        except Exception:
-            page = "\x1b[5~" if see_older else "\x1b[6~"
+        if win32:
+            page = _encode_win32_key("pageup" if see_older else "pagedown")
+        else:
+            try:
+                page = _get_key_code("pageup" if see_older else "pagedown")
+            except Exception:
+                page = "\x1b[5~" if see_older else "\x1b[6~"
         parts.append(page)
     term.send_string("".join(parts))
     return True
@@ -2612,9 +2690,7 @@ def _pin_terminal_viewport(view, term):
     """
     try:
         view.settings().set("scroll_past_end", True)
-        if term is not None and (
-            term.screen.alt_screen or term.screen.mouse_tracking
-        ):
+        if _tui_like(term):
             rest = _host_rest_y(view)
             view.set_viewport_position((0.0, rest), False)
             return
@@ -2661,6 +2737,8 @@ class AiTerminalKeyInterceptor(sublime_plugin.EventListener):
         #           drag is off so Grok cannot steal the gesture; wheel still
         #           routes via scroll_lines. (Modifier-drag → PTY was a bad flip:
         #           it removed the only working select bypasses.)
+        if command_name == "drag_select" and not _MOUSE_HANDLING_ENABLED:
+            return None
         if command_name == "drag_select":
             args = args or {}
             event = args.get("event") or {}
@@ -2713,6 +2791,8 @@ class AiTerminalKeyInterceptor(sublime_plugin.EventListener):
         # snaps it back — the "tab jumps then restores" glitch.
         # Always forward vertical scroll to the PTY (wheel if mouse tracking,
         # else PageUp/Down) and pin the viewport so the tab never visibly pans.
+        if command_name in ("scroll_lines", "scroll_horizontally") and not _MOUSE_HANDLING_ENABLED:
+            return None
         if command_name in ("scroll_lines", "scroll_horizontally"):
             args = args or {}
             if command_name == "scroll_lines":
@@ -3212,7 +3292,15 @@ class AiTerminalSendStringWindowCommand(sublime_plugin.WindowCommand):
 # Pad *below* alone left rest_y=0, so ST could only pan dy>0 (one direction).
 # Pad *above* gives headroom for dy<0 (finger-down / content-down). Rest
 # viewport sits at the top of the real content so both drags produce signal.
-_HOST_SCROLL_PAD_LINES = 12  # each side
+_HOST_SCROLL_PAD_LINES = 0  # removed per user directive -- was blank filler lines
+                             # above/below content, reachable via direct
+                             # scrollbar/minimap drag (nothing clamped that
+                             # gesture), landing users in dead blank space
+                             # instead of real content. Every consumer of this
+                             # constant (_append_host_scroll_pad, _host_rest_y,
+                             # _real_content_height, _mouse_hist_len, and the
+                             # pin/follow logic in AiTerminalRenderCommand)
+                             # degrades to a clean no-op at 0.
 
 
 def _append_host_scroll_pad(text):
@@ -3310,7 +3398,13 @@ class AiTerminalKeypressCommand(sublime_plugin.TextCommand):
             if any(not s.empty() for s in self.view.sel()):
                 self.view.run_command("copy" if key == "c" else "cut")
                 return
-        code = _translate_key(key, ctrl=ctrl, alt=alt, shift=shift)
+        # Win32-input-mode (DEC 9001): apps that enable it (confirmed: Qwen
+        # Code) ignore plain xterm sequences entirely -- every key including
+        # plain letters/backspace/arrows silently does nothing once it's on.
+        if 9001 in term.screen.private_modes:
+            code = _encode_win32_key(key, ctrl=ctrl, alt=alt, shift=shift)
+        else:
+            code = _translate_key(key, ctrl=ctrl, alt=alt, shift=shift)
         if code:
             # Viewport writes (scroll_to_bottom) must NOT run on keys that only
             # move within the TUI or scrollback. set_viewport_position on
@@ -3329,9 +3423,7 @@ class AiTerminalKeypressCommand(sublime_plugin.TextCommand):
             # Fullscreen / mouse-tracking TUIs (Junie, Grok): never yank the
             # viewport on every printable — that fought mid-line caret and
             # made the next char land at EOL. Pin to rest instead.
-            tui = bool(
-                term.screen.alt_screen or term.screen.mouse_tracking
-            )
+            tui = _tui_like(term)
             if kl not in _NO_SCROLL_KEYS:
                 term._auto_follow = True
                 if tui:
@@ -3429,10 +3521,7 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
         real_h = _real_content_height(view)
         near_bottom = (vp[1] + ve[1]) >= (rest + real_h - lh * 2)
         content_fits = real_h <= ve[1] + 0.5
-        tui_owns_scroll = bool(
-            term is not None
-            and (term.screen.alt_screen or term.screen.mouse_tracking)
-        )
+        tui_owns_scroll = _tui_like(term)
         if term is not None and not tui_owns_scroll:
             if vp[1] < term._last_vp_y - lh * 1.5:
                 term._auto_follow = False
@@ -3519,7 +3608,10 @@ class AiTerminalNukeCommand(sublime_plugin.TextCommand):
         term = _Terminal.from_id(view.id())
         if term:
             with term._lock:
-                term.screen.reset()
+                if hasattr(term.parser, "reset"):
+                    term.parser.reset()
+                else:
+                    term.screen.reset()
 
 
 class AiTerminalNoopCommand(sublime_plugin.TextCommand):
@@ -3554,7 +3646,7 @@ class AiTerminalTrackpadScrollCommand(sublime_plugin.TextCommand):
         # ST scroll_lines: positive = content moves down = "scroll up"
         signed = amt if direction == "up" else -amt
 
-        if not view.settings().get(_VIEW_SETTING):
+        if not view.settings().get(_VIEW_SETTING) or not _MOUSE_HANDLING_ENABLED:
             view.run_command("scroll_lines", {"amount": signed})
             return
 
@@ -3705,10 +3797,7 @@ def _clamp_vp_loop():
             except Exception:
                 continue
 
-            tui_like = bool(
-                term.screen.alt_screen
-                or term.screen.mouse_tracking
-            )
+            tui_like = _tui_like(term)
             try:
                 le = v.layout_extent()
                 ve = v.viewport_extent()

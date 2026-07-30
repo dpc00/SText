@@ -45,6 +45,11 @@
     // scrollbar math (cols = int(usable_w/cw) - 3) still applies inside these
     // bounds. Live: the resize poller picks up new bounds within ~750ms.
     "min_columns": 20,
+    // Floor on the auto-sized terminal height in rows. No artificial minimum
+    // beyond 1 -- rows must never exceed the pane's actual computed height,
+    // or trailing blank PTY rows can hide real content on scroll-to-bottom
+    // (confirmed: broke Claude Code's TUI after typing).
+    "min_rows": 1,
     // Configured terminal/shell profiles for SText.
     // This allows SText to work as a multi-console terminal launcher.
     "profiles": {

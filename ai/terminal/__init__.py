@@ -4,7 +4,7 @@ Import these modules for unit tests outside ST. The ST plugin facade is
 ai.ai_terminal which wires these into ConPTY + view rendering.
 """
 from .colors import pack_attr, quantize256, scope_name_for, rstrip_cells
-from .keys import translate_key
+from .keys import translate_key, encode_win32_key
 from .mouse import (
     encode_click,
     encode_mouse,
@@ -33,6 +33,7 @@ __all__ = [
     "scope_name_for",
     "rstrip_cells",
     "translate_key",
+    "encode_win32_key",
     "build_text_and_regions",
     "paint_host_cursor",
     "cell_needs_host_cursor",
