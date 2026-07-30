@@ -127,11 +127,6 @@
                                 "args": { "profile": "Grok Build" }
                             },
                             {
-                                "caption": "Grok Build (no-alt)",
-                                "command": "ai_terminal_open_here",
-                                "args": { "profile": "Grok Build (no-alt)" }
-                            },
-                            {
                                 "caption": "JCode",
                                 "command": "ai_terminal_open_here",
                                 "args": { "profile": "JCode" }
