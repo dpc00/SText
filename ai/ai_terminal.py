@@ -28,6 +28,7 @@ import codecs
 import collections
 import json
 import os
+import queue
 import shutil
 import subprocess
 import sys
@@ -1366,6 +1367,13 @@ class _Terminal:
         self._lock = threading.Lock()
         self._render_pending = False
         self._reader = None
+        # PTY writes must never run on Sublime's main plugin thread. Win32
+        # WriteFile is synchronous and can block when ConPTY applies input
+        # backpressure, freezing the whole editor after a keypress. A single
+        # writer thread preserves input ordering while key commands return
+        # immediately.
+        self._write_queue = queue.Queue()
+        self._writer = None
         self._last_cols = screen.cols
         self._last_rows = screen.rows
         self._spawn_env = spawn_env or {}
@@ -1451,8 +1459,29 @@ class _Terminal:
             except Exception as e:
                 print(f"[ai_terminal] cast open failed: {e}")
                 self._cast_file = None
+        self._ensure_writer()
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
+
+    def _ensure_writer(self):
+        """Create the ordered PTY writer, including for hot-reloaded terminals."""
+        writer = getattr(self, "_writer", None)
+        if writer is not None and writer.is_alive():
+            return
+        if not hasattr(self, "_write_queue"):
+            self._write_queue = queue.Queue()
+        self._writer = threading.Thread(target=self._write_loop, daemon=True)
+        self._writer.start()
+
+    def _write_loop(self):
+        while True:
+            data = self._write_queue.get()
+            if data is None:
+                return
+            try:
+                self.pty.write(data)
+            except Exception as e:
+                print(f"[ai_terminal] writer error: {e}")
 
     def _cast(self, code, data):
         """Asciicast v3 event: [delta, code, data]. delta is seconds since the
@@ -1509,7 +1538,7 @@ class _Terminal:
         # Recording patch: emit an "i" (input) event for what the user typed.
         # Most useful event for replay -- shows exactly what was entered.
         self._cast("i", s)
-        self.pty.write(s.encode("utf-8", errors="replace"))
+        self._write_queue.put(s.encode("utf-8", errors="replace"))
 
     def resize(self, cols, rows):
         if cols == self._last_cols and rows == self._last_rows:
@@ -1551,6 +1580,10 @@ class _Terminal:
         _MOUSE_LAST_CLICK.pop(vid, None)
         self._last_mouse_cell = None
         self._vp_pan_accum = 0.0
+        # Stop accepting queued input before closing the PTY. The daemon
+        # writer may still be blocked inside WriteFile; closing the PTY below
+        # releases that call without making Sublime's main thread wait for it.
+        self._write_queue.put(None)
         # Recording patch: emit an "x" (exit) event and close the .cast
         # file so the recording ends cleanly. The stream-layer "o" events
         # already captured everything Claude emitted, so there's no need
@@ -3899,6 +3932,19 @@ def plugin_loaded():
     # main thread right after a settings file write).
     _settings = sublime.load_settings(_SETTINGS_NAME)
     _settings.add_on_change("ai_terminal", _on_settings_change)
+    # The registry deliberately survives module reloads so active ConPTY
+    # sessions are not killed. Upgrade those objects to this generation of the
+    # class as well; otherwise an existing tab keeps the old synchronous
+    # send_string method and its first keypress can block Sublime in WriteFile.
+    with _term_lock():
+        live_terms = list(_term_registry().values())
+    for term in live_terms:
+        try:
+            if term.__class__ is not _Terminal:
+                term.__class__ = _Terminal
+            term._ensure_writer()
+        except Exception as e:
+            print(f"[ai_terminal] live terminal writer upgrade failed: {e}")
     if _clamp_token:
         try:
             sublime.cancel_timeout(_clamp_token)

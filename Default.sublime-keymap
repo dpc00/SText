@@ -27,6 +27,7 @@
 	// setting.ai_terminal_view so these only apply inside an Ai terminal tab.
 	{"keys": ["up"], "command": "ai_terminal_keypress", "args": {"key": "up"}, "context": [{"key": "setting.ai_terminal_view", "operator": "equal", "operand": true}]},
 	{"keys": ["down"], "command": "ai_terminal_keypress", "args": {"key": "down"}, "context": [{"key": "setting.ai_terminal_view", "operator": "equal", "operand": true}]},
+	{"keys": ["keypad2"], "command": "ai_terminal_keypress", "args": {"key": "down"}, "context": [{"key": "setting.ai_terminal_view", "operator": "equal", "operand": true}]},
 	{"keys": ["right"], "command": "ai_terminal_keypress", "args": {"key": "right"}, "context": [{"key": "setting.ai_terminal_view", "operator": "equal", "operand": true}]},
 	{"keys": ["left"], "command": "ai_terminal_keypress", "args": {"key": "left"}, "context": [{"key": "setting.ai_terminal_view", "operator": "equal", "operand": true}]},
 	{"keys": ["insert"], "command": "ai_terminal_keypress", "args": {"key": "insert"}, "context": [{"key": "setting.ai_terminal_view", "operator": "equal", "operand": true}]},
