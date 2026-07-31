@@ -3821,7 +3821,7 @@ def _clamp_vp_loop():
                 near_fit = False
                 lh = 12.0
 
-            if tui_like or near_fit:
+            if tui_like:
                 # Spawn settle: pin only until viewport sits at rest once
                 # after a short grace. Sending pan→TUI keys on the first
                 # dy_rest=-pad_height injects Up arrows into Grok at t=0.
@@ -3836,8 +3836,38 @@ def _clamp_vp_loop():
                     elif abs(dy_rest) >= 0.5 or abs(dx) >= 0.5:
                         v.set_viewport_position((0.0, rest), False)
                     continue
-                if abs(dy_rest) >= 1.5:
-                    _vp_pan_to_tui_scroll(v, term, dy_rest)
+                # Treat viewport displacement as an edge, not a level. ST can
+                # retain a small fractional offset (observed: 4 px) even after
+                # set_viewport_position pins the view. Re-routing that stable
+                # offset every cooldown interval floods the TUI with synthetic
+                # arrows and pins pickers such as Codex /hooks to one item.
+                # Re-arm only after the viewport actually returns to rest.
+                pan_excursion = abs(dy_rest) >= 1.5
+                pan_latched = bool(getattr(term, "_vp_pan_latched", False))
+                if pan_excursion:
+                    term._vp_pan_rest_frames = 0
+                    if not pan_latched:
+                        term._vp_pan_latched = True
+                        _vp_pan_to_tui_scroll(v, term, dy_rest)
+                elif pan_latched:
+                    # set_viewport_position can produce one rest frame before
+                    # ST rebounds to the same fractional/pixel displacement.
+                    # Require sustained rest before accepting another gesture.
+                    rest_frames = int(
+                        getattr(term, "_vp_pan_rest_frames", 0) or 0
+                    ) + 1
+                    term._vp_pan_rest_frames = rest_frames
+                    if rest_frames >= 4:
+                        term._vp_pan_latched = False
+                        term._vp_pan_rest_frames = 0
+                if abs(dy_rest) >= 0.5 or abs(dx) >= 0.5:
+                    v.set_viewport_position((0.0, rest), False)
+                continue
+
+            if near_fit:
+                # Short picker/command menus are usually keyboard-driven. Keep
+                # them pinned, but do not reinterpret their tiny viewport drift
+                # as PTY arrow input.
                 if abs(dy_rest) >= 0.5 or abs(dx) >= 0.5:
                     v.set_viewport_position((0.0, rest), False)
                 continue
