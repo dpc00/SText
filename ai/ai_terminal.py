@@ -1374,6 +1374,8 @@ class _Terminal:
         # immediately.
         self._write_queue = queue.Queue()
         self._writer = None
+        self._input_cast_queue = queue.Queue()
+        self._input_cast_writer = None
         self._last_cols = screen.cols
         self._last_rows = screen.rows
         self._spawn_env = spawn_env or {}
@@ -1472,16 +1474,43 @@ class _Terminal:
             self._write_queue = queue.Queue()
         self._writer = threading.Thread(target=self._write_loop, daemon=True)
         self._writer.start()
+        cast_writer = getattr(self, "_input_cast_writer", None)
+        if cast_writer is None or not cast_writer.is_alive():
+            if not hasattr(self, "_input_cast_queue"):
+                self._input_cast_queue = queue.Queue()
+            self._input_cast_writer = threading.Thread(
+                target=self._input_cast_loop, daemon=True
+            )
+            self._input_cast_writer.start()
+
+    def _input_cast_loop(self):
+        """Record input independently so recorder I/O cannot stall PTY writes."""
+        while True:
+            text = self._input_cast_queue.get()
+            if text is None:
+                return
+            try:
+                self._cast("i", text)
+            except Exception as e:
+                print(f"[ai_terminal] input cast error: {e}")
 
     def _write_loop(self):
         while True:
-            data = self._write_queue.get()
-            if data is None:
+            text = self._write_queue.get()
+            if text is None:
                 return
             try:
-                self.pty.write(data)
+                # Deliver input before touching the optional recorder.  A slow
+                # file flush or contention with the output recorder must never
+                # hold an Up/Down key (or any other input) ahead of the PTY.
+                self.pty.write(text.encode("utf-8", errors="replace"))
             except Exception as e:
                 print(f"[ai_terminal] writer error: {e}")
+                continue
+            # Recording has its own queue/thread.  In particular, never wait
+            # here on _cast_lock after the first arrow while later arrows are
+            # queued for the PTY behind it.
+            self._input_cast_queue.put(text)
 
     def _cast(self, code, data):
         """Asciicast v3 event: [delta, code, data]. delta is seconds since the
@@ -1535,10 +1564,10 @@ class _Terminal:
         _schedule_render(self)
 
     def send_string(self, s):
-        # Recording patch: emit an "i" (input) event for what the user typed.
-        # Most useful event for replay -- shows exactly what was entered.
-        self._cast("i", s)
-        self._write_queue.put(s.encode("utf-8", errors="replace"))
+        # A key command must do no I/O and acquire no recording locks on
+        # Sublime's main plugin thread.  The ordered writer records and writes
+        # this text in sequence.
+        self._write_queue.put(s)
 
     def resize(self, cols, rows):
         if cols == self._last_cols and rows == self._last_rows:
@@ -1584,6 +1613,7 @@ class _Terminal:
         # writer may still be blocked inside WriteFile; closing the PTY below
         # releases that call without making Sublime's main thread wait for it.
         self._write_queue.put(None)
+        self._input_cast_queue.put(None)
         # Recording patch: emit an "x" (exit) event and close the .cast
         # file so the recording ends cleanly. The stream-layer "o" events
         # already captured everything Claude emitted, so there's no need
@@ -2086,7 +2116,9 @@ def _do_render(term):
         and (prev_text != text or prev_caret != caret_now)
     )
     skip_all = (
-        prev_text is not None
+        prev_plain is not None
+        and prev_plain == plain_sig
+        and prev_text is not None
         and prev_text == text
         and prev_caret == caret_now
     )
@@ -3941,7 +3973,24 @@ def plugin_loaded():
     for term in live_terms:
         try:
             if term.__class__ is not _Terminal:
+                # The existing daemon is still executing the previous class's
+                # bound _write_loop.  That loop consumed encoded bytes, while
+                # this generation queues text so recording and encoding happen
+                # off Sublime's main thread.  Reusing the old daemon therefore
+                # makes every key fail with pty.write(str), including Up/Down.
+                # Retire its queue before rebinding the instance, then start a
+                # writer whose loop and queue item format belong together.
+                old_queue = getattr(term, "_write_queue", None)
+                if old_queue is not None:
+                    old_queue.put(None)
                 term.__class__ = _Terminal
+                term._write_queue = queue.Queue()
+                term._writer = None
+                old_cast_queue = getattr(term, "_input_cast_queue", None)
+                if old_cast_queue is not None:
+                    old_cast_queue.put(None)
+                term._input_cast_queue = queue.Queue()
+                term._input_cast_writer = None
             term._ensure_writer()
         except Exception as e:
             print(f"[ai_terminal] live terminal writer upgrade failed: {e}")
