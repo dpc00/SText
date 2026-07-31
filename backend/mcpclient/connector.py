@@ -22,6 +22,8 @@ from mcp.client.stdio import stdio_client, StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamablehttp_client
 
+_UNSUPPORTED_FUNCTION_SCHEMA_KEYS = {"uniqueItems"}
+
 
 def _log(msg):
     print(msg, file=sys.stderr, flush=True)
@@ -95,6 +97,26 @@ def _stdio_env(cfg_env):
             parts.insert(0, p)
     env["PATH"] = os.pathsep.join(parts)
     return env
+
+
+def _sanitize_function_schema(value):
+    """Strip JSON Schema keywords rejected by OpenAI function tools.
+
+    MCP servers may legitimately expose richer JSON Schema than the target
+    model API accepts. Keep the structure intact, but remove unsupported
+    keywords recursively so tool registration does not fail.
+    """
+    if isinstance(value, list):
+        return [_sanitize_function_schema(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    sanitized = {}
+    for key, item in value.items():
+        if key in _UNSUPPORTED_FUNCTION_SCHEMA_KEYS:
+            continue
+        sanitized[key] = _sanitize_function_schema(item)
+    return sanitized
 
 
 class ServerConnector:
@@ -185,12 +207,13 @@ class ServerConnector:
 
         for tool in resp.tools:
             full_name = f"mcp__{name}__{tool.name}"
+            parameters = tool.inputSchema or {"type": "object", "properties": {}}
             server_tools.append({
                 "type": "function",
                 "function": {
                     "name": full_name,
                     "description": tool.description or "",
-                    "parameters": tool.inputSchema or {"type": "object", "properties": {}},
+                    "parameters": _sanitize_function_schema(parameters),
                 },
                 "_client": name,
                 "_orig_name": tool.name,
