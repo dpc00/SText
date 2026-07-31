@@ -119,14 +119,14 @@ def get_shift_key_code(key):
     return key.upper()
 
 
-def translate_key(key, ctrl=False, alt=False, shift=False):
+def translate_key(key, ctrl=False, alt=False, shift=False, application_mode=False):
     if ctrl:
         return get_ctrl_key_code(key)
     if alt:
         return get_alt_key_code(key)
     if shift:
         return get_shift_key_code(key)
-    return get_key_code(key)
+    return get_key_code(key, application_mode=application_mode)
 
 
 # ─── Win32-input-mode (DEC private mode 9001) ──────────────────────────────

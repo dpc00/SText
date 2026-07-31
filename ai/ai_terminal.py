@@ -2228,11 +2228,18 @@ class AiTerminalViewListener(sublime_plugin.ViewEventListener):
             fwd = (args or {}).get("forward", False)
             # Fallback if arrows aren't bound to ai_terminal_keypress.
             # No scroll_to_bottom (resize thrash with layout watcher).
+            application_mode = 1 in term.screen.private_modes
             if by == "characters":
-                term.send_string("\x1b[C" if fwd else "\x1b[D")
+                term.send_string(_get_key_code(
+                    "right" if fwd else "left",
+                    application_mode=application_mode,
+                ))
                 return ("ai_terminal_noop", {})
             if by == "lines":
-                term.send_string("\x1b[B" if fwd else "\x1b[A")
+                term.send_string(_get_key_code(
+                    "down" if fwd else "up",
+                    application_mode=application_mode,
+                ))
                 return ("ai_terminal_noop", {})
         return None
 
@@ -3404,7 +3411,13 @@ class AiTerminalKeypressCommand(sublime_plugin.TextCommand):
         if 9001 in term.screen.private_modes:
             code = _encode_win32_key(key, ctrl=ctrl, alt=alt, shift=shift)
         else:
-            code = _translate_key(key, ctrl=ctrl, alt=alt, shift=shift)
+            code = _translate_key(
+                key,
+                ctrl=ctrl,
+                alt=alt,
+                shift=shift,
+                application_mode=1 in term.screen.private_modes,
+            )
         if code:
             # Viewport writes (scroll_to_bottom) must NOT run on keys that only
             # move within the TUI or scrollback. set_viewport_position on

@@ -35,6 +35,8 @@ class TestKeys(unittest.TestCase):
         self.assertEqual(translate_key("enter"), "\r")
         self.assertEqual(translate_key("up"), "\x1b[A")
         self.assertEqual(translate_key("down"), "\x1b[B")
+        self.assertEqual(translate_key("up", application_mode=True), "\x1bOA")
+        self.assertEqual(translate_key("down", application_mode=True), "\x1bOB")
 
     def test_ctrl_c(self):
         self.assertEqual(translate_key("c", ctrl=True), "\x03")
