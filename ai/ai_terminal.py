@@ -3822,6 +3822,13 @@ def _clamp_vp_loop():
                 lh = 12.0
 
             if tui_like:
+                if near_fit:
+                    # Short TUI pickers (for example Codex /hooks) are keyed
+                    # with physical arrows. Do not turn Sublime's residual
+                    # viewport drift into extra PTY arrows that pin selection.
+                    if abs(dy_rest) >= 0.5 or abs(dx) >= 0.5:
+                        v.set_viewport_position((0.0, rest), False)
+                    continue
                 # Spawn settle: pin only until viewport sits at rest once
                 # after a short grace. Sending pan→TUI keys on the first
                 # dy_rest=-pad_height injects Up arrows into Grok at t=0.
