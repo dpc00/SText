@@ -1,11 +1,8 @@
-import os
 import subprocess
 import sublime
 import sublime_plugin
 
-_si = subprocess.STARTUPINFO()
-_si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-_si.wShowWindow = subprocess.SW_HIDE
+from User.winutil._platform import hidden_popen_kwargs, open_url
 
 
 class CcstatuslineEditorOpenCommand(sublime_plugin.WindowCommand):
@@ -22,10 +19,9 @@ class CcstatuslineEditorOpenCommand(sublime_plugin.WindowCommand):
             cmd += ["--config", config_path]
         subprocess.Popen(
             cmd,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-            startupinfo=_si,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
+            **hidden_popen_kwargs()
         )
-        os.startfile("http://127.0.0.1:5199")
+        open_url("http://127.0.0.1:5199")

@@ -7,10 +7,7 @@ import sublime
 import sublime_plugin
 
 from User.launchers._pb_port import kill_existing, PORT
-
-_si = subprocess.STARTUPINFO()
-_si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-_si.wShowWindow = subprocess.SW_HIDE
+from User.winutil._platform import hidden_popen_kwargs, open_url
 
 
 def _wait_and_open(port, timeout=60):
@@ -22,7 +19,7 @@ def _wait_and_open(port, timeout=60):
         try:
             s.connect(("127.0.0.1", port))
             s.close()
-            os.startfile("http://127.0.0.1:%d" % port)
+            open_url("http://127.0.0.1:%d" % port)
             return
         except OSError:
             s.close()
@@ -55,11 +52,10 @@ class PbFlaskSilentCommand(sublime_plugin.WindowCommand):
             from User.winutil._job import assign_pid
             proc = subprocess.Popen(
                 [r"C:\Users\donal\AppData\Local\Programs\Python\Python312\python.exe", r"C:/Users/donal/projects/pybackup/ui/app.py"],
-                creationflags=subprocess.CREATE_NO_WINDOW,
-                startupinfo=_si,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
+                **hidden_popen_kwargs()
             )
             _log(f"Popen done: {time.monotonic()-t0:.2f}s, pid={proc.pid}")
             try:

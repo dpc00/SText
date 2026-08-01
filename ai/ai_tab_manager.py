@@ -385,9 +385,10 @@ class AiSearchConversationsCommand(sublime_plugin.WindowCommand):
         if _port_free(5758):
             script = str(Path(__file__).parent / "ai_search_app.py")
             from User.winutil._job import assign_pid
+            from User.winutil._platform import hidden_popen_kwargs
             proc = subprocess.Popen(
                 ["python", script],
-                creationflags=subprocess.CREATE_NO_WINDOW,
+                **hidden_popen_kwargs()
             )
             try:
                 assign_pid(proc.pid)

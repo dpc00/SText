@@ -157,9 +157,11 @@ def _start_ai_log_server():
         print("PluginLoader: no system python found; ai_log_server not started")
         return False
 
-    si = subprocess.STARTUPINFO()
-    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    si.wShowWindow = subprocess.SW_HIDE
+    si = None
+    if sys.platform == "win32":
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = subprocess.SW_HIDE
     # Do NOT assign_pid into the ST job: package reloads / job teardown kill
     # job members and abort the daily log. This process is intentionally
     # independent; keepalive restarts it if it dies while ST is open.

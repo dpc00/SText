@@ -28,7 +28,7 @@ import sys
 try:
     import ctypes
     from ctypes import wintypes
-    _HAVE_WIN = True
+    _HAVE_WIN = sys.platform == "win32" and hasattr(ctypes, "WinDLL")
 except Exception:
     _HAVE_WIN = False
 
