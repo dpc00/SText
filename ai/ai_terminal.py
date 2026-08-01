@@ -30,6 +30,7 @@ import json
 import os
 import queue
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -146,6 +147,9 @@ if os.name == "nt":
     except Exception as _e:  # pragma: no cover
         print(f"[ai_terminal] ctypes ConPTY binding failed: {_e}")
         _PTY_OK = False
+else:
+    # POSIX: the stdlib pty module backs _PosixPty, so no binding is needed.
+    _PTY_OK = True
 
 
 # ─── _Pty: ConPTY child process ───────────────────────────────────────────────
@@ -398,6 +402,124 @@ class _WinptyPty:
             self._proc = None
 
 
+# ─── _PosixPty: forkpty child process (Linux/WSL/macOS) ──────────────────────
+
+
+class _PosixPty:
+    """A child process attached to a Unix pseudoterminal.
+
+    Mirrors the _Pty / _WinptyPty interface (start/read/write/resize/
+    is_alive/kill + argv/pid) using the stdlib pty, fcntl and termios
+    modules, so the Sublime adapter above needs no platform branches
+    beyond backend selection.
+    """
+
+    def __init__(self, argv, cwd, cols, rows, env):
+        self.argv = list(argv)
+        self.pid = 0
+        self._cwd = cwd or None
+        self._env = env
+        self._cols = cols
+        self._rows = rows
+        self._fd = -1
+        self._alive = True
+
+    def start(self):
+        import fcntl
+        import pty
+        import struct
+        import termios
+
+        pid, fd = pty.fork()
+        if pid == 0:
+            try:
+                if self._cwd:
+                    os.chdir(self._cwd)
+                env = {str(k): str(v) for k, v in (self._env or os.environ).items()}
+                os.execvpe(self.argv[0], self.argv, env)
+            except Exception:
+                os._exit(127)
+        self.pid = pid
+        self._fd = fd
+        try:
+            fcntl.ioctl(
+                self._fd,
+                termios.TIOCSWINSZ,
+                struct.pack("HHHH", self._rows, self._cols, 0, 0),
+            )
+        except Exception:
+            pass
+
+    def read(self, on_data):
+        """Blocking reader loop; calls on_data(bytes) until EOF. Run on a daemon thread."""
+        while self._alive and self._fd >= 0:
+            try:
+                data = os.read(self._fd, 8192)
+            except OSError:
+                break
+            if not data:
+                break
+            on_data(data)
+        self._alive = False
+
+    def write(self, data):
+        if not self._alive or self._fd < 0:
+            return
+        if isinstance(data, str):
+            data = data.encode("utf-8", "replace")
+        try:
+            while data:
+                n = os.write(self._fd, data)
+                data = data[n:]
+        except OSError as e:
+            print(f"[ai_terminal] posix pty write error: {e}")
+
+    def resize(self, cols, rows):
+        if not self._alive or self._fd < 0:
+            return
+        self._cols, self._rows = cols, rows
+        try:
+            import fcntl
+            import struct
+            import termios
+
+            fcntl.ioctl(
+                self._fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0)
+            )
+        except Exception:
+            pass
+
+    def is_alive(self):
+        if not self._alive or not self.pid:
+            return False
+        try:
+            wpid, _ = os.waitpid(self.pid, os.WNOHANG)
+            if wpid == self.pid:
+                self._alive = False
+        except OSError:
+            self._alive = False
+        return self._alive
+
+    def kill(self):
+        if not self._alive:
+            return
+        self._alive = False
+        if self.pid:
+            try:
+                os.kill(self.pid, signal.SIGHUP)
+            except OSError:
+                pass
+            try:
+                os.waitpid(self.pid, os.WNOHANG)
+            except OSError:
+                pass
+        if self._fd >= 0:
+            try:
+                os.close(self._fd)
+            except OSError:
+                pass
+            self._fd = -1
+
 
 # ─── pure terminal core (testable without Sublime) ───────────────────────────
 # Screen, Parser, colours, keys, and text layout live in ai/terminal/*.
@@ -444,6 +566,9 @@ try:
         encode_win32_key as _encode_win32_key,
     )
     from .terminal.pty_env import sanitize_pty_env as _sanitize_pty_env
+    from .terminal.profile_availability import (
+        profile_is_available as _profile_is_available_pure,
+    )
     from .terminal.render import (
         HOST_CURSOR_SCOPE as _HOST_CURSOR_SCOPE,
         build_text_and_regions as _build_text_and_regions_pure,
@@ -506,6 +631,9 @@ except ImportError as _term_imp_err:
             encode_win32_key as _encode_win32_key,
         )
         from ai.terminal.pty_env import sanitize_pty_env as _sanitize_pty_env
+        from ai.terminal.profile_availability import (
+            profile_is_available as _profile_is_available_pure,
+        )
         from ai.terminal.render import (
             HOST_CURSOR_SCOPE as _HOST_CURSOR_SCOPE,
             build_text_and_regions as _build_text_and_regions_pure,
@@ -1026,7 +1154,9 @@ def _tui_like(term):
     if term.screen.alt_screen:
         return True
     return bool(term.screen.mouse_tracking) and _MOUSE_HANDLING_ENABLED
-_DEFAULT_LAUNCH_COMMAND = ["cmd.exe"]
+_DEFAULT_LAUNCH_COMMAND = ["cmd.exe"] if os.name == "nt" else [
+    os.environ.get("SHELL") or "/bin/bash"
+]
 _DEFAULT_SPAWN_ENV = {
     "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
     "CLAUDE_CODE_AI_TERMINAL_SENTINEL": "propagated",
@@ -1079,6 +1209,40 @@ def _min_rows():
         return _DEFAULT_MIN_ROWS
 
 
+def _platform_argv(value, default=None):
+    """Resolve a launch_command setting to an argv list for this platform.
+
+    Accepts either a plain argv list (shared by every platform) or a dict
+    keyed by "windows"/"linux"/"osx", so one settings file can drive the
+    mirrored Windows and WSL trees. Windows-only commands that survive into
+    a POSIX spawn fall back to the default shell rather than launching a
+    Windows binary under a Unix pty.
+    """
+    if isinstance(value, dict):
+        key = {"nt": "windows"}.get(os.name, sys.platform)
+        if key.startswith("linux"):
+            key = "linux"
+        elif key == "darwin":
+            key = "osx"
+        value = value.get(key) or value.get("default")
+
+    if not value or not isinstance(value, list) or not all(
+        isinstance(a, str) for a in value
+    ):
+        return list(default if default is not None else _DEFAULT_LAUNCH_COMMAND)
+
+    if os.name != "nt":
+        head = os.path.basename(value[0]).lower()
+        if head.endswith(".exe") or head in ("cmd", "powershell", "pwsh"):
+            print(
+                f"[ai_terminal] launch_command {value[0]!r} is Windows-only; "
+                f"using {_DEFAULT_LAUNCH_COMMAND[0]!r} on this platform."
+            )
+            return list(_DEFAULT_LAUNCH_COMMAND)
+
+    return list(value)
+
+
 def _launch_command():
     """argv list used to spawn the terminal program. Read from the
     `launch_command` setting so the agent/gateway can be swapped (e.g. to
@@ -1087,9 +1251,7 @@ def _launch_command():
     Applied on the next _spawn (reopen the ai_terminal tab)."""
     s = _settings or sublime.load_settings(_SETTINGS_NAME)
     cmd = s.get("launch_command", _DEFAULT_LAUNCH_COMMAND)
-    if not isinstance(cmd, list) or not all(isinstance(a, str) for a in cmd):
-        return _DEFAULT_LAUNCH_COMMAND
-    return list(cmd)
+    return _platform_argv(cmd)
 
 
 def _refresh_path_env(env):
@@ -1207,6 +1369,18 @@ def _resolve_launch_argv(argv, env=None):
         search_path = env.get("Path") or env.get("PATH")
 
     exe0 = argv[0]
+
+    if os.name != "nt":
+        # POSIX: execvpe handles PATH lookup, and there are no .cmd/.ps1
+        # shims to wrap. Resolve only to fail fast with a clear message.
+        if os.path.isabs(exe0):
+            if not os.path.isfile(exe0):
+                raise FileNotFoundError(f"command not found: {exe0!r}")
+            return argv
+        if not shutil.which(exe0, path=search_path):
+            raise FileNotFoundError(f"command not found on PATH: {exe0!r}")
+        return argv
+
     if os.path.isabs(exe0) and os.path.isfile(exe0):
         resolved = exe0
     else:
@@ -1252,6 +1426,23 @@ def _spawn_env():
     ):
         return dict(_DEFAULT_SPAWN_ENV)
     return dict(ev)
+
+
+def _profile_is_available(profile_name, settings=None):
+    """Local-only menu availability for a configured terminal profile.
+
+    Never launches the CLI, contacts a provider, refreshes OAuth, or spends
+    inference quota.  The settings allowlist represents known login/subscription
+    readiness; executable detection prevents stale menu entries from launching.
+    """
+    s = settings or _settings or sublime.load_settings(_SETTINGS_NAME)
+    profiles = s.get("profiles", {})
+    if not profile_name:
+        profile_name = s.get("default_profile")
+    profile = profiles.get(profile_name) if isinstance(profiles, dict) else None
+    allowed = s.get("available_profiles", None)
+    path = os.environ.get("Path") or os.environ.get("PATH")
+    return _profile_is_available_pure(profile_name, profile, allowed, path=path)
 
 
 _SECRETS_SETTINGS_NAME = "ai_terminal_secrets.sublime-settings"
@@ -3217,7 +3408,7 @@ def _pick_cwd_then(window, on_path):
 
 def _spawn(window, path, profile=None):
     if not _PTY_OK:
-        sublime.error_message("ai_terminal: Windows ConPTY unavailable (ctypes binding failed).")
+        sublime.error_message("ai_terminal: no PTY backend available (ConPTY ctypes binding failed).")
         return
 
     s = sublime.load_settings(_SETTINGS_NAME)
@@ -3230,7 +3421,9 @@ def _spawn(window, path, profile=None):
     profile_data = profiles.get(profile_name) if profile_name else None
     
     if profile_data and isinstance(profile_data, dict):
-        argv = profile_data.get("launch_command", _DEFAULT_LAUNCH_COMMAND)
+        argv = _platform_argv(
+            profile_data.get("launch_command", _DEFAULT_LAUNCH_COMMAND)
+        )
         extra_env = profile_data.get("spawn_env", {})
     else:
         # Fallback to legacy single command settings
@@ -3275,7 +3468,10 @@ def _spawn(window, path, profile=None):
     print(f"[ai_terminal] launch argv: {argv!r}")
 
     backend = s.get("windows_pty_backend", "conpty")
-    if backend == "winpty":
+    if os.name != "nt":
+        pty = _PosixPty(argv, path, cols, rows, env)
+        print("[ai_terminal] Spawning PTY process using 'posix' backend.")
+    elif backend == "winpty":
         try:
             pty = _WinptyPty(argv, path, cols, rows, env)
             print("[ai_terminal] Spawning PTY process using 'winpty' backend.")
@@ -3332,6 +3528,9 @@ class AiTerminalOpenHereCommand(sublime_plugin.WindowCommand):
     def is_visible(self, paths=None):
         return True
 
+    def is_enabled(self, paths=None, profile=None):
+        return _profile_is_available(profile)
+
 
 class AiTerminalOpenInEditorCommand(sublime_plugin.TextCommand):
     """Open a Claude TUI terminal in the active file's project root.
@@ -3358,6 +3557,9 @@ class AiTerminalOpenInEditorCommand(sublime_plugin.TextCommand):
 
         _pick_cwd_then(window, on_path)
 
+    def is_enabled(self, profile=None):
+        return _profile_is_available(profile)
+
 
 class AiTerminalSelectProfileCommand(sublime_plugin.WindowCommand):
     """Show a Quick Panel to pick and open a terminal profile.
@@ -3375,15 +3577,28 @@ class AiTerminalSelectProfileCommand(sublime_plugin.WindowCommand):
             self.window.run_command("ai_terminal_open_here", {"paths": paths})
             return
 
+        items = []
+        availability = []
+        for name in profile_names:
+            ready = _profile_is_available(name, s)
+            availability.append(ready)
+            items.append([name, "Available" if ready else "Unavailable (local setting or executable)"])
+
         def on_done(idx):
             if idx == -1:
+                return
+            if not availability[idx]:
+                sublime.status_message(
+                    "Ai terminal: profile is unavailable; edit available_profiles in "
+                    + _SETTINGS_NAME
+                )
                 return
             self.window.run_command("ai_terminal_open_here", {
                 "profile": profile_names[idx],
                 "paths": paths
             })
 
-        self.window.show_quick_panel(profile_names, on_done)
+        self.window.show_quick_panel(items, on_done)
 
 
 class AiTerminalSendStringCommand(sublime_plugin.TextCommand):
@@ -4022,7 +4237,7 @@ def _clamp_vp_loop():
 
 def plugin_loaded():
     if not _PTY_OK:
-        print("[ai_terminal] ConPTY unavailable; commands will report the error.")
+        print("[ai_terminal] no PTY backend available; commands will report the error.")
     _ensure_poller()
     global _clamp_token, _settings
     _init_dynamic_color_scheme()
