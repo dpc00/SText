@@ -140,18 +140,15 @@ def _ai_log_port_free(port=None):
     import socket
 
     port = _AI_LOG_PORT if port is None else port
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(0.25)
+    # Probe the service instead of trying to bind the port. On Windows, a
+    # wildcard listener (0.0.0.0) and a loopback bind can coexist under some
+    # socket reuse combinations, so bind-based detection spawned a new logger
+    # every keepalive tick even though the existing receiver was healthy.
     try:
-        sock.bind(("127.0.0.1", port))
-        sock.close()
-        return True
+        with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+            return False
     except OSError:
-        try:
-            sock.close()
-        except OSError:
-            pass
-        return False
+        return True
 
 
 def _start_ai_log_server():
@@ -293,6 +290,5 @@ _PLUGIN_UNLOADED_MODULES = [
     "User.config.settings_editor",  # stop HTTP server (port 57324)
     "User.config.st_config",        # stop HTTP server
 ]
-
 
 
