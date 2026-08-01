@@ -8,11 +8,6 @@
 		"external_id": "python",
 		"extend_env": {"PYTHONIOENCODING": "utf-8"}
 	}},
-	{"caption": "AI (SDK): Clear", "command": "ai_sdk_clear"},
-	{"caption": "AI (SDK): Open Here", "command": "ai_sdk_open_here"},
-	{"caption": "AI (SDK): Open in Editor", "command": "ai_sdk_open_in_editor"},
-	{"caption": "AI (SDK): Open", "command": "ai_sdk_focus"},
-	{"caption": "AI (SDK): Stop", "command": "ai_sdk_stop"},
 	{"caption": "AI Hub: Open", "command": "ai_hub_open"},
 	{"caption": "AI Hub: Refresh", "command": "ai_hub_refresh"},
 	{"caption": "Ai: Capture Idea", "command": "capture_idea"},

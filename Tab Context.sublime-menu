@@ -4,10 +4,6 @@
         "command": "ai_terminal_open_in_editor"
     },
     {
-        "caption": "Open AI(SDK) here...",
-        "command": "ai_sdk_open_in_editor"
-    },
-    {
         "caption": "Open Terminus here...",
         "command": "terminus_open",
         "args":

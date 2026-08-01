@@ -174,7 +174,6 @@
             ],
             "spawn_env": {
                 "AI_TERMINAL_LOG_LINES": "1",
-                "GEMINI_API_KEY": "",
                 "GEMINI_PROMPT_QUEUE": "false",
                 "GEMINI_SYSTEM_MD": "C:\\Users\\donal\\projects\\SText\\ai_sdk_prompt.md"
             }
