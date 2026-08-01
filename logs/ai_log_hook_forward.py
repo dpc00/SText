@@ -2,7 +2,7 @@
 """Forward Grok/Claude-style hook stdin JSON to the local ai_log_server.
 
 Grok blocks type=http hooks that use http:// (SSRF: https only). Claude and
-other agents POST directly to http://127.0.0.1:9511/event. This command hook
+other agents POST directly to http://10.0.0.56:9511/event. This command hook
 reads the event envelope from stdin and POSTs it to the same endpoint so Grok
 sessions land in ~/data/logs/<date>.md like everyone else.
 
@@ -31,7 +31,7 @@ import urllib.error
 import urllib.request
 import uuid
 
-URL = "http://127.0.0.1:9511/event"
+URL = "http://10.0.0.56:9511/event"
 TIMEOUT = 2.5  # stay under Grok's default 5s hook budget
 SPOOL = os.path.join(os.path.expanduser("~"), "data", "logs", ".hook_spool")
 MAX_DRAIN = 40

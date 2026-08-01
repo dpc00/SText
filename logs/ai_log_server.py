@@ -921,8 +921,8 @@ if __name__ == "__main__":
     _rebind_stdio()
     socketserver.TCPServer.allow_reuse_address = True
     try:
-        with socketserver.ThreadingTCPServer(("127.0.0.1", args.port), H) as s:
-            _safe_log(f"ai_log_server listening 127.0.0.1:{args.port} pid={os.getpid()} -> {OUT}")
+        with socketserver.ThreadingTCPServer(("0.0.0.0", args.port), H) as s:
+            _safe_log(f"ai_log_server listening 0.0.0.0:{args.port} pid={os.getpid()} -> {OUT}")
             s.serve_forever()
     except Exception:
         import traceback
