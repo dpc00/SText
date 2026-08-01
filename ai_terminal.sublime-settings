@@ -74,10 +74,13 @@
         "Codex →⇢⇨ Ollama",
         "Grok Build",
         "JCode",
+        "Junie",
         "OpenCode →⇢⇨ Ollama",
         "OpenCode →⇢⇨ Ollama --mini",
+        "Qwen",
         "Qwen →⇢⇨ Ollama",
-        "Testing Agent"
+        "Testing Agent",
+        "Vibe"
     ],
     // Configured terminal/shell profiles for SText.
     // This allows SText to work as a multi-console terminal launcher.
