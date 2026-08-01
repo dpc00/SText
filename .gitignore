@@ -53,3 +53,6 @@ logs/*.log
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# --- Secrets (never commit; lives only in Packages/User) ---
+ai_terminal_secrets.sublime-settings

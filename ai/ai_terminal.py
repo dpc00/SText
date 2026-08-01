@@ -1254,6 +1254,58 @@ def _spawn_env():
     return dict(ev)
 
 
+_SECRETS_SETTINGS_NAME = "ai_terminal_secrets.sublime-settings"
+_SECRET_PREFIX = "$secret:"
+
+
+def _resolve_secret_refs(env):
+    """Expand `$secret:NAME` values in `env` from the User-only secrets file.
+
+    API keys must not live in this repo (SText is public) nor in the ambient
+    user environment (tools that auto-detect an API key there will try to bill
+    the key instead of using a subscription login). So profiles reference a
+    secret by name:
+
+        "spawn_env": { "GEMINI_API_KEY": "$secret:GEMINI_API_KEY" }
+
+    and the value is read at spawn time from
+    Packages/User/ai_terminal_secrets.sublime-settings, which the pybak
+    allowlist excludes and .gitignore ignores. The key is therefore only ever
+    in the memory of the process that needs it.
+
+    An unresolved reference is dropped rather than passed through literally, so
+    an agent never receives the string "$secret:..." as if it were a real key.
+    """
+    refs = {
+        k: v[len(_SECRET_PREFIX):]
+        for k, v in env.items()
+        if isinstance(v, str) and v.startswith(_SECRET_PREFIX)
+    }
+    if not refs:
+        return env
+
+    try:
+        store = sublime.load_settings(_SECRETS_SETTINGS_NAME)
+    except Exception:
+        store = None
+
+    out = dict(env)
+    missing = []
+    for var, name in refs.items():
+        val = store.get(name) if store is not None else None
+        if isinstance(val, str) and val:
+            out[var] = val
+        else:
+            out.pop(var, None)
+            missing.append("%s (%s)" % (var, name))
+    if missing:
+        print(
+            "ai_terminal: no value in %s for %s; spawning without it"
+            % (_SECRETS_SETTINGS_NAME, ", ".join(missing))
+        )
+    return out
+
+
 def _settings_debug_log(message):
     try:
         path = os.path.expanduser("~/data/logs/ai_terminal/settings_debug.log")
@@ -3207,6 +3259,10 @@ def _spawn(window, path, profile=None):
     env = _sanitize_pty_env(os.environ, extra_env)
     # Pick up PATH changes from setx/installers without requiring an ST restart.
     env = _refresh_path_env(env)
+    # Resolve "$secret:NAME" placeholders from the User-only secrets file, so
+    # API keys reach the spawned agent without ever entering this (public)
+    # repo or the ambient environment.
+    env = _resolve_secret_refs(env)
 
     try:
         argv = _resolve_launch_argv(argv, env)
