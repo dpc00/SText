@@ -55,15 +55,15 @@ if False:
         AiSdkOpenHereCommand,
         AiSdkOpenInEditorCommand,
     )
-    from User.ai.ai_hub import AiHubOpenCommand, AiHubRefreshCommand, AiHubStatusListener
-    from User.ai.ai_tab_manager import (
-        AiTrimNowCommand,
-        AiDumpBufferCommand,
-        AiListSessionsCommand,
-        AiSearchConversationsCommand,
-        AiQuitFlaskAppsCommand,
-        AiEventListener,
-    )
+from User.ai.ai_hub import AiHubOpenCommand, AiHubRefreshCommand, AiHubStatusListener
+from User.ai.ai_tab_manager import (
+    AiTrimNowCommand,
+    AiDumpBufferCommand,
+    AiListSessionsCommand,
+    AiSearchConversationsCommand,
+    AiQuitFlaskAppsCommand,
+    AiEventListener,
+)
 from User.ai.ai_terminal import (
     AiTerminalOpenHereCommand,
     AiTerminalOpenInEditorCommand,
