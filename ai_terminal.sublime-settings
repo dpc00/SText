@@ -55,33 +55,10 @@
     // or trailing blank PTY rows can hide real content on scroll-to-bottom
     // (confirmed: broke Claude Code's TUI after typing).
     "min_rows": 1,
-    // Profiles known to have a working local login/subscription, or profiles
-    // that are intentionally local-only. Static menu entries not listed here
-    // are grayed out. The plugin also requires the launch executable to exist.
-    // This check is entirely local: it never opens OAuth, calls a provider, or
-    // spends model quota. Add a profile after you configure its login; remove it
-    // when you no longer pay for or use that service.
-    "available_profiles": [
-        "Bash",
-        "PowerShell",
-        "Dos Console",
-        "WSL Bash",
-        "Claude",
-        "Claude --chrome",
-        "Claude →⇢⇨ Ollama",
-        "Claude →⇢⇨ Ollama --chrome",
-        "Codex",
-        "Codex →⇢⇨ Ollama",
-        "Grok Build",
-        "JCode",
-        "Junie",
-        "OpenCode →⇢⇨ Ollama",
-        "OpenCode →⇢⇨ Ollama --mini",
-        "Qwen",
-        "Qwen →⇢⇨ Ollama",
-        "Testing Agent",
-        "Vibe"
-    ],
+    // Every configured profile is eligible when its launch executable exists.
+    // ai_terminal learns current quota state from real terminal output and grays
+    // a profile after a provider reports exhaustion. It never probes a provider,
+    // opens OAuth, or spends quota merely to populate the menus.
     // Configured terminal/shell profiles for SText.
     // This allows SText to work as a multi-console terminal launcher.
     "profiles": {

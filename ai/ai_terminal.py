@@ -568,6 +568,7 @@ try:
     from .terminal.pty_env import sanitize_pty_env as _sanitize_pty_env
     from .terminal.profile_availability import (
         profile_is_available as _profile_is_available_pure,
+        usage_update_from_text as _usage_update_from_text,
     )
     from .terminal.render import (
         HOST_CURSOR_SCOPE as _HOST_CURSOR_SCOPE,
@@ -633,6 +634,7 @@ except ImportError as _term_imp_err:
         from ai.terminal.pty_env import sanitize_pty_env as _sanitize_pty_env
         from ai.terminal.profile_availability import (
             profile_is_available as _profile_is_available_pure,
+            usage_update_from_text as _usage_update_from_text,
         )
         from ai.terminal.render import (
             HOST_CURSOR_SCOPE as _HOST_CURSOR_SCOPE,
@@ -1429,20 +1431,55 @@ def _spawn_env():
 
 
 def _profile_is_available(profile_name, settings=None):
-    """Local-only menu availability for a configured terminal profile.
+    """Quota-free menu availability for a configured terminal profile.
 
     Never launches the CLI, contacts a provider, refreshes OAuth, or spends
-    inference quota.  The settings allowlist represents known login/subscription
-    readiness; executable detection prevents stale menu entries from launching.
+    inference quota. Executable detection prevents stale menu entries from
+    launching, while actual terminal output can mark any profile exhausted.
     """
     s = settings or _settings or sublime.load_settings(_SETTINGS_NAME)
     profiles = s.get("profiles", {})
     if not profile_name:
         profile_name = s.get("default_profile")
     profile = profiles.get(profile_name) if isinstance(profiles, dict) else None
-    allowed = s.get("available_profiles", None)
     path = os.environ.get("Path") or os.environ.get("PATH")
-    return _profile_is_available_pure(profile_name, profile, allowed, path=path)
+    usage = getattr(sys, "_stext_ai_profile_usage", {})
+    if isinstance(usage, dict) and usage.get(profile_name) == 0.0:
+        return False
+    return _profile_is_available_pure(profile_name, profile, path=path)
+
+
+def _profile_availability_label(profile_name, settings=None):
+    """Explain the locally known state without probing the provider."""
+    usage = getattr(sys, "_stext_ai_profile_usage", {})
+    remaining = usage.get(profile_name) if isinstance(usage, dict) else None
+    if remaining == 0.0:
+        return "Quota exhausted"
+    if not _profile_is_available(profile_name, settings):
+        return "Executable unavailable"
+    if isinstance(remaining, (int, float)):
+        return "%g%% remaining (observed)" % remaining
+    return "Available (usage not yet observed)"
+
+
+def _record_profile_usage(profile_name, text):
+    """Learn current availability from real provider output, never a probe."""
+    if not profile_name:
+        return
+    buffers = getattr(sys, "_stext_ai_profile_usage_text", None)
+    if not isinstance(buffers, dict):
+        buffers = {}
+        sys._stext_ai_profile_usage_text = buffers
+    recent = (buffers.get(profile_name, "") + (text or ""))[-4096:]
+    buffers[profile_name] = recent
+    remaining = _usage_update_from_text(recent)
+    if remaining is None:
+        return
+    usage = getattr(sys, "_stext_ai_profile_usage", None)
+    if not isinstance(usage, dict):
+        usage = {}
+        sys._stext_ai_profile_usage = usage
+    usage[profile_name] = remaining
 
 
 _SECRETS_SETTINGS_NAME = "ai_terminal_secrets.sublime-settings"
@@ -1599,7 +1636,7 @@ class _ProcessProxy:
 
 
 class _Terminal:
-    def __init__(self, view, pty, screen, parser, spawn_env=None):
+    def __init__(self, view, pty, screen, parser, spawn_env=None, profile_name=None):
         self.view = view
         self.pty = pty
         self.screen = screen
@@ -1622,6 +1659,7 @@ class _Terminal:
         self._last_cols = screen.cols
         self._last_rows = screen.rows
         self._spawn_env = spawn_env or {}
+        self.profile_name = profile_name
         # Auto-follow model (Terminus-style): scroll to the bottom to show new
         # Claude output whenever _auto_follow is True. It starts True, flips
         # False when the user scrolls up to read scrollback (detected in the
@@ -1799,6 +1837,7 @@ class _Terminal:
         if _DEBUG:
             _debug_log(data)
         text = self._decoder.decode(data)
+        _record_profile_usage(getattr(self, "profile_name", None), text)
         with self._lock:
             self.parser.feed(text)
         # Recording patch: emit an asciicast v3 "o" (output) event for the
@@ -3491,7 +3530,14 @@ def _spawn(window, path, profile=None):
         return
     screen = _Screen(cols, rows, history_cap=_scrollback_size())
     parser = _Parser(screen, force_main_screen=_force_main_screen())
-    term = _Terminal(view, pty, screen, parser, spawn_env=extra_env)
+    term = _Terminal(
+        view,
+        pty,
+        screen,
+        parser,
+        spawn_env=extra_env,
+        profile_name=profile_name,
+    )
     with _term_lock():
         _term_registry()[view.id()] = term
     term.start()
@@ -3582,15 +3628,18 @@ class AiTerminalSelectProfileCommand(sublime_plugin.WindowCommand):
         for name in profile_names:
             ready = _profile_is_available(name, s)
             availability.append(ready)
-            items.append([name, "Available" if ready else "Unavailable (local setting or executable)"])
+            items.append([name, _profile_availability_label(name, s)])
 
         def on_done(idx):
             if idx == -1:
                 return
             if not availability[idx]:
                 sublime.status_message(
-                    "Ai terminal: profile is unavailable; edit available_profiles in "
-                    + _SETTINGS_NAME
+                    "Ai terminal: "
+                    + profile_names[idx]
+                    + " is unavailable ("
+                    + _profile_availability_label(profile_names[idx], s).lower()
+                    + ")"
                 )
                 return
             self.window.run_command("ai_terminal_open_here", {
