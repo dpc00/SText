@@ -10,6 +10,13 @@ import re
 import shutil
 
 
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
+
+
+def _plain_terminal_text(text):
+    return _ANSI_ESCAPE_RE.sub("", text or "").replace("\r", "")
+
+
 def command_exists(argv, path=None):
     """Return whether the first argv item can be launched on this machine."""
     if not isinstance(argv, (list, tuple)) or not argv or not isinstance(argv[0], str):
@@ -49,7 +56,7 @@ def usage_update_from_text(text):
     provider reports one. Generic transient rate-limit messages are deliberately
     ignored because they do not prove that the account quota is empty.
     """
-    low = (text or "").lower()
+    low = _plain_terminal_text(text).lower()
     updates = []
     for pattern in _EXHAUSTED_PATTERNS:
         start = 0
@@ -70,3 +77,20 @@ def usage_update_from_text(text):
             updates.append((match.start(), remaining))
 
     return max(updates, key=lambda update: update[0])[1] if updates else None
+
+
+def reset_update_from_text(text):
+    """Return the latest provider-reported quota reset description, if any."""
+    plain = _plain_terminal_text(text)
+    patterns = (
+        r"\b(?:quota|usage|limit)?\s*resets?\s+in\s+([^\n|]{1,80})",
+        r"\b(?:quota|usage|limit)?\s*resets?\s+(?:at|on)\s+([^\n|]{1,80})",
+        r"\bnext\s+reset\s*[:=-]\s*([^\n|]{1,80})",
+    )
+    matches = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, plain, flags=re.IGNORECASE):
+            value = match.group(1).strip(" .;,-")
+            if value:
+                matches.append((match.start(), value))
+    return max(matches, key=lambda update: update[0])[1] if matches else None

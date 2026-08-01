@@ -568,6 +568,7 @@ try:
     from .terminal.pty_env import sanitize_pty_env as _sanitize_pty_env
     from .terminal.profile_availability import (
         profile_is_available as _profile_is_available_pure,
+        reset_update_from_text as _reset_update_from_text,
         usage_update_from_text as _usage_update_from_text,
     )
     from .terminal.render import (
@@ -634,6 +635,7 @@ except ImportError as _term_imp_err:
         from ai.terminal.pty_env import sanitize_pty_env as _sanitize_pty_env
         from ai.terminal.profile_availability import (
             profile_is_available as _profile_is_available_pure,
+            reset_update_from_text as _reset_update_from_text,
             usage_update_from_text as _usage_update_from_text,
         )
         from ai.terminal.render import (
@@ -1453,12 +1455,18 @@ def _profile_availability_label(profile_name, settings=None):
     """Explain the locally known state without probing the provider."""
     usage = getattr(sys, "_stext_ai_profile_usage", {})
     remaining = usage.get(profile_name) if isinstance(usage, dict) else None
+    resets = getattr(sys, "_stext_ai_profile_resets", {})
+    reset = resets.get(profile_name) if isinstance(resets, dict) else None
     if remaining == 0.0:
-        return "Quota exhausted"
+        label = "Quota exhausted"
+        return label + (" | resets " + reset if reset else "")
     if not _profile_is_available(profile_name, settings):
         return "Executable unavailable"
     if isinstance(remaining, (int, float)):
-        return "%g%% remaining (observed)" % remaining
+        label = "%g%% remaining (observed)" % remaining
+        return label + (" | resets " + reset if reset else "")
+    if reset:
+        return "Usage unknown | resets " + reset
     return "Available (usage not yet observed)"
 
 
@@ -1473,13 +1481,19 @@ def _record_profile_usage(profile_name, text):
     recent = (buffers.get(profile_name, "") + (text or ""))[-4096:]
     buffers[profile_name] = recent
     remaining = _usage_update_from_text(recent)
-    if remaining is None:
-        return
-    usage = getattr(sys, "_stext_ai_profile_usage", None)
-    if not isinstance(usage, dict):
-        usage = {}
-        sys._stext_ai_profile_usage = usage
-    usage[profile_name] = remaining
+    if remaining is not None:
+        usage = getattr(sys, "_stext_ai_profile_usage", None)
+        if not isinstance(usage, dict):
+            usage = {}
+            sys._stext_ai_profile_usage = usage
+        usage[profile_name] = remaining
+    reset = _reset_update_from_text(recent)
+    if reset is not None:
+        resets = getattr(sys, "_stext_ai_profile_resets", None)
+        if not isinstance(resets, dict):
+            resets = {}
+            sys._stext_ai_profile_resets = resets
+        resets[profile_name] = reset
 
 
 _SECRETS_SETTINGS_NAME = "ai_terminal_secrets.sublime-settings"

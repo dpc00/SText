@@ -5,6 +5,7 @@ import unittest
 from ai.terminal.profile_availability import (
     command_exists,
     profile_is_available,
+    reset_update_from_text,
     usage_update_from_text,
 )
 
@@ -49,6 +50,20 @@ class ProfileAvailabilityTests(unittest.TestCase):
     def test_latest_usage_signal_wins(self):
         text = "You have no credits remaining.\nWeekly usage: 73% remaining"
         self.assertEqual(usage_update_from_text(text), 73.0)
+
+    def test_reset_duration_is_extracted(self):
+        self.assertEqual(reset_update_from_text("Usage resets in 3h 42m"), "3h 42m")
+
+    def test_reset_timestamp_is_extracted(self):
+        self.assertEqual(
+            reset_update_from_text("Next reset: Aug 5, 2026 at 02:00 UTC"),
+            "Aug 5, 2026 at 02:00 UTC",
+        )
+
+    def test_ansi_does_not_hide_usage_details(self):
+        text = "\x1b[32m64% remaining\x1b[0m | resets in 2 days"
+        self.assertEqual(usage_update_from_text(text), 64.0)
+        self.assertEqual(reset_update_from_text(text), "2 days")
 
 
 if __name__ == "__main__":
