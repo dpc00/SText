@@ -1431,7 +1431,17 @@ class _Terminal:
         # are appended by _cast() from _on_data / send_string / resize / kill.
         # Recording is on if AI_TERMINAL_LOG_LINES is set in the merged spawn
         # env (profile or legacy top-level) OR in ST's process env.
-        log_on = _LOG_LINES
+        # Record by default. The explicit setting gives users one predictable
+        # switch instead of requiring every terminal profile to duplicate an
+        # environment variable. Existing AI_TERMINAL_LOG_LINES overrides remain
+        # supported for backward compatibility.
+        try:
+            log_on = bool(
+                sublime.load_settings(_SETTINGS_NAME).get("record_asciicast", True)
+            )
+        except Exception:
+            log_on = True
+        log_on = log_on or _LOG_LINES
         if not log_on:
             try:
                 log_on = bool((self._spawn_env or {}).get("AI_TERMINAL_LOG_LINES"))

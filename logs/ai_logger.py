@@ -133,6 +133,110 @@ def _cleanup_old_screenshots() -> None:
 # -- screenshot ---------------------------------------------------------------
 
 
+def _screenshot_via_win32(filepath: str) -> bool:
+    """Capture the visible Sublime window directly with Win32 and GDI+.
+
+    The external screenshot-mcp launcher has changed locations and protocols
+    several times. Periodic logging must not depend on a separate Bun process,
+    so Windows uses the stable native APIs first and retains MCP as fallback.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    if os.name != "nt":
+        return False
+
+    class _GdiplusStartupInput(ctypes.Structure):
+        _fields_ = [
+            ("version", ctypes.c_uint32),
+            ("callback", ctypes.c_void_p),
+            ("suppress_background_thread", wintypes.BOOL),
+            ("suppress_external_codecs", wintypes.BOOL),
+        ]
+
+    class _Guid(ctypes.Structure):
+        _fields_ = [
+            ("data1", ctypes.c_ulong),
+            ("data2", ctypes.c_ushort),
+            ("data3", ctypes.c_ushort),
+            ("data4", ctypes.c_ubyte * 8),
+        ]
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+    gdiplus = ctypes.WinDLL("gdiplus", use_last_error=True)
+    ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+    windows = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def _find(hwnd, _lparam):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        length = user32.GetWindowTextLengthW(hwnd)
+        if not length:
+            return True
+        title = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, title, length + 1)
+        if "Sublime Text" in title.value:
+            windows.append(hwnd)
+        return True
+
+    try:
+        user32.EnumWindows(_find, 0)
+        if not windows:
+            _diagnostic_log("SCREENSHOT_NATIVE: no Sublime Text window found")
+            return False
+        hwnd = windows[0]
+        rect = wintypes.RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return False
+        width, height = rect.right - rect.left, rect.bottom - rect.top
+        src_dc = user32.GetWindowDC(hwnd)
+        mem_dc = gdi32.CreateCompatibleDC(src_dc)
+        bitmap = gdi32.CreateCompatibleBitmap(src_dc, width, height)
+        old_bitmap = gdi32.SelectObject(mem_dc, bitmap)
+        try:
+            if not user32.PrintWindow(hwnd, mem_dc, 2):
+                if not gdi32.BitBlt(
+                    mem_dc, 0, 0, width, height, src_dc, 0, 0, 0x00CC0020
+                ):
+                    return False
+            token = ctypes.c_ulonglong()
+            startup = _GdiplusStartupInput(1, None, False, False)
+            if gdiplus.GdiplusStartup(ctypes.byref(token), ctypes.byref(startup), None):
+                return False
+            image = ctypes.c_void_p()
+            try:
+                if gdiplus.GdipCreateBitmapFromHBITMAP(
+                    bitmap, None, ctypes.byref(image)
+                ):
+                    return False
+                png_encoder = _Guid()
+                if ole32.CLSIDFromString(
+                    "{557CF406-1A04-11D3-9A73-0000F81EF32E}",
+                    ctypes.byref(png_encoder),
+                ):
+                    return False
+                return (
+                    gdiplus.GdipSaveImageToFile(
+                        image, filepath, ctypes.byref(png_encoder), None
+                    )
+                    == 0
+                )
+            finally:
+                if image:
+                    gdiplus.GdipDisposeImage(image)
+                gdiplus.GdiplusShutdown(token)
+        finally:
+            gdi32.SelectObject(mem_dc, old_bitmap)
+            gdi32.DeleteObject(bitmap)
+            gdi32.DeleteDC(mem_dc)
+            user32.ReleaseDC(hwnd, src_dc)
+    except Exception as e:
+        _diagnostic_log(f"SCREENSHOT_NATIVE_ERROR: {e}")
+        return False
+
+
 def _screenshot_via_mcp(filepath: str) -> bool:
     import base64
 
@@ -336,11 +440,21 @@ def _images_similar(fp1: str, fp2: str, threshold: int = 8) -> bool:
 
 
 def _take_screenshot(key: str) -> None:
+    # PrintWindow against Sublime's own HWND can block when invoked on ST's main
+    # thread. Periodic calls already arrive from _tick_background, but manual
+    # commands and diagnostics may call this directly. Always bounce those calls
+    # to a worker before touching Win32 capture APIs.
+    if threading.current_thread() is threading.main_thread():
+        threading.Thread(
+            target=_take_screenshot, args=(key,), daemon=True
+        ).start()
+        return
     try:
         os.makedirs(_SCREENSHOT_DIR, exist_ok=True)
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         fp = os.path.join(_SCREENSHOT_DIR, f"ai_{ts}.png")
-        if not _screenshot_via_mcp(fp):
+        if not (_screenshot_via_win32(fp) or _screenshot_via_mcp(fp)):
+            _diagnostic_log("SCREENSHOT_FAILED: native and MCP capture both failed")
             return
 
         def _dedup(fp):

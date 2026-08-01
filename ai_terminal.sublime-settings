@@ -28,6 +28,11 @@
     // real ST scrollback. Default true = scrollback on. Set false to let a
     // TUI take over the view with a fixed fullscreen matrix (loses scrollback).
     "force_main_screen": true,
+    // Record every ai_terminal session as an asciicast v3 file under
+    // ~/data/logs/ai_terminal_asciinema_casts_for_troubleshooting_rendering.
+    // Set false to disable recording globally. Legacy per-profile
+    // AI_TERMINAL_LOG_LINES values remain supported.
+    "record_asciicast": true,
     // Legacy fallback keys (fully supported for backward compatibility)
     // argv list used to spawn the terminal program. Default runs Claude Code
     // via the Ollama local proxy (127.0.0.1:11434, glm-5.2:cloud). Swap to e.g.
