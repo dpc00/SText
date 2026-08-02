@@ -77,14 +77,28 @@ import urllib.request
 #             local (SQLite at ~/.local/share/opencode/opencode.db,
 #             `message` table) — a Codex-style local token/cost tally, not a
 #             live Go-plan balance.
-#   mimo    — mimocode is a straight OpenCode fork rebranded by Xiaomi (its
-#             own real backend is platform.xiaomimimo.com — mimo.com is an
-#             unrelated ed-tech app, easy to confuse). `mimo providers list`
-#             shows zero stored credentials on this machine — nothing signed
-#             in locally to query, which is *why* its TUI shows no usage
-#             number, not a gap in what could be built. Same OpenCode-shaped
-#             reactive-429-only ceiling would apply if it were ever signed
-#             in.
+#   mimo    — mimocode is a straight OpenCode fork rebranded by Xiaomi. Its
+#             API is https://api.xiaomimimo.com/v1 (OpenAI-compat) /
+#             /anthropic (Anthropic-compat); platform.xiaomimimo.com is the
+#             billing console, not the API host. Confirmed 2026-08-02:
+#             `mimo providers list` shows 0 stored credentials
+#             (~/.local/share/mimocode/auth.json is empty) and `mimo
+#             providers whoami` says "Not logged in" — the TUI's working
+#             "MiMo Auto (MiMo-V2.5)" model right now is a no-signup free
+#             default, not a real account. NOT ACTIONED: logging in
+#             (`mimo providers login`) was deliberately left undone rather
+#             than run on Donal's behalf. If he decides to sign in later
+#             (it's his call, not something to prompt for), the same
+#             OpenCode-shaped reactive-429-only ceiling as `opencode` above
+#             would still apply — no proactive quota endpoint either way.
+#             UPDATE 2026-08-02 night: free trial ran out mid-session (TUI
+#             showed "Free API service ended"). `/login` was opened once
+#             just to look (out of curiosity, not signed in) — it's a
+#             provider picker covering every backend mimocode supports, not
+#             a form; the one relevant entry for Donal's own account is
+#             "Xiaomi (Recommended)" at the top. Left at the menu, nothing
+#             submitted, nothing paid. Pick back up only if/when Donal
+#             wants to.
 #   vibe    — NOT VIABLE, confirmed from vibe's own unpacked Python source
 #             (site-packages/vibe/cli/commands.py — readable, unlike the
 #             other Rust/Go/JS binaries). Its full 25-command slash-command
