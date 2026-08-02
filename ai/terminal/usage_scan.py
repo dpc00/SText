@@ -25,6 +25,28 @@ import urllib.request
 
 
 # ─── provider detection ──────────────────────────────────────────────────────
+#
+# gather_usage() below only covers codex/claude/ollama/qwen. The rest were
+# investigated and deliberately left unfetched, not overlooked:
+#   gemini  — @google/gemini-cli bundle has no quota/usage RPC string anywhere
+#             in its chunks; only cloud.google.com/docs/quota doc links and a
+#             telemetry-opt-in getUsageStatisticsEnabled(). Free-tier quota
+#             is enforced server-side with a bare 429, never queryable.
+#   grok    — grok.exe's string table has no standalone usage/quota REST path
+#             under api.x.ai/v1 (only response *field* names like
+#             response/usage/cost_in_usd_ticks, which describe a chat
+#             response, not a fetchable endpoint).
+#   kimi, opencode, mimo — no ~/.kimi, ~/.opencode, ~/.mimo state directory
+#             exists on this machine, so there is no credential store to
+#             fetch with.
+#   openclaw — mechanism unknown (Donal: "a mystery how that works").
+#   jcode   — itself a multi-provider aggregator (routes through its own
+#             stored OpenAI/Gemini/Claude/Antigravity grants); "jcode usage"
+#             isn't one number, it's whichever backend it dispatched to.
+#   vibe    — not yet investigated.
+# The text tier (usage_update_from_text / reset_update_from_text in
+# profile_availability.py) is what covers these: whatever a CLI prints in
+# its own TUI about quota is read from the live terminal buffer instead.
 
 _PROVIDER_EXECUTABLES = {
     "codex": "codex",
