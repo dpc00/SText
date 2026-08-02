@@ -2097,6 +2097,8 @@ class _LayoutWatcher:
         self._pending = False
         self._token = None
         self._last_measure = None
+        self._candidate = None
+        self._candidate_count = 0
 
     def request(self):
         """Request a resize check. Safe to call frequently; debounces."""
@@ -2118,6 +2120,24 @@ class _LayoutWatcher:
         if size == self._last_measure:
             return
         self._last_measure = size
+        # Require the same candidate size on two consecutive polls before
+        # acting on it. A resize can itself toggle the horizontal scrollbar
+        # (see _measure's width comment), which shifts the viewport by one
+        # column and produces a different reading next poll -- without this
+        # debounce, two boundary sizes (e.g. 114/115 cols) chase each other
+        # forever: resize -> scrollbar flips -> remeasure -> resize back ->
+        # repeat, forcing the TUI to redraw on every tick (looks like a
+        # frozen/flickering terminal). Requiring stability kills the loop;
+        # worst case we just don't chase that last column.
+        if size == self._candidate:
+            self._candidate_count += 1
+        else:
+            self._candidate = size
+            self._candidate_count = 1
+        if self._candidate_count < 2:
+            return
+        self._candidate = None
+        self._candidate_count = 0
         cols, rows = size
         if (cols, rows) != (self.term._last_cols, self.term._last_rows):
             self.term.resize(cols, rows)
