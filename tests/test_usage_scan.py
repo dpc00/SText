@@ -4,6 +4,9 @@ import tempfile
 import unittest
 
 from ai.terminal.usage_scan import (
+    _claude_token_expired,
+    _persist_claude_oauth,
+    _read_claude_oauth,
     humanize_epoch,
     parse_claude_oauth_usage,
     parse_codex_rate_limits,
@@ -195,6 +198,47 @@ class SummarizeTests(unittest.TestCase):
 
     def test_empty_is_none(self):
         self.assertIsNone(summarize_windows([]))
+
+
+class ClaudeTokenHelperTests(unittest.TestCase):
+    def test_expired_uses_ms_epoch_with_margin(self):
+        now = 1785630000  # seconds
+        oauth = {"expiresAt": (now - 10) * 1000}
+        self.assertTrue(_claude_token_expired(oauth, now=now))
+        # within the 60s safety margin still counts as expired
+        oauth = {"expiresAt": (now + 30) * 1000}
+        self.assertTrue(_claude_token_expired(oauth, now=now))
+        oauth = {"expiresAt": (now + 3600) * 1000}
+        self.assertFalse(_claude_token_expired(oauth, now=now))
+
+    def test_missing_expiry_is_not_expired(self):
+        # No expiry recorded: the endpoint gets to be the judge.
+        self.assertFalse(_claude_token_expired({}, now=0))
+
+    def test_persist_merges_and_preserves_other_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, ".credentials.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(
+                    {"claudeAiOauth": {"accessToken": "old"}, "other": {"keep": 1}},
+                    fh,
+                )
+            _persist_claude_oauth(path, {"accessToken": "new", "expiresAt": 5})
+            with open(path, "r", encoding="utf-8") as fh:
+                creds = json.load(fh)
+            self.assertEqual(creds["claudeAiOauth"]["accessToken"], "new")
+            self.assertEqual(creds["other"], {"keep": 1})
+
+    def test_read_rejects_malformed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, ".credentials.json")
+            self.assertIsNone(_read_claude_oauth(path))  # missing
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("not json")
+            self.assertIsNone(_read_claude_oauth(path))
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"claudeAiOauth": "not a dict"}, fh)
+            self.assertIsNone(_read_claude_oauth(path))
 
 
 class HumanizeTests(unittest.TestCase):

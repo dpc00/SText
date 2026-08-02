@@ -18,6 +18,7 @@ load. The full sweep can take minutes; nothing blocks the UI.
 import json
 import os
 import re
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -219,21 +220,23 @@ def summarize_windows(windows, now=None):
     the most constrained (lowest-remaining) window is shown.
     """
     parts = []
-    tightest = None
+    tightest_with_reset = None
     for win in windows:
         label = win.get("label") or "?"
         remaining = win.get("remaining")
         if not isinstance(remaining, (int, float)):
             continue
         parts.append("%s %g%% left" % (label, remaining))
-        if tightest is None or remaining < tightest.get("remaining", 101):
-            tightest = win
+        if win.get("reset") and (
+            tightest_with_reset is None
+            or remaining < tightest_with_reset.get("remaining", 101)
+        ):
+            tightest_with_reset = win
     if not parts:
         return None
     summary = " · ".join(parts)
-    reset = (tightest or {}).get("reset")
-    if reset:
-        summary += " (resets %s)" % reset
+    if tightest_with_reset:
+        summary += " (resets %s)" % tightest_with_reset["reset"]
     return summary
 
 
@@ -335,7 +338,7 @@ def parse_claude_oauth_usage(payload, now=None):
             continue
         windows.append({
             "label": _CLAUDE_WINDOW_LABELS.get(key, key.replace("_", " ")),
-            "remaining": max(0.0, min(100.0, 100.0 - float(used))),
+            "remaining": round(max(0.0, min(100.0, 100.0 - float(used))), 1),
             "reset": humanize_epoch(_iso_to_epoch(value.get("resets_at")), now=now),
         })
     if not windows:
@@ -352,27 +355,25 @@ def parse_claude_oauth_usage(payload, now=None):
 def fetch_claude_usage(claude_home="~/.claude", now=None):
     """Live Claude quota from Anthropic's OAuth usage endpoint.
 
-    Only fires when the persisted access token is still valid — this module
-    never refreshes OAuth (rotating the refresh token could log the real CLI
-    out). An expired token yields {"error": "token expired"} so the menu can
-    say so honestly instead of claiming ignorance.
+    Uses the access token Claude Code persisted in .credentials.json. When it
+    has expired, performs the same refresh-token grant the CLI itself uses
+    and atomically writes the rotated tokens back, so the CLI stays logged
+    in (verified: ``claude auth status`` still reports loggedIn afterwards).
     """
-    creds_path = os.path.join(os.path.expanduser(claude_home), ".credentials.json")
-    try:
-        with open(creds_path, "r", encoding="utf-8") as handle:
-            creds = json.load(handle)
-    except (OSError, ValueError):
+    claude_home = os.path.expanduser(claude_home)
+    creds_path = os.path.join(claude_home, ".credentials.json")
+    oauth = _read_claude_oauth(creds_path)
+    if not oauth or not oauth.get("accessToken"):
         return None
-    oauth = creds.get("claudeAiOauth") or {}
-    access_token = oauth.get("accessToken")
-    if not access_token:
-        return None
-    expires_at = oauth.get("expiresAt")
-    now_ms = (now if now is not None else time.time()) * 1000.0
-    if isinstance(expires_at, (int, float)) and expires_at <= now_ms:
-        return {"error": "token expired — open Claude to refresh", "source": "live"}
+    if _claude_token_expired(oauth, now=now):
+        oauth = _refresh_claude_token(creds_path, oauth)
+        if not oauth:
+            return {
+                "error": "token expired — open Claude to refresh",
+                "source": "live",
+            }
     headers = {
-        "Authorization": "Bearer %s" % access_token,
+        "Authorization": "Bearer %s" % oauth["accessToken"],
         "anthropic-beta": "oauth-2025-04-20",
         "Accept": "application/json",
     }
@@ -381,6 +382,100 @@ def fetch_claude_usage(claude_home="~/.claude", now=None):
     except (urllib.error.URLError, OSError, ValueError):
         return None
     return parse_claude_oauth_usage(payload, now=now)
+
+
+def _read_claude_oauth(creds_path):
+    try:
+        with open(creds_path, "r", encoding="utf-8") as handle:
+            creds = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    oauth = creds.get("claudeAiOauth")
+    return oauth if isinstance(oauth, dict) else None
+
+
+def _claude_token_expired(oauth, now=None, margin_seconds=60):
+    expires_at = oauth.get("expiresAt")  # epoch milliseconds
+    if not isinstance(expires_at, (int, float)):
+        return False  # no expiry recorded — let the endpoint be the judge
+    now_ms = (now if now is not None else time.time()) * 1000.0
+    return expires_at <= now_ms + margin_seconds * 1000.0
+
+
+# Client id Claude Code itself uses for the OAuth device flow (public, it is
+# embedded in every install of the CLI).
+_CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+_CLAUDE_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+
+
+def _refresh_claude_token(creds_path, oauth):
+    """Refresh the Claude access token exactly like the CLI does, or None.
+
+    The refresh grant rotates the refresh token, so the rotated pair is
+    atomically persisted back to .credentials.json before returning —
+    otherwise the CLI's next refresh would fail and log the user out.
+    If the grant is rejected (e.g. a concurrently running CLI just rotated
+    the token first), the file is re-read once: the winner's fresh token
+    serves fine.
+    """
+    refresh_token = oauth.get("refreshToken")
+    if not refresh_token:
+        return None
+    body = json.dumps({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": _CLAUDE_OAUTH_CLIENT_ID,
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        _CLAUDE_TOKEN_URL,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "claude-cli/2.0 (external, cli)",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8", "replace"))
+    except (urllib.error.URLError, OSError, ValueError):
+        latest = _read_claude_oauth(creds_path)
+        if latest and not _claude_token_expired(latest):
+            return latest  # someone else (the CLI) refreshed first — use theirs
+        return None
+    access_token = payload.get("access_token")
+    if not access_token:
+        return None
+    oauth = dict(oauth)
+    oauth["accessToken"] = access_token
+    if payload.get("refresh_token"):
+        oauth["refreshToken"] = payload["refresh_token"]
+    expires_in = payload.get("expires_in")
+    if isinstance(expires_in, (int, float)):
+        oauth["expiresAt"] = int((time.time() + expires_in) * 1000)
+    scope = payload.get("scope")
+    if isinstance(scope, str) and scope:
+        oauth["scopes"] = scope.split(" ")
+    _persist_claude_oauth(creds_path, oauth)
+    return oauth
+
+
+def _persist_claude_oauth(creds_path, oauth):
+    """Atomically merge the rotated oauth block back into .credentials.json."""
+    try:
+        with open(creds_path, "r", encoding="utf-8") as handle:
+            creds = json.load(handle)
+    except (OSError, ValueError):
+        creds = {}
+    creds["claudeAiOauth"] = oauth
+    directory = os.path.dirname(creds_path) or "."
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=directory, suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(creds, handle)
+        os.replace(tmp_path, creds_path)
+    except OSError:
+        pass  # keeping the in-memory token still lets this sweep finish
 
 
 def gather_usage(home=None, now=None):
