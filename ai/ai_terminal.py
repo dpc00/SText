@@ -572,6 +572,10 @@ try:
         reset_update_from_text as _reset_update_from_text,
         usage_update_from_text as _usage_update_from_text,
     )
+    from .terminal.usage_scan import (
+        provider_for_profile as _provider_for_profile,
+        scan_local_usage as _scan_local_usage,
+    )
     from .terminal.render import (
         HOST_CURSOR_SCOPE as _HOST_CURSOR_SCOPE,
         build_text_and_regions as _build_text_and_regions_pure,
@@ -639,6 +643,10 @@ except ImportError as _term_imp_err:
             profile_is_available as _profile_is_available_pure,
             reset_update_from_text as _reset_update_from_text,
             usage_update_from_text as _usage_update_from_text,
+        )
+        from ai.terminal.usage_scan import (
+            provider_for_profile as _provider_for_profile,
+            scan_local_usage as _scan_local_usage,
         )
         from ai.terminal.render import (
             HOST_CURSOR_SCOPE as _HOST_CURSOR_SCOPE,
@@ -1453,23 +1461,68 @@ def _profile_is_available(profile_name, settings=None):
     return _profile_is_available_pure(profile_name, profile, path=path)
 
 
+def _ensure_usage_scanner():
+    """Start (once) the background thread that scans local CLI state files.
+
+    This is the task that actually establishes menu details: provider CLIs
+    persist quota snapshots to disk during normal use (e.g. Codex rollout
+    files carry rate_limits.primary.used_percent/resets_at), and this thread
+    surfaces them without any network/OAuth/quota cost. Results land in
+    sys._stext_ai_profile_scan (provider → usage dict) and are merged into
+    captions as a fallback under live-observed terminal output.
+    """
+    thread = getattr(sys, "_stext_ai_usage_scan_thread", None)
+    if thread is not None and thread.is_alive():
+        return
+
+    def loop():
+        while True:
+            try:
+                sys._stext_ai_profile_scan = _scan_local_usage()
+            except Exception as e:
+                print("[ai_terminal] local usage scan failed: %s" % e)
+            time.sleep(120)
+
+    thread = threading.Thread(target=loop, name="ai_terminal_usage_scan", daemon=True)
+    sys._stext_ai_usage_scan_thread = thread
+    thread.start()
+
+
+def _scanned_usage_for_profile(profile_name, settings=None):
+    """Background-scanned usage dict for one profile, or None."""
+    scan = getattr(sys, "_stext_ai_profile_scan", None)
+    if not isinstance(scan, dict) or not scan:
+        return None
+    s = settings or _settings or sublime.load_settings(_SETTINGS_NAME)
+    profiles = s.get("profiles", {})
+    profile = profiles.get(profile_name) if isinstance(profiles, dict) else None
+    provider = _provider_for_profile(profile)
+    return scan.get(provider) if provider else None
+
+
 def _profile_availability_label(profile_name, settings=None):
     """Explain the locally known state without probing the provider."""
     usage = getattr(sys, "_stext_ai_profile_usage", {})
     remaining = usage.get(profile_name) if isinstance(usage, dict) else None
     resets = getattr(sys, "_stext_ai_profile_resets", {})
     reset = resets.get(profile_name) if isinstance(resets, dict) else None
+    scanned = _scanned_usage_for_profile(profile_name, settings)
+    if scanned:
+        if remaining is None:
+            remaining = scanned.get("remaining")
+        if reset is None:
+            reset = scanned.get("reset")
     if remaining == 0.0:
         label = "Quota exhausted"
         return label + (" | resets " + reset if reset else "")
     if not _profile_is_available(profile_name, settings):
         return "Executable unavailable"
     if isinstance(remaining, (int, float)):
-        label = "%g%% remaining (observed)" % remaining
+        label = "%g%% remaining" % remaining
         return label + (" | resets " + reset if reset else "")
     if reset:
         return "Usage unknown | resets " + reset
-    return "Available (usage not yet observed)"
+    return "Installed — no local usage data"
 
 
 def _profile_menu_caption(profile_name, settings=None):
@@ -1486,6 +1539,12 @@ def _profile_menu_caption(profile_name, settings=None):
     remaining = usage.get(profile_name) if isinstance(usage, dict) else None
     resets = getattr(sys, "_stext_ai_profile_resets", {})
     reset = resets.get(profile_name) if isinstance(resets, dict) else None
+    scanned = _scanned_usage_for_profile(profile_name, settings)
+    if scanned:
+        if remaining is None:
+            remaining = scanned.get("remaining")
+        if reset is None:
+            reset = scanned.get("reset")
     executable_ok = _profile_is_available(profile_name, settings) or remaining == 0.0
     return _menu_caption_pure(
         profile_name, remaining=remaining, reset=reset, executable_ok=executable_ok
@@ -4374,6 +4433,7 @@ def plugin_loaded():
         except Exception:
             pass
     _clamp_token = sublime.set_timeout(_clamp_vp_loop, 8)
+    _ensure_usage_scanner()
     print("[ai_terminal] loaded (trackpad pan→TUI scroll armed)")
 
 
