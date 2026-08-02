@@ -55,6 +55,9 @@ from User.ai.ai_terminal import (
     AiTerminalOpenHereCommand,
     AiTerminalOpenInEditorCommand,
     AiTerminalSelectProfileCommand,
+    AiTerminalLauncherCommand,
+    AiTerminalRecentSessionsCommand,
+    AiTerminalRefreshUsageCommand,
     AiTerminalSendStringCommand,
     AiTerminalSendStringWindowCommand,
     AiTerminalKeypressCommand,
@@ -62,6 +65,10 @@ from User.ai.ai_terminal import (
     AiTerminalNukeCommand,
     AiTerminalNoopCommand,
     AiTerminalDumpScreenCommand,
+    # Invoked from a .sublime-mousemap, not the palette. Registered here so the
+    # command exists if a mousemap binds it; there is currently no mousemap in
+    # the package, so it is inert until one is added.
+    AiTerminalTrackpadScrollCommand,
     AiTerminalViewListener,
     AiTerminalKeyInterceptor,
 )
