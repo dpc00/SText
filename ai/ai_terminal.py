@@ -1522,6 +1522,60 @@ def _ensure_usage_scanner(force=False):
     thread.start()
 
 
+# Periodic re-sweep. Quota that was accurate at startup is misleading three
+# hours into a session, which is exactly when you want to know whether to
+# switch agents. The interval is a setting because the sweep hits real provider
+# endpoints; 0 disables it and falls back to load-time + manual refresh only.
+_DEFAULT_USAGE_REFRESH_MINUTES = 20
+_usage_refresh_token = None
+
+
+def _usage_refresh_interval_ms():
+    s = _settings or sublime.load_settings(_SETTINGS_NAME)
+    try:
+        minutes = float(s.get("usage_refresh_minutes", _DEFAULT_USAGE_REFRESH_MINUTES))
+    except (TypeError, ValueError):
+        minutes = _DEFAULT_USAGE_REFRESH_MINUTES
+    if minutes <= 0:
+        return 0
+    # Floor at a minute: a tighter loop would hammer provider endpoints for no
+    # useful gain, since quota windows move on the order of hours.
+    return int(max(60.0, minutes * 60.0) * 1000)
+
+
+def _usage_refresh_tick():
+    """Re-arm and re-sweep. Runs on the main thread; the sweep itself threads."""
+    global _usage_refresh_token
+    interval = _usage_refresh_interval_ms()
+    if not interval:
+        _usage_refresh_token = None
+        return
+    try:
+        _ensure_usage_scanner(force=True)
+    except Exception as e:
+        print("[ai_terminal] periodic usage sweep failed: %s" % e)
+    _usage_refresh_token = sublime.set_timeout(_usage_refresh_tick, interval)
+
+
+def _start_usage_refresh():
+    """(Re)arm the periodic sweep, cancelling any timer from a previous load."""
+    global _usage_refresh_token
+    _stop_usage_refresh()
+    interval = _usage_refresh_interval_ms()
+    if interval:
+        _usage_refresh_token = sublime.set_timeout(_usage_refresh_tick, interval)
+
+
+def _stop_usage_refresh():
+    global _usage_refresh_token
+    if _usage_refresh_token:
+        try:
+            sublime.cancel_timeout(_usage_refresh_token)
+        except Exception:
+            pass
+        _usage_refresh_token = None
+
+
 def _scanned_usage_for_profile(profile_name, settings=None):
     """Background-scanned usage dict for one profile, or None."""
     scan = getattr(sys, "_stext_ai_profile_scan", None)
@@ -1715,6 +1769,12 @@ def _on_settings_change():
             msg = f"ERROR: _on_settings_change failed on terminal {t}: {e}\n{traceback.format_exc()}"
             print(f"[ai_terminal] {msg}")
             _settings_debug_log(msg)
+    # Re-arm the periodic usage sweep so a changed interval (or disabling it
+    # with 0) applies without a reload.
+    try:
+        _start_usage_refresh()
+    except Exception as e:
+        _settings_debug_log(f"ERROR: usage refresh re-arm failed: {e}")
     _settings_debug_log("<<< _on_settings_change FINISHED")
 
 
@@ -4837,6 +4897,7 @@ def plugin_loaded():
     _clamp_token = sublime.set_timeout(_clamp_vp_loop, 8)
     _start_layout_watcher()
     _ensure_usage_scanner()
+    _start_usage_refresh()
     print("[ai_terminal] loaded (trackpad pan→TUI scroll armed)")
 
 
@@ -4860,6 +4921,7 @@ def plugin_unloaded():
             pass
         _poll_token = None
     _stop_layout_watcher()
+    _stop_usage_refresh()
     # Deliberately do NOT kill ConPTY children on unload.  The terminal
     # process may be opencode itself (or another long-running CLI agent);
     # killing it here means a plugin reload triggered by the agent's own

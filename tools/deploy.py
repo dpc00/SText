@@ -51,6 +51,12 @@ OWNED_FILES = (
     "Default.sublime-commands",
     "Default.sublime-keymap",
     "AiLog.sublime-syntax",
+    # Settings are user-editable, so this one leans hard on the newer-live
+    # guard below: edit it in Sublime and the next deploy refuses to clobber
+    # you until the change is copied back into the repo. It is still tracked,
+    # because a new key that ships without its documented default is a feature
+    # that silently does nothing.
+    "ai_terminal.sublime-settings",
 )
 
 # Build artefacts and caches: present in the repo, meaningless (or harmful) live.
