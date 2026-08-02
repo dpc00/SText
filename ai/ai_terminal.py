@@ -573,8 +573,8 @@ try:
         usage_update_from_text as _usage_update_from_text,
     )
     from .terminal.usage_scan import (
+        gather_usage as _gather_usage,
         provider_for_profile as _provider_for_profile,
-        scan_local_usage as _scan_local_usage,
     )
     from .terminal.render import (
         HOST_CURSOR_SCOPE as _HOST_CURSOR_SCOPE,
@@ -645,8 +645,8 @@ except ImportError as _term_imp_err:
             usage_update_from_text as _usage_update_from_text,
         )
         from ai.terminal.usage_scan import (
+            gather_usage as _gather_usage,
             provider_for_profile as _provider_for_profile,
-            scan_local_usage as _scan_local_usage,
         )
         from ai.terminal.render import (
             HOST_CURSOR_SCOPE as _HOST_CURSOR_SCOPE,
@@ -1462,28 +1462,33 @@ def _profile_is_available(profile_name, settings=None):
 
 
 def _ensure_usage_scanner():
-    """Start (once) the background thread that scans local CLI state files.
+    """Run the usage sweep once, in the background, at plugin load.
 
-    This is the task that actually establishes menu details: provider CLIs
-    persist quota snapshots to disk during normal use (e.g. Codex rollout
-    files carry rate_limits.primary.used_percent/resets_at), and this thread
-    surfaces them without any network/OAuth/quota cost. Results land in
-    sys._stext_ai_profile_scan (provider → usage dict) and are merged into
-    captions as a fallback under live-observed terminal output.
+    ``gather_usage`` asks each provider's own usage endpoint (using the OAuth
+    tokens their CLIs persisted) so the menus show every rate-limit window
+    (5h, weekly, ...) with exact reset times, straight from the source. No
+    inference quota is spent. The sweep can take minutes when providers are
+    slow/offline, hence the thread; it runs once per plugin load, not on a
+    timer. Results land in sys._stext_ai_profile_scan and menus refresh
+    lazily the next time they are opened.
     """
     thread = getattr(sys, "_stext_ai_usage_scan_thread", None)
     if thread is not None and thread.is_alive():
         return
 
-    def loop():
-        while True:
-            try:
-                sys._stext_ai_profile_scan = _scan_local_usage()
-            except Exception as e:
-                print("[ai_terminal] local usage scan failed: %s" % e)
-            time.sleep(120)
+    def run_once():
+        try:
+            sys._stext_ai_profile_scan = _gather_usage()
+            scan = sys._stext_ai_profile_scan
+            print("[ai_terminal] usage sweep done: %s" % {
+                k: v.get("summary") or v.get("error") for k, v in scan.items()
+            })
+        except Exception as e:
+            print("[ai_terminal] usage sweep failed: %s" % e)
 
-    thread = threading.Thread(target=loop, name="ai_terminal_usage_scan", daemon=True)
+    thread = threading.Thread(
+        target=run_once, name="ai_terminal_usage_sweep", daemon=True
+    )
     sys._stext_ai_usage_scan_thread = thread
     thread.start()
 
@@ -1501,17 +1506,12 @@ def _scanned_usage_for_profile(profile_name, settings=None):
 
 
 def _profile_availability_label(profile_name, settings=None):
-    """Explain the locally known state without probing the provider."""
+    """Explain the locally known state without spending provider quota."""
     usage = getattr(sys, "_stext_ai_profile_usage", {})
     remaining = usage.get(profile_name) if isinstance(usage, dict) else None
     resets = getattr(sys, "_stext_ai_profile_resets", {})
     reset = resets.get(profile_name) if isinstance(resets, dict) else None
     scanned = _scanned_usage_for_profile(profile_name, settings)
-    if scanned:
-        if remaining is None:
-            remaining = scanned.get("remaining")
-        if reset is None:
-            reset = scanned.get("reset")
     if remaining == 0.0:
         label = "Quota exhausted"
         return label + (" | resets " + reset if reset else "")
@@ -1520,9 +1520,18 @@ def _profile_availability_label(profile_name, settings=None):
     if isinstance(remaining, (int, float)):
         label = "%g%% remaining" % remaining
         return label + (" | resets " + reset if reset else "")
+    if scanned:
+        if scanned.get("summary"):
+            return scanned["summary"]
+        if scanned.get("error"):
+            return scanned["error"]
+        if isinstance(scanned.get("remaining"), (int, float)):
+            label = "%g%% remaining" % scanned["remaining"]
+            sreset = scanned.get("reset")
+            return label + (" | resets " + sreset if sreset else "")
     if reset:
         return "Usage unknown | resets " + reset
-    return "Installed — no local usage data"
+    return "Installed — no usage data"
 
 
 def _profile_menu_caption(profile_name, settings=None):
@@ -1539,13 +1548,19 @@ def _profile_menu_caption(profile_name, settings=None):
     remaining = usage.get(profile_name) if isinstance(usage, dict) else None
     resets = getattr(sys, "_stext_ai_profile_resets", {})
     reset = resets.get(profile_name) if isinstance(resets, dict) else None
-    scanned = _scanned_usage_for_profile(profile_name, settings)
-    if scanned:
-        if remaining is None:
-            remaining = scanned.get("remaining")
-        if reset is None:
-            reset = scanned.get("reset")
     executable_ok = _profile_is_available(profile_name, settings) or remaining == 0.0
+    if remaining is None and executable_ok:
+        # No live-observed terminal signal yet: use the startup sweep's
+        # from-the-source summary (all windows), e.g.
+        # "Codex — 5h 100% left · weekly 47% left (resets in 6d 3h)".
+        scanned = _scanned_usage_for_profile(profile_name, settings)
+        if scanned:
+            detail = scanned.get("summary") or scanned.get("error")
+            if detail:
+                return "%s — %s" % (profile_name, detail)
+            if isinstance(scanned.get("remaining"), (int, float)):
+                remaining = scanned["remaining"]
+                reset = reset or scanned.get("reset")
     return _menu_caption_pure(
         profile_name, remaining=remaining, reset=reset, executable_ok=executable_ok
     )
