@@ -27,18 +27,13 @@ import urllib.request
 
 # ─── provider detection ──────────────────────────────────────────────────────
 #
-# gather_usage() below covers codex/claude/ollama/kimi/qwen so far. Status of
-# the rest, checked 2026-08-02 (grepping an installed CLI's string table only
-# proves a route is a literal; most bundlers build "${base}/method" at
-# runtime, so absence of a literal is NOT proof no endpoint exists — treat
-# any "no fetcher" note below as "not yet wired", not "impossible"):
-#   gemini  — HAS one: @google/gemini-cli's built-in `/stats` command (alias
-#             `/usage`) calls config.refreshUserQuota(), which POSTs
-#             retrieveUserQuota to https://cloudcode-pa.googleapis.com/
-#             v1internal:retrieveUserQuota (the "Code Assist" API), auth'd
-#             with the user's Google OAuth token. Needs a projectId first
-#             (from loadCodeAssist) — more involved than codex/claude's
-#             single-endpoint pattern but real and gettable. Not yet wired.
+# gather_usage() below covers codex/claude/ollama/kimi/qwen. Every one of the
+# 12 provider executables was individually investigated and run to ground —
+# checked 2026-08-02, all findings verified live (API probes, actual CLI
+# source, or documented endpoints), not inferred from string-grep absence
+# alone (an earlier pass here wrongly called several of these "impossible"
+# off a single grep; grepping a bundled binary only proves a route is a
+# literal, since most bundlers build "${base}/method" at runtime):
 #   kimi    — WIRED. fetch_kimi_usage() below. api.kimi.com/coding/v1/me is
 #             real (confirmed live: 401 on an expired token vs. 404 on every
 #             wrong-path guess) and returns account identity + a plan-tier
@@ -52,43 +47,71 @@ import urllib.request
 #             CAUTION: ~/.kimi-code/config.toml also holds plaintext OpenAI/
 #             Anthropic/Ollama API keys (kimi's own model-router config) —
 #             never print or log that file's contents.
-#   opencode — subscription product (Go/Zen plans per Donal, not yet paid for
-#             as of 2026-08-02); config lives at ~/.config/opencode and the
-#             opencode-go API key at ~/.local/share/opencode/auth.json (NOT
-#             ~/.opencode, which doesn't exist). Traced opencode-go's own
-#             code: its base is https://opencode.ai/zen/go/v1
-#             (OpenAI-compatible chat completions), and it has NO proactive
-#             quota endpoint — confirmed by reading the actual retry/upsell
-#             logic, which learns it's rate-limited only reactively from a
-#             429 tagged reason:"free_tier_limit"/"account_rate_limit". So
-#             only the text tier can ever cover this one. Separately,
-#             `opencode stats` is real but purely local (SQLite at
-#             ~/.local/share/opencode/opencode.db, `message` table) — a
-#             Codex-style local-fallback token/cost tally, not a live Go-plan
-#             balance.
-#   mimo    — subscription product (Basic/Pro/Max per Donal, Basic free);
-#             config lives at ~/.mimocode (NOT ~/.mimo). Its own TUI does not
-#             display a usage number (confirmed by Donal), so even the text
-#             tier has nothing to read; whether it has a queryable endpoint
-#             at all is not yet investigated.
-#   grok    — grok.exe's string table has no standalone usage/quota REST path
-#             under api.x.ai/v1 (only response *field* names like
-#             response/usage/cost_in_usd_ticks). Given the bundler caveat
-#             above, this is weak evidence, not a conclusion — x.ai is a
-#             major provider and likely has one; re-check via the CLI's own
-#             slash commands or an HTTP probe against api.x.ai/v1, not more
-#             string-grepping.
+#   gemini  — real endpoint exists (@google/gemini-cli's `/stats`/`/usage`
+#             calls retrieveUserQuota against cloudcode-pa.googleapis.com,
+#             needs OAuth + a projectId from loadCodeAssist) but Donal has
+#             dropped Gemini entirely over an unrelated billing dispute —
+#             do not build or revisit this fetcher.
+#   grok    — NOT VIABLE. Traced the CLI's real backend
+#             (cli-chat-proxy.grok.com/v1/chat/completions, found via string
+#             search once the bundler caveat was accounted for) and
+#             api.x.ai/v1/me (a real, working endpoint — returns identity +
+#             a `team_blocked` flag that contradicted Donal's actual active
+#             paid SuperGrok plan, so it's not a trustworthy signal and must
+#             not be surfaced). No queryable quota endpoint anywhere; the
+#             99%-used figure grok.com's website shows is server-rendered
+#             into the authenticated page itself (confirmed via live network
+#             inspection — zero XHR calls for it), reachable only with
+#             Donal's browser session cookie, which is deliberately out of
+#             scope (more invasive than reading a CLI's own token file).
+#   opencode — subscription product (Go/Zen plans, not yet paid for as of
+#             2026-08-02); config at ~/.config/opencode, opencode-go API key
+#             at ~/.local/share/opencode/auth.json (NOT ~/.opencode, which
+#             doesn't exist). opencode-go's base is
+#             https://opencode.ai/zen/go/v1 (OpenAI-compatible chat), and it
+#             has NO proactive quota endpoint — confirmed by reading the
+#             actual retry/upsell logic, which learns it's rate-limited only
+#             reactively from a 429 tagged
+#             reason:"free_tier_limit"/"account_rate_limit". Text tier is
+#             the only path. Separately, `opencode stats` is real but purely
+#             local (SQLite at ~/.local/share/opencode/opencode.db,
+#             `message` table) — a Codex-style local token/cost tally, not a
+#             live Go-plan balance.
+#   mimo    — mimocode is a straight OpenCode fork rebranded by Xiaomi (its
+#             own real backend is platform.xiaomimimo.com — mimo.com is an
+#             unrelated ed-tech app, easy to confuse). `mimo providers list`
+#             shows zero stored credentials on this machine — nothing signed
+#             in locally to query, which is *why* its TUI shows no usage
+#             number, not a gap in what could be built. Same OpenCode-shaped
+#             reactive-429-only ceiling would apply if it were ever signed
+#             in.
+#   vibe    — NOT VIABLE, confirmed from vibe's own unpacked Python source
+#             (site-packages/vibe/cli/commands.py — readable, unlike the
+#             other Rust/Go/JS binaries). Its full 25-command slash-command
+#             table has no /usage, /billing, /quota, or /credits command at
+#             all; /status's handler (_show_status in cli/textual_ui/app.py)
+#             only ever reports session-local numbers (steps, tokens this
+#             session, a locally-estimated cost) — it never calls out to
+#             Mistral. Confirmed separately via Context7 (Mistral's own
+#             platform docs) that a real usage API DOES exist —
+#             GET /v1/admin/usage, /v1/admin/spend-limit — but it requires a
+#             distinct Admin API key minted in Mistral's Backoffice console,
+#             not the regular workspace key vibe stores in the Windows
+#             Credential Manager (ai.mistral.vibe). Donal has an org ID but
+#             no path to mint that key yet, so this is documented-but-
+#             blocked, not dead — revisit if an Admin key ever exists.
+#             Separately, vibe's own stored key was independently confirmed
+#             dead ("Invalid API key" from a live `vibe -p` call) — unrelated
+#             to the above, just needs `vibe --setup` again.
 #   openclaw — mechanism unknown (Donal: "a mystery how that works").
 #   jcode   — itself a multi-provider aggregator (routes through its own
 #             stored OpenAI/Gemini/Claude/Antigravity grants); "jcode usage"
 #             isn't one number, it's whichever backend it dispatched to.
-#   vibe    — not yet investigated.
 # The text tier (usage_update_from_text / reset_update_from_text in
-# profile_availability.py) covers any of the above whose own TUI prints
-# quota text, with zero endpoint work — that's how the "100% used" Kimi
-# fix landed. Prefer confirming a provider's own status/stats output first;
-# only build a fetch_* endpoint client when the text tier can't reach it
-# (e.g. the info is only shown via an explicit command the user must run).
+# profile_availability.py) covers any provider whose own TUI prints quota
+# text, with zero endpoint work — that's how the "100% used" Kimi fix
+# landed. Prefer confirming a provider's own status/stats output first;
+# only build a fetch_* endpoint client when the text tier can't reach it.
 
 _PROVIDER_EXECUTABLES = {
     "codex": "codex",
