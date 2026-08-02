@@ -4470,6 +4470,7 @@ def plugin_loaded():
         except Exception:
             pass
     _clamp_token = sublime.set_timeout(_clamp_vp_loop, 8)
+    _start_layout_watcher()
     _ensure_usage_scanner()
     print("[ai_terminal] loaded (trackpad pan→TUI scroll armed)")
 
@@ -4493,6 +4494,7 @@ def plugin_unloaded():
         except Exception:
             pass
         _poll_token = None
+    _stop_layout_watcher()
     # Deliberately do NOT kill ConPTY children on unload.  The terminal
     # process may be opencode itself (or another long-running CLI agent);
     # killing it here means a plugin reload triggered by the agent's own
