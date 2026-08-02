@@ -1144,18 +1144,40 @@ _DEFAULT_MIN_ROWS = 1
 # judged buggy and disabled outright. False = ST's native mouse/selection/
 # scroll behavior applies everywhere; nothing mouse-related is ever forwarded
 # to a PTY, regardless of whether the app requested DEC mouse tracking.
+# Per-profile override: a profile can set "mouse_handling": true to opt back
+# in (see _mouse_handling_enabled below) -- needed for apps like Vibe (a
+# Textual TUI) that manage their own scroll region without ever emitting a
+# real ANSI scroll, so pyte's history never populates and PageUp/PageDown
+# reach nothing; mouse wheel is the only way such an app can scroll at all.
 _MOUSE_HANDLING_ENABLED = False
+
+
+def _mouse_handling_enabled(term):
+    """Effective mouse-handling flag for one terminal: profile override, or
+    the global kill switch above when the profile doesn't set one."""
+    if term is not None:
+        s = _settings or sublime.load_settings(_SETTINGS_NAME)
+        profiles = s.get("profiles", {})
+        profile = (
+            profiles.get(term.profile_name)
+            if isinstance(profiles, dict) and term.profile_name
+            else None
+        )
+        if isinstance(profile, dict) and "mouse_handling" in profile:
+            return bool(profile["mouse_handling"])
+    return _MOUSE_HANDLING_ENABLED
 
 
 def _tui_like(term):
     """True when the view should be treated as an app-owned fullscreen TUI
     (pin viewport to rest, never let it scroll away on its own).
 
-    mouse_tracking only counts when _MOUSE_HANDLING_ENABLED -- with mouse
-    handling off, an app merely requesting DEC mouse tracking (but not
-    alt-screen) is no different from a plain scrollback shell: nothing is
-    forwarded to it either way, so there is no reason to permanently pin the
-    viewport to the top and block real scrollable content below the fold.
+    mouse_tracking only counts when mouse handling is enabled (globally or
+    for this profile) -- with mouse handling off, an app merely requesting
+    DEC mouse tracking (but not alt-screen) is no different from a plain
+    scrollback shell: nothing is forwarded to it either way, so there is no
+    reason to permanently pin the viewport to the top and block real
+    scrollable content below the fold.
     Was previously `alt_screen or mouse_tracking` unconditionally -- with the
     host scroll pad removed (_host_rest_y always 0.0 now), that pinned every
     mouse-tracking app's viewport to literal y=0 forever, on every 8ms clamp
@@ -1167,7 +1189,7 @@ def _tui_like(term):
         return False
     if term.screen.alt_screen:
         return True
-    return bool(term.screen.mouse_tracking) and _MOUSE_HANDLING_ENABLED
+    return bool(term.screen.mouse_tracking) and _mouse_handling_enabled(term)
 _DEFAULT_LAUNCH_COMMAND = ["cmd.exe"] if os.name == "nt" else [
     os.environ.get("SHELL") or "/bin/bash"
 ]
@@ -2847,7 +2869,7 @@ _WHEEL_AVOID_BOTTOM_ROWS = 4
 
 def _mouse_force_release(term, view_id):
     """Emit SGR/X10 release for any held button and clear hold state."""
-    if not _MOUSE_HANDLING_ENABLED:
+    if not _mouse_handling_enabled(term):
         _MOUSE_HOLD.pop(view_id, None)
         return
     hold = _MOUSE_HOLD.pop(view_id, None)
@@ -2880,7 +2902,7 @@ def _schedule_mouse_release(view, gen, delay_ms):
 
 def _send_full_click(term, view_id, proto, col, row, sgr):
     """Press+release one click and remember it for double-tap detection."""
-    if not _MOUSE_HANDLING_ENABLED:
+    if not _mouse_handling_enabled(term):
         return
     _mouse_force_release(term, view_id)
     term.send_string(_encode_click(proto, col, row, sgr=sgr))
@@ -2995,7 +3017,7 @@ def _route_mouse_click(view, term, event, *, discrete_click=False):
     Touchpad notes: taps are short; we auto-release quickly until motion is
     seen, then keep the hold longer for drag-grab. Double-tap window is wide.
     """
-    if not _MOUSE_HANDLING_ENABLED:
+    if not _mouse_handling_enabled(term):
         return False
     mode = term.screen.mouse_tracking
     if not mode:
@@ -3107,7 +3129,7 @@ def _route_mouse_wheel(view, term, amount):
 
     Feel: fine steps (wheel + arrows); one Page only on a fling.
     """
-    if not _MOUSE_HANDLING_ENABLED:
+    if not _mouse_handling_enabled(term):
         # Single choke point: gating every caller individually missed
         # _clamp_vp_loop's near_fit branch (fires independent of tui_like),
         # which kept sending mouse/arrow sequences to the PTY even after the
@@ -3211,7 +3233,7 @@ class AiTerminalKeyInterceptor(sublime_plugin.EventListener):
         #           drag is off so Grok cannot steal the gesture; wheel still
         #           routes via scroll_lines. (Modifier-drag → PTY was a bad flip:
         #           it removed the only working select bypasses.)
-        if command_name == "drag_select" and not _MOUSE_HANDLING_ENABLED:
+        if command_name == "drag_select" and not _mouse_handling_enabled(term):
             return None
         if command_name == "drag_select":
             args = args or {}
@@ -3265,7 +3287,7 @@ class AiTerminalKeyInterceptor(sublime_plugin.EventListener):
         # snaps it back — the "tab jumps then restores" glitch.
         # Always forward vertical scroll to the PTY (wheel if mouse tracking,
         # else PageUp/Down) and pin the viewport so the tab never visibly pans.
-        if command_name in ("scroll_lines", "scroll_horizontally") and not _MOUSE_HANDLING_ENABLED:
+        if command_name in ("scroll_lines", "scroll_horizontally") and not _mouse_handling_enabled(term):
             return None
         if command_name in ("scroll_lines", "scroll_horizontally"):
             args = args or {}
@@ -4172,12 +4194,12 @@ class AiTerminalTrackpadScrollCommand(sublime_plugin.TextCommand):
         # ST scroll_lines: positive = content moves down = "scroll up"
         signed = amt if direction == "up" else -amt
 
-        if not view.settings().get(_VIEW_SETTING) or not _MOUSE_HANDLING_ENABLED:
+        if not view.settings().get(_VIEW_SETTING):
             view.run_command("scroll_lines", {"amount": signed})
             return
 
         term = _Terminal.from_id(view.id())
-        if term is None:
+        if term is None or not _mouse_handling_enabled(term):
             view.run_command("scroll_lines", {"amount": signed})
             return
 

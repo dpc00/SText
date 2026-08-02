@@ -351,7 +351,15 @@
             "spawn_env": {
                 "AI_TERMINAL_LOG_LINES": "1",
                 "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
-            }
+            },
+            // Vibe (Textual) manages its own scroll region and never emits a
+            // real ANSI scroll, so pyte's history stays empty and PageUp/
+            // PageDown reach nothing -- mouse wheel is the only way to see
+            // scrolled-off content. Global mouse handling is off by default
+            // (kill switch, see ai_terminal.py) because it broke Qwen; this
+            // profile opts back in since Vibe needs it and doesn't enable
+            // DEC mouse tracking's click/drag behavior that caused that bug.
+            "mouse_handling": true
         },
         "WSL Bash": {
             // Explicit wsl.exe — do not use bare "bash" (WindowsApps stub).
