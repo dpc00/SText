@@ -478,6 +478,110 @@ def _persist_claude_oauth(creds_path, oauth):
         pass  # keeping the in-memory token still lets this sweep finish
 
 
+def parse_ollama_me(payload):
+    """Usage dict from the local ollama server's /api/me (account info).
+
+    Ollama exposes no quota/usage endpoint (verified against the binary's
+    string table), so the honest best is the signed-in account and plan.
+    """
+    if not isinstance(payload, dict):
+        return None
+    plan = payload.get("plan")
+    if not isinstance(plan, str) or not plan:
+        return None
+    name = payload.get("name") or payload.get("email")
+    summary = "cloud plan: %s" % plan
+    if isinstance(name, str) and name:
+        summary += " (%s)" % name
+    summary += " — usage not exposed"
+    return {"summary": summary, "plan": plan, "source": "live"}
+
+
+def fetch_ollama_usage(base_url="http://localhost:11434", now=None):
+    """Account/plan from the local ollama server, or None when not running.
+
+    POST /api/me makes the local server call home with its own key auth;
+    no inference quota is spent.
+    """
+    request = urllib.request.Request(
+        base_url.rstrip("/") + "/api/me",
+        data=b"{}",
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8", "replace"))
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    return parse_ollama_me(payload)
+
+
+def parse_openrouter_key(payload):
+    """Usage dict from openrouter.ai/api/v1/key JSON.
+
+    Dollar spend is exact; the free tier's daily request cap (50/day for
+    :free models) is not exposed by the API, so the tier is named instead of
+    inventing a percentage.
+    """
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return None
+    parts = []
+    if data.get("is_free_tier"):
+        parts.append("free tier")
+    limit = data.get("limit")
+    remaining = data.get("limit_remaining")
+    if isinstance(limit, (int, float)) and isinstance(remaining, (int, float)):
+        parts.append("$%.2f of $%.2f credit left" % (remaining, limit))
+    usage_daily = data.get("usage_daily")
+    if isinstance(usage_daily, (int, float)):
+        parts.append("$%.2f today" % usage_daily)
+    usage = data.get("usage")
+    if isinstance(usage, (int, float)):
+        parts.append("$%.2f total" % usage)
+    if not parts:
+        return None
+    result = {"summary": "OpenRouter: " + " · ".join(parts), "source": "live"}
+    if isinstance(remaining, (int, float)) and isinstance(limit, (int, float)) and limit > 0:
+        result["remaining"] = round(100.0 * remaining / limit, 1)
+    return result
+
+
+def _openrouter_key_from_qwen(qwen_home):
+    """The OpenRouter API key qwen persisted in its settings, or None."""
+    settings_path = os.path.join(os.path.expanduser(qwen_home), "settings.json")
+    try:
+        with open(settings_path, "r", encoding="utf-8") as handle:
+            settings = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    env = settings.get("env")
+    if isinstance(env, dict):
+        key = env.get("OPENROUTER_API_KEY")
+        if isinstance(key, str) and key.startswith("sk-or-"):
+            return key
+    return None
+
+
+def fetch_openrouter_usage(qwen_home="~/.qwen", now=None):
+    """Live OpenRouter key status (qwen bills through OpenRouter).
+
+    GET /api/v1/key is a metadata endpoint — free, no inference quota.
+    """
+    key = _openrouter_key_from_qwen(qwen_home) or os.environ.get(
+        "OPENROUTER_API_KEY"
+    )
+    if not key:
+        return None
+    headers = {"Authorization": "Bearer %s" % key, "Accept": "application/json"}
+    try:
+        payload = _http_json("https://openrouter.ai/api/v1/key", headers)
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    return parse_openrouter_key(payload)
+
+
 def gather_usage(home=None, now=None):
     """Provider → usage dict: live endpoints first, local files as fallback.
 
@@ -500,5 +604,15 @@ def gather_usage(home=None, now=None):
     claude = fetch_claude_usage(os.path.join(home_dir, ".claude"), now=now)
     if claude:
         results["claude"] = claude
+
+    ollama = fetch_ollama_usage(now=now)
+    if ollama:
+        results["ollama"] = ollama
+
+    # Qwen Code is configured to bill through OpenRouter (its settings.json
+    # persists the key), so the OpenRouter key status IS qwen's quota.
+    openrouter = fetch_openrouter_usage(os.path.join(home_dir, ".qwen"), now=now)
+    if openrouter:
+        results["qwen"] = openrouter
 
     return results

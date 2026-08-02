@@ -11,6 +11,8 @@ from ai.terminal.usage_scan import (
     parse_claude_oauth_usage,
     parse_codex_rate_limits,
     parse_codex_wham_usage,
+    parse_ollama_me,
+    parse_openrouter_key,
     provider_for_profile,
     scan_codex_usage,
     scan_local_usage,
@@ -198,6 +200,55 @@ class SummarizeTests(unittest.TestCase):
 
     def test_empty_is_none(self):
         self.assertIsNone(summarize_windows([]))
+
+
+class OllamaOpenRouterParseTests(unittest.TestCase):
+    # Shapes captured from live local ollama /api/me and openrouter /api/v1/key.
+    def test_ollama_me(self):
+        usage = parse_ollama_me({"name": "donaldchitester", "plan": "free"})
+        self.assertEqual(
+            usage["summary"],
+            "cloud plan: free (donaldchitester) — usage not exposed",
+        )
+
+    def test_ollama_me_rejects_planless(self):
+        self.assertIsNone(parse_ollama_me({"name": "x"}))
+        self.assertIsNone(parse_ollama_me("nope"))
+
+    def test_openrouter_free_tier(self):
+        payload = {
+            "data": {
+                "is_free_tier": True,
+                "limit": None,
+                "limit_remaining": None,
+                "usage": 0.1223,
+                "usage_daily": 0,
+            }
+        }
+        usage = parse_openrouter_key(payload)
+        self.assertEqual(
+            usage["summary"],
+            "OpenRouter: free tier · $0.00 today · $0.12 total",
+        )
+        self.assertNotIn("remaining", usage)
+
+    def test_openrouter_credit_limit(self):
+        payload = {
+            "data": {
+                "is_free_tier": False,
+                "limit": 10.0,
+                "limit_remaining": 2.5,
+                "usage": 7.5,
+                "usage_daily": 1.25,
+            }
+        }
+        usage = parse_openrouter_key(payload)
+        self.assertIn("$2.50 of $10.00 credit left", usage["summary"])
+        self.assertEqual(usage["remaining"], 25.0)
+
+    def test_openrouter_garbage(self):
+        self.assertIsNone(parse_openrouter_key({}))
+        self.assertIsNone(parse_openrouter_key({"data": {}}))
 
 
 class ClaudeTokenHelperTests(unittest.TestCase):
