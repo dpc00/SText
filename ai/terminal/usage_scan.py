@@ -26,27 +26,55 @@ import urllib.request
 
 # ─── provider detection ──────────────────────────────────────────────────────
 #
-# gather_usage() below only covers codex/claude/ollama/qwen. The rest were
-# investigated and deliberately left unfetched, not overlooked:
-#   gemini  — @google/gemini-cli bundle has no quota/usage RPC string anywhere
-#             in its chunks; only cloud.google.com/docs/quota doc links and a
-#             telemetry-opt-in getUsageStatisticsEnabled(). Free-tier quota
-#             is enforced server-side with a bare 429, never queryable.
+# gather_usage() below only covers codex/claude/ollama/qwen so far. Status of
+# the rest, checked 2026-08-02 (grepping an installed CLI's string table only
+# proves a route is a literal; most bundlers build "${base}/method" at
+# runtime, so absence of a literal is NOT proof no endpoint exists — treat
+# any "no fetcher" note below as "not yet wired", not "impossible"):
+#   gemini  — HAS one: @google/gemini-cli's built-in `/stats` command (alias
+#             `/usage`) calls config.refreshUserQuota(), which POSTs
+#             retrieveUserQuota to https://cloudcode-pa.googleapis.com/
+#             v1internal:retrieveUserQuota (the "Code Assist" API), auth'd
+#             with the user's Google OAuth token. Needs a projectId first
+#             (from loadCodeAssist) — more involved than codex/claude's
+#             single-endpoint pattern but real and gettable. Not yet wired.
+#   kimi    — real subscription with real local creds: ~/.kimi-code/
+#             credentials/kimi-code.json holds a JWT (iss "kimi-auth", scope
+#             "kimi-code"); base API is https://api.kimi.com/coding/v1. Exact
+#             usage sub-route not yet confirmed (bundler-concatenated, not a
+#             grep-able literal) — try an authenticated GET against
+#             .../coding/v1/usage or check for a /usage slash command in the
+#             TUI. Not yet wired.
+#             CAUTION: ~/.kimi-code/config.toml also holds plaintext OpenAI/
+#             Anthropic/Ollama API keys (kimi's own model-router config) —
+#             never print or log that file's contents.
+#   opencode — subscription product (Go/Zen plans per Donal); config lives at
+#             ~/.config/opencode (NOT ~/.opencode, which doesn't exist — a
+#             prior version of this comment wrongly claimed no state dir).
+#             Credential/usage-endpoint location not yet investigated.
+#   mimo    — subscription product (Basic/Pro/Max per Donal, Basic free);
+#             config lives at ~/.mimocode (NOT ~/.mimo). Its own TUI does not
+#             display a usage number (confirmed by Donal), so even the text
+#             tier has nothing to read; whether it has a queryable endpoint
+#             at all is not yet investigated.
 #   grok    — grok.exe's string table has no standalone usage/quota REST path
 #             under api.x.ai/v1 (only response *field* names like
-#             response/usage/cost_in_usd_ticks, which describe a chat
-#             response, not a fetchable endpoint).
-#   kimi, opencode, mimo — no ~/.kimi, ~/.opencode, ~/.mimo state directory
-#             exists on this machine, so there is no credential store to
-#             fetch with.
+#             response/usage/cost_in_usd_ticks). Given the bundler caveat
+#             above, this is weak evidence, not a conclusion — x.ai is a
+#             major provider and likely has one; re-check via the CLI's own
+#             slash commands or an HTTP probe against api.x.ai/v1, not more
+#             string-grepping.
 #   openclaw — mechanism unknown (Donal: "a mystery how that works").
 #   jcode   — itself a multi-provider aggregator (routes through its own
 #             stored OpenAI/Gemini/Claude/Antigravity grants); "jcode usage"
 #             isn't one number, it's whichever backend it dispatched to.
 #   vibe    — not yet investigated.
 # The text tier (usage_update_from_text / reset_update_from_text in
-# profile_availability.py) is what covers these: whatever a CLI prints in
-# its own TUI about quota is read from the live terminal buffer instead.
+# profile_availability.py) covers any of the above whose own TUI prints
+# quota text, with zero endpoint work — that's how the "100% used" Kimi
+# fix landed. Prefer confirming a provider's own status/stats output first;
+# only build a fetch_* endpoint client when the text tier can't reach it
+# (e.g. the info is only shown via an explicit command the user must run).
 
 _PROVIDER_EXECUTABLES = {
     "codex": "codex",
