@@ -76,6 +76,13 @@ def usage_update_from_text(text):
             remaining = max(0.0, min(100.0, float(match.group(1))))
             updates.append((match.start(), remaining))
 
+    # "100% used" (Kimi CLI's weekly-limit screen, among others) is an
+    # objective measurement, not a proxy for a possibly-transient rate limit,
+    # so it is safe to trust the same as an explicit remaining/left figure.
+    for match in re.finditer(r"(\d+(?:\.\d+)?)\s*%\s*used", low):
+        remaining = max(0.0, min(100.0, 100.0 - float(match.group(1))))
+        updates.append((match.start(), remaining))
+
     return max(updates, key=lambda update: update[0])[1] if updates else None
 
 

@@ -52,6 +52,15 @@ class ProfileAvailabilityTests(unittest.TestCase):
         text = "You have no credits remaining.\nWeekly usage: 73% remaining"
         self.assertEqual(usage_update_from_text(text), 73.0)
 
+    def test_percentage_used_is_treated_as_trustworthy(self):
+        # Kimi CLI's own weekly-limit screen: "Weekly limit reached ... Weekly
+        # usage 100% used ... Resets in 23 hours." Unlike a generic transient
+        # rate-limit phrase, an explicit "N% used" figure is a measurement,
+        # not a guess about whether the quota is actually empty.
+        text = "Weekly limit reached\n\nWeekly usage\n\n100% used\n\nResets in 23 hours."
+        self.assertEqual(usage_update_from_text(text), 0.0)
+        self.assertEqual(reset_update_from_text(text), "23 hours")
+
     def test_reset_duration_is_extracted(self):
         self.assertEqual(reset_update_from_text("Usage resets in 3h 42m"), "3h 42m")
 
