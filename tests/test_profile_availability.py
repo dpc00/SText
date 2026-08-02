@@ -4,6 +4,7 @@ import unittest
 
 from ai.terminal.profile_availability import (
     command_exists,
+    menu_caption,
     profile_is_available,
     reset_update_from_text,
     usage_update_from_text,
@@ -64,6 +65,33 @@ class ProfileAvailabilityTests(unittest.TestCase):
         text = "\x1b[32m64% remaining\x1b[0m | resets in 2 days"
         self.assertEqual(usage_update_from_text(text), 64.0)
         self.assertEqual(reset_update_from_text(text), "2 days")
+
+    def test_menu_caption_plain_when_nothing_observed(self):
+        self.assertEqual(menu_caption("Claude"), "Claude")
+
+    def test_menu_caption_shows_remaining_and_reset(self):
+        self.assertEqual(
+            menu_caption("Claude", remaining=64.0, reset="3h 42m"),
+            "Claude — 64% left, resets 3h 42m",
+        )
+
+    def test_menu_caption_exhausted_with_reset(self):
+        self.assertEqual(
+            menu_caption("Gemini", remaining=0.0, reset="Aug 5, 02:00 UTC"),
+            "Gemini — quota exhausted, resets Aug 5, 02:00 UTC",
+        )
+
+    def test_menu_caption_reset_only(self):
+        self.assertEqual(
+            menu_caption("Codex", reset="2 days"),
+            "Codex — resets 2 days",
+        )
+
+    def test_menu_caption_missing_executable(self):
+        self.assertEqual(
+            menu_caption("Vibe", executable_ok=False),
+            "Vibe — not installed",
+        )
 
 
 if __name__ == "__main__":

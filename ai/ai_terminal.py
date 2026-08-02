@@ -567,6 +567,7 @@ try:
     )
     from .terminal.pty_env import sanitize_pty_env as _sanitize_pty_env
     from .terminal.profile_availability import (
+        menu_caption as _menu_caption_pure,
         profile_is_available as _profile_is_available_pure,
         reset_update_from_text as _reset_update_from_text,
         usage_update_from_text as _usage_update_from_text,
@@ -634,6 +635,7 @@ except ImportError as _term_imp_err:
         )
         from ai.terminal.pty_env import sanitize_pty_env as _sanitize_pty_env
         from ai.terminal.profile_availability import (
+            menu_caption as _menu_caption_pure,
             profile_is_available as _profile_is_available_pure,
             reset_update_from_text as _reset_update_from_text,
             usage_update_from_text as _usage_update_from_text,
@@ -1468,6 +1470,26 @@ def _profile_availability_label(profile_name, settings=None):
     if reset:
         return "Usage unknown | resets " + reset
     return "Available (usage not yet observed)"
+
+
+def _profile_menu_caption(profile_name, settings=None):
+    """Menu caption with live-observed usage/reset status for a profile.
+
+    Feeds `description()` on the launcher commands, so Main.sublime-menu
+    entries that omit "caption" render e.g. "Claude — 64% left, resets 3h"
+    or "Gemini — quota exhausted, resets Aug 5". Purely local state.
+    """
+    if not profile_name:
+        s = settings or _settings or sublime.load_settings(_SETTINGS_NAME)
+        profile_name = s.get("default_profile") or "Default Profile"
+    usage = getattr(sys, "_stext_ai_profile_usage", {})
+    remaining = usage.get(profile_name) if isinstance(usage, dict) else None
+    resets = getattr(sys, "_stext_ai_profile_resets", {})
+    reset = resets.get(profile_name) if isinstance(resets, dict) else None
+    executable_ok = _profile_is_available(profile_name, settings) or remaining == 0.0
+    return _menu_caption_pure(
+        profile_name, remaining=remaining, reset=reset, executable_ok=executable_ok
+    )
 
 
 def _record_profile_usage(profile_name, text):
@@ -3591,6 +3613,11 @@ class AiTerminalOpenHereCommand(sublime_plugin.WindowCommand):
     def is_enabled(self, paths=None, profile=None):
         return _profile_is_available(profile)
 
+    def description(self, paths=None, profile=None):
+        # Menu entries without an explicit "caption" render this live label,
+        # e.g. "Claude — 64% left, resets 3h 42m" after real output was seen.
+        return _profile_menu_caption(profile)
+
 
 class AiTerminalOpenInEditorCommand(sublime_plugin.TextCommand):
     """Open a Claude TUI terminal in the active file's project root.
@@ -3619,6 +3646,9 @@ class AiTerminalOpenInEditorCommand(sublime_plugin.TextCommand):
 
     def is_enabled(self, profile=None):
         return _profile_is_available(profile)
+
+    def description(self, profile=None):
+        return _profile_menu_caption(profile)
 
 
 class AiTerminalSelectProfileCommand(sublime_plugin.WindowCommand):

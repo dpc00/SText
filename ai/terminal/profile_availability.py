@@ -79,6 +79,28 @@ def usage_update_from_text(text):
     return max(updates, key=lambda update: update[0])[1] if updates else None
 
 
+def menu_caption(name, remaining=None, reset=None, executable_ok=True):
+    """Compact menu caption for one profile: name plus locally known status.
+
+    Pure formatting only — callers supply state observed from real terminal
+    output (never a provider probe). Returns just the name when nothing is
+    known, so menus stay clean until a status is actually observed.
+    """
+    if not executable_ok:
+        return "%s — not installed" % name
+    if remaining == 0.0:
+        suffix = "quota exhausted"
+        if reset:
+            suffix += ", resets " + reset
+        return "%s — %s" % (name, suffix)
+    parts = []
+    if isinstance(remaining, (int, float)):
+        parts.append("%g%% left" % remaining)
+    if reset:
+        parts.append("resets " + reset)
+    return "%s — %s" % (name, ", ".join(parts)) if parts else name
+
+
 def reset_update_from_text(text):
     """Return the latest provider-reported quota reset description, if any."""
     plain = _plain_terminal_text(text)
