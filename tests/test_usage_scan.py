@@ -11,6 +11,7 @@ from ai.terminal.usage_scan import (
     parse_claude_oauth_usage,
     parse_codex_rate_limits,
     parse_codex_wham_usage,
+    parse_kimi_me,
     parse_ollama_me,
     parse_openrouter_key,
     provider_for_profile,
@@ -249,6 +250,22 @@ class OllamaOpenRouterParseTests(unittest.TestCase):
     def test_openrouter_garbage(self):
         self.assertIsNone(parse_openrouter_key({}))
         self.assertIsNone(parse_openrouter_key({"data": {}}))
+
+    def test_kimi_me(self):
+        # Shape captured from a live api.kimi.com/coding/v1/me call.
+        payload = {
+            "user_id": "d9edl3o9mujno8h16qcg",
+            "nickname": "Donald Chitester",
+            "user_level_name": "Free",
+            "status": "USER_STATUS_NORMAL",
+        }
+        usage = parse_kimi_me(payload)
+        self.assertEqual(usage["summary"], "Free tier — usage not exposed")
+        self.assertEqual(usage["plan"], "Free")
+
+    def test_kimi_me_rejects_tierless(self):
+        self.assertIsNone(parse_kimi_me({"nickname": "x"}))
+        self.assertIsNone(parse_kimi_me("nope"))
 
 
 class ClaudeTokenHelperTests(unittest.TestCase):

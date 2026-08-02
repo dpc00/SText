@@ -21,12 +21,13 @@ import re
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 
 # ─── provider detection ──────────────────────────────────────────────────────
 #
-# gather_usage() below only covers codex/claude/ollama/qwen so far. Status of
+# gather_usage() below covers codex/claude/ollama/kimi/qwen so far. Status of
 # the rest, checked 2026-08-02 (grepping an installed CLI's string table only
 # proves a route is a literal; most bundlers build "${base}/method" at
 # runtime, so absence of a literal is NOT proof no endpoint exists — treat
@@ -38,20 +39,33 @@ import urllib.request
 #             with the user's Google OAuth token. Needs a projectId first
 #             (from loadCodeAssist) — more involved than codex/claude's
 #             single-endpoint pattern but real and gettable. Not yet wired.
-#   kimi    — real subscription with real local creds: ~/.kimi-code/
-#             credentials/kimi-code.json holds a JWT (iss "kimi-auth", scope
-#             "kimi-code"); base API is https://api.kimi.com/coding/v1. Exact
-#             usage sub-route not yet confirmed (bundler-concatenated, not a
-#             grep-able literal) — try an authenticated GET against
-#             .../coding/v1/usage or check for a /usage slash command in the
-#             TUI. Not yet wired.
+#   kimi    — WIRED. fetch_kimi_usage() below. api.kimi.com/coding/v1/me is
+#             real (confirmed live: 401 on an expired token vs. 404 on every
+#             wrong-path guess) and returns account identity + a plan-tier
+#             name, but no numeric remaining/limit — a dozen other guessed
+#             paths (/user/quota, /limits, /rate-limits, /credits, ...) all
+#             genuinely 404 with a valid token, so plan-tier-only is the
+#             honest ceiling, same shape as the ollama fetcher. The OAuth
+#             refresh grant (auth.kimi.com/api/oauth/token, form-encoded —
+#             the Claude endpoint's JSON body gets 400 unsupported_grant_type
+#             here) was reverse-engineered and confirmed working live.
 #             CAUTION: ~/.kimi-code/config.toml also holds plaintext OpenAI/
 #             Anthropic/Ollama API keys (kimi's own model-router config) —
 #             never print or log that file's contents.
-#   opencode — subscription product (Go/Zen plans per Donal); config lives at
-#             ~/.config/opencode (NOT ~/.opencode, which doesn't exist — a
-#             prior version of this comment wrongly claimed no state dir).
-#             Credential/usage-endpoint location not yet investigated.
+#   opencode — subscription product (Go/Zen plans per Donal, not yet paid for
+#             as of 2026-08-02); config lives at ~/.config/opencode and the
+#             opencode-go API key at ~/.local/share/opencode/auth.json (NOT
+#             ~/.opencode, which doesn't exist). Traced opencode-go's own
+#             code: its base is https://opencode.ai/zen/go/v1
+#             (OpenAI-compatible chat completions), and it has NO proactive
+#             quota endpoint — confirmed by reading the actual retry/upsell
+#             logic, which learns it's rate-limited only reactively from a
+#             429 tagged reason:"free_tier_limit"/"account_rate_limit". So
+#             only the text tier can ever cover this one. Separately,
+#             `opencode stats` is real but purely local (SQLite at
+#             ~/.local/share/opencode/opencode.db, `message` table) — a
+#             Codex-style local-fallback token/cost tally, not a live Go-plan
+#             balance.
 #   mimo    — subscription product (Basic/Pro/Max per Donal, Basic free);
 #             config lives at ~/.mimocode (NOT ~/.mimo). Its own TUI does not
 #             display a usage number (confirmed by Donal), so even the text
@@ -567,6 +581,119 @@ def fetch_ollama_usage(base_url="http://localhost:11434", now=None):
     return parse_ollama_me(payload)
 
 
+_KIMI_OAUTH_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098"
+_KIMI_TOKEN_URL = "https://auth.kimi.com/api/oauth/token"
+
+
+def parse_kimi_me(payload):
+    """Usage dict from api.kimi.com/coding/v1/me (account info).
+
+    Confirmed live 2026-08: this endpoint exists (401 on an expired token vs.
+    404 on every other guessed path) and returns account identity plus
+    ``user_level_name`` (e.g. "Free"), but no numeric remaining/limit figure
+    — a dozen other guessed paths (/user/quota, /limits, /rate-limits,
+    /credits, ...) all 404. Kimi's own CLI has no usage/status subcommand
+    either, so plan-tier-only is the honest ceiling here, same as ollama.
+    """
+    if not isinstance(payload, dict):
+        return None
+    tier = payload.get("user_level_name")
+    if not isinstance(tier, str) or not tier:
+        return None
+    summary = "%s tier — usage not exposed" % tier
+    return {"summary": summary, "plan": tier, "source": "live"}
+
+
+def _refresh_kimi_token(creds_path, creds):
+    """Refresh the Kimi access token exactly like the CLI does, or None.
+
+    The grant is form-encoded (not JSON — the JSON body form the Claude
+    endpoint accepts returns 400 unsupported_grant_type here), rotates the
+    refresh token, and is persisted back atomically so ``kimi`` itself stays
+    logged in, mirroring _refresh_claude_token's contract.
+    """
+    refresh_token = creds.get("refresh_token")
+    if not refresh_token:
+        return None
+    body = urllib.parse.urlencode({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": _KIMI_OAUTH_CLIENT_ID,
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        _KIMI_TOKEN_URL,
+        data=body,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8", "replace"))
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    access_token = payload.get("access_token")
+    if not access_token:
+        return None
+    creds = dict(creds)
+    creds["access_token"] = access_token
+    if payload.get("refresh_token"):
+        creds["refresh_token"] = payload["refresh_token"]
+    expires_in = payload.get("expires_in")
+    if isinstance(expires_in, (int, float)):
+        creds["expires_at"] = int(time.time() + expires_in)
+        creds["expires_in"] = expires_in
+    _persist_kimi_oauth(creds_path, creds)
+    return creds
+
+
+def _persist_kimi_oauth(creds_path, creds):
+    """Atomically write the rotated credentials back to kimi-code.json."""
+    directory = os.path.dirname(creds_path) or "."
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=directory, suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(creds, handle)
+        os.replace(tmp_path, creds_path)
+    except OSError:
+        pass  # keeping the in-memory token still lets this sweep finish
+
+
+def fetch_kimi_usage(kimi_home="~/.kimi-code", now=None):
+    """Live Kimi account/plan from its own coding/v1 API.
+
+    Uses the access token kimi-code persisted in credentials/kimi-code.json;
+    refreshes it first (same OAuth refresh-token grant the CLI uses) when
+    expired, since this sweep runs once at plugin load and a stale token is
+    the common case, not the exception.
+    """
+    creds_path = os.path.join(
+        os.path.expanduser(kimi_home), "credentials", "kimi-code.json"
+    )
+    try:
+        with open(creds_path, "r", encoding="utf-8") as handle:
+            creds = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    access_token = creds.get("access_token")
+    if not access_token:
+        return None
+    expires_at = creds.get("expires_at")  # epoch seconds
+    now_s = now if now is not None else time.time()
+    if isinstance(expires_at, (int, float)) and expires_at <= now_s + 60:
+        refreshed = _refresh_kimi_token(creds_path, creds)
+        if not refreshed:
+            return {"error": "token expired — open Kimi to refresh", "source": "live"}
+        access_token = refreshed["access_token"]
+    headers = {"Authorization": "Bearer %s" % access_token, "Accept": "application/json"}
+    try:
+        payload = _http_json("https://api.kimi.com/coding/v1/me", headers)
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    return parse_kimi_me(payload)
+
+
 def parse_openrouter_key(payload):
     """Usage dict from openrouter.ai/api/v1/key JSON.
 
@@ -658,6 +785,10 @@ def gather_usage(home=None, now=None):
     ollama = fetch_ollama_usage(now=now)
     if ollama:
         results["ollama"] = ollama
+
+    kimi = fetch_kimi_usage(os.path.join(home_dir, ".kimi-code"), now=now)
+    if kimi:
+        results["kimi"] = kimi
 
     # Qwen Code is configured to bill through OpenRouter (its settings.json
     # persists the key), so the OpenRouter key status IS qwen's quota.
