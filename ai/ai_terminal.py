@@ -576,6 +576,7 @@ try:
         gather_usage as _gather_usage,
         provider_for_profile as _provider_for_profile,
     )
+    from .terminal import launcher as _launcher
     from .terminal.render import (
         HOST_CURSOR_SCOPE as _HOST_CURSOR_SCOPE,
         build_text_and_regions as _build_text_and_regions_pure,
@@ -648,6 +649,7 @@ except ImportError as _term_imp_err:
             gather_usage as _gather_usage,
             provider_for_profile as _provider_for_profile,
         )
+        from ai.terminal import launcher as _launcher
         from ai.terminal.render import (
             HOST_CURSOR_SCOPE as _HOST_CURSOR_SCOPE,
             build_text_and_regions as _build_text_and_regions_pure,
@@ -1483,7 +1485,7 @@ def _profile_is_available(profile_name, settings=None):
     return _profile_is_available_pure(profile_name, profile, path=path)
 
 
-def _ensure_usage_scanner():
+def _ensure_usage_scanner(force=False):
     """Run the usage sweep once, in the background, at plugin load.
 
     ``gather_usage`` asks each provider's own usage endpoint (using the OAuth
@@ -1497,10 +1499,15 @@ def _ensure_usage_scanner():
     thread = getattr(sys, "_stext_ai_usage_scan_thread", None)
     if thread is not None and thread.is_alive():
         return
+    # Without force, the once-per-load contract stands: a second call (e.g. a
+    # menu opening) must not re-hit every provider endpoint.
+    if not force and getattr(sys, "_stext_ai_profile_scan_at", None):
+        return
 
     def run_once():
         try:
             sys._stext_ai_profile_scan = _gather_usage()
+            sys._stext_ai_profile_scan_at = time.time()
             scan = sys._stext_ai_profile_scan
             print("[ai_terminal] usage sweep done: %s" % {
                 k: v.get("summary") or v.get("error") for k, v in scan.items()
@@ -2802,6 +2809,9 @@ class AiTerminalViewListener(sublime_plugin.ViewEventListener):
             term._watcher = None
         with _term_lock():
             _term_registry().pop(self.view.id(), None)
+        # Stamp the session end so the "Recent Sessions" list can show how long
+        # it ran, and stop reporting it as live.
+        _record_close_history(self.view.id())
         threading.Thread(target=term.kill, daemon=True).start()
 
     # ─── pre-empt ST's internal view.show on focus/hover ───────────────────
@@ -3332,6 +3342,87 @@ class AiTerminalKeyInterceptor(sublime_plugin.EventListener):
         return None
 
 
+# ─── launcher history (frecency + session log) ───────────────────────────────
+#
+# The pure model lives in terminal/launcher.py; this layer owns the on-disk
+# location, an in-process cache, and the write-through on every launch/close.
+# State is kept in the User package (next to the settings file) rather than the
+# repo so a public checkout never carries a record of local project paths.
+
+_LAUNCH_STORE_NAME = "ai_terminal_history.json"
+_launch_store = None
+
+
+def _launch_store_path():
+    try:
+        base = sublime.packages_path()
+    except Exception:
+        base = os.path.join(os.path.expanduser("~"), ".ai_terminal")
+    return os.path.join(base, "User", _LAUNCH_STORE_NAME)
+
+
+def _get_launch_store():
+    """Cached launcher history; read from disk once per plugin load."""
+    global _launch_store
+    if _launch_store is None:
+        _launch_store = _launcher.load_store(_launch_store_path())
+    return _launch_store
+
+
+def _save_launch_store():
+    if _launch_store is not None:
+        _launcher.save_store(_launch_store_path(), _launch_store)
+
+
+def _record_launch_history(profile, path, session_id=None, tab=None):
+    """Persist one launch. Never raises — history must not break launching."""
+    try:
+        _launcher.record_launch(
+            _get_launch_store(),
+            profile or (_settings or sublime.load_settings(_SETTINGS_NAME)).get(
+                "default_profile"
+            ),
+            path,
+            session_id=session_id,
+            tab=tab,
+        )
+        _save_launch_store()
+    except Exception as e:
+        print("[ai_terminal] launch history write failed: %s" % e)
+
+
+def _record_close_history(session_id):
+    try:
+        _launcher.record_close(_get_launch_store(), session_id)
+        _save_launch_store()
+    except Exception as e:
+        print("[ai_terminal] close history write failed: %s" % e)
+
+
+def _quick_panel_item(trigger, details, annotation, kind):
+    """sublime.QuickPanelItem when available, else a plain [trigger, detail] row.
+
+    ST 4 renders rich rows (kind glyph, annotation, dimmed detail); older builds
+    fall back to the two-line list form rather than losing the command.
+    """
+    item = getattr(sublime, "QuickPanelItem", None)
+    if item is None:
+        detail = " ".join(p for p in (details, annotation) if p)
+        return [trigger, detail or " "]
+    return item(trigger, details, annotation, kind)
+
+
+def _profile_names(settings=None):
+    s = settings or _settings or sublime.load_settings(_SETTINGS_NAME)
+    profiles = s.get("profiles", {})
+    return list(profiles.keys()) if isinstance(profiles, dict) else []
+
+
+def _profile_is_exhausted(name):
+    usage = getattr(sys, "_stext_ai_profile_usage", {})
+    return isinstance(usage, dict) and usage.get(name) == 0.0
+
+
 # ─── commands ────────────────────────────────────────────────────────────────
 
 
@@ -3693,6 +3784,11 @@ def _spawn(window, path, profile=None):
     with _term_lock():
         _term_registry()[view.id()] = term
     term.start()
+    # Log the launch only once the PTY is actually live, so a failed spawn
+    # (missing exe, bad backend) never pollutes the frecency ranking or the
+    # session list with a session that never existed. The view id doubles as
+    # the session id: on_close can then stamp the end time without extra state.
+    _record_launch_history(profile_name, path, session_id=view.id(), tab=tab_name)
 
 
 class AiTerminalOpenHereCommand(sublime_plugin.WindowCommand):
@@ -3767,47 +3863,296 @@ class AiTerminalOpenInEditorCommand(sublime_plugin.TextCommand):
         return _profile_menu_caption(profile)
 
 
-class AiTerminalSelectProfileCommand(sublime_plugin.WindowCommand):
-    """Show a Quick Panel to pick and open a terminal profile.
+def _usage_annotation(name, s):
+    """Short right-aligned availability text, e.g. '82% remaining · 3m ago'.
 
-    Command palette: "Ai: Open Terminal Profile..."
+    The age matters as much as the number: a quota figure from an hour ago is
+    worth acting on, one from last session is not, and silently showing a stale
+    percentage as if it were live is exactly the failure mode to avoid. A sweep
+    still in flight says so rather than showing nothing.
+    """
+    try:
+        label = (_profile_availability_label(name, s) or "").strip()
+    except Exception:
+        label = ""
+    at = getattr(sys, "_stext_ai_profile_scan_at", None)
+    if at:
+        return "%s · %s" % (label, _launcher.relative_age(at)) if label else \
+            _launcher.relative_age(at)
+    thread = getattr(sys, "_stext_ai_usage_scan_thread", None)
+    if thread is not None and thread.is_alive():
+        return "%s · checking…" % label if label else "checking…"
+    return label
+
+
+class AiTerminalRefreshUsageCommand(sublime_plugin.WindowCommand):
+    """Re-run the provider usage sweep now.
+
+    Command palette: "Ai: Refresh Usage & Quota". The sweep is otherwise
+    once-per-load, so this is the way to get fresh numbers after burning
+    through quota without restarting Sublime.
+    """
+
+    def run(self):
+        _ensure_usage_scanner(force=True)
+        sublime.status_message("Ai terminal: refreshing usage…")
+
+
+def _profile_items(names, s, context_dir=None):
+    """Rich quick-panel rows for profiles, ordered by frecency for context_dir.
+
+    Ranking beats alphabetical here: the agent you reach for in *this* repo
+    should be row 0, so the common case is Enter with no reading. Unavailable
+    profiles are not hidden (hiding breaks muscle memory and hides the reason)
+    but are pushed down and marked.
+    """
+    store = _get_launch_store()
+    ordered = _launcher.rank_profiles(names, store, path=context_dir)
+    rows = []
+    for name in ordered:
+        stats = _launcher.profile_stats(store, name)
+        bits = []
+        if stats.get("count"):
+            bits.append(
+                "%d launch%s" % (stats["count"], "" if stats["count"] == 1 else "es")
+            )
+        if stats.get("last"):
+            bits.append(_launcher.relative_age(stats["last"]))
+        if stats.get("last_dir"):
+            bits.append(_launcher.shorten_path(stats["last_dir"]))
+        rows.append(
+            _quick_panel_item(
+                name,
+                " · ".join(bits) or "never launched",
+                _usage_annotation(name, s),
+                _launcher.profile_kind(
+                    name,
+                    available=_profile_is_available(name, s),
+                    exhausted=_profile_is_exhausted(name),
+                ),
+            )
+        )
+    return ordered, rows
+
+
+def _dir_items(window, context_profile=None):
+    """Rich quick-panel rows for directories: frecent history ∪ sidebar folders.
+
+    History first (that is the whole point — stop re-navigating), then any open
+    project folder not already present, then a Browse… escape hatch so the
+    picker is never a dead end.
+    """
+    store = _get_launch_store()
+    folders = list(window.folders() or []) if window else []
+    candidates = _launcher.dir_candidates(store, extra=folders)
+    ranked = _launcher.rank_dirs(candidates, store, profile=context_profile)
+    rows = []
+    for path in ranked:
+        stats = _launcher.dir_stats(store, path)
+        bits = []
+        if stats.get("count"):
+            bits.append("%d×" % stats["count"])
+        if stats.get("last"):
+            bits.append(_launcher.relative_age(stats["last"]))
+        if stats.get("last_profile"):
+            bits.append(stats["last_profile"])
+        if not bits:
+            bits.append("open folder")
+        rows.append(
+            _quick_panel_item(
+                os.path.basename(path.rstrip("\\/")) or path,
+                _launcher.shorten_path(path),
+                " · ".join(bits),
+                _launcher.dir_kind(
+                    is_recent=bool(stats.get("count")),
+                    is_git=os.path.isdir(os.path.join(path, ".git")),
+                ),
+            )
+        )
+    rows.append(_quick_panel_item("Browse…", "Pick any folder", "", _launcher.BROWSE_KIND))
+    return ranked, rows
+
+
+class AiTerminalLauncherCommand(sublime_plugin.WindowCommand):
+    """Two-step launcher: pick an agent, then pick where to run it.
+
+    Command palette: "Ai: Launch Agent…". Both steps are frecency-ranked and
+    cross-conditioned (the directory list is re-ranked for the agent you just
+    chose), so the pair you use most is Enter-Enter. Going back from step two
+    reopens step one rather than dropping the whole flow.
+    """
+
+    def run(self, paths=None, profile=None):
+        s = sublime.load_settings(_SETTINGS_NAME)
+        names = _profile_names(s)
+        if not names:
+            self.window.run_command("ai_terminal_open_here", {"paths": paths})
+            return
+
+        # Sidebar right-click already answers "where"; skip straight to launch.
+        preset_dir = None
+        if paths:
+            preset_dir = _resolve_here_path(self.window, paths)
+
+        context_dir = preset_dir or _resolve_here_path(self.window, [])
+        if profile:
+            self._pick_dir(s, profile, preset_dir)
+            return
+
+        ordered, rows = _profile_items(names, s, context_dir=context_dir)
+
+        def on_profile(idx):
+            if idx < 0:
+                return
+            self._pick_dir(s, ordered[idx], preset_dir)
+
+        self.window.show_quick_panel(
+            rows, on_profile, placeholder="Which agent?", selected_index=0
+        )
+
+    def _pick_dir(self, s, profile, preset_dir):
+        if preset_dir:
+            self._launch(profile, preset_dir)
+            return
+
+        ranked, rows = _dir_items(self.window, context_profile=profile)
+
+        def on_dir(idx):
+            if idx < 0:
+                # Re-open the agent step so an accidental Esc is one key, not a
+                # restart of the whole flow.
+                sublime.set_timeout(
+                    lambda: self.window.run_command("ai_terminal_launcher"), 10
+                )
+                return
+            if idx >= len(ranked):
+                self._browse(profile)
+                return
+            self._launch(profile, ranked[idx])
+
+        self.window.show_quick_panel(
+            rows,
+            on_dir,
+            placeholder="Run %s where?" % profile,
+            selected_index=0,
+        )
+
+    def _browse(self, profile):
+        """Free-text path entry; ST has no native folder dialog for plugins."""
+        store = _get_launch_store()
+        initial = (_launcher.recent_dirs(store, limit=1) or [os.path.expanduser("~")])[0]
+
+        def on_done(text):
+            path = os.path.expanduser((text or "").strip().strip('"'))
+            if not os.path.isdir(path):
+                sublime.error_message("ai_terminal: not a directory:\n%s" % path)
+                return
+            self._launch(profile, path)
+
+        self.window.show_input_panel(
+            "Folder for %s:" % profile, initial, on_done, None, None
+        )
+
+    def _launch(self, profile, path):
+        self.window.run_command(
+            "ai_terminal_open_here", {"profile": profile, "paths": [path]}
+        )
+
+
+class AiTerminalRecentSessionsCommand(sublime_plugin.WindowCommand):
+    """List recent agent sessions (agent, folder, when, how long) and reopen one.
+
+    Command palette: "Ai: Recent Sessions…". Live sessions focus their existing
+    view instead of spawning a duplicate; finished ones relaunch the same agent
+    in the same folder. Sessions whose folder has since vanished are shown
+    greyed rather than silently dropped, so a moved repo is visible not magic.
+    """
+
+    def run(self):
+        store = _get_launch_store()
+        live = set()
+        with _term_lock():
+            live = set(_term_registry().keys())
+        sessions = _launcher.recent_sessions(store, live_ids=live, limit=40)
+        if not sessions:
+            sublime.status_message("Ai terminal: no sessions yet")
+            return
+
+        rows = [
+            _quick_panel_item(
+                _launcher.session_title(sess),
+                _launcher.session_detail(sess),
+                _launcher.session_annotation(sess),
+                _launcher.session_kind(sess),
+            )
+            for sess in sessions
+        ]
+
+        def on_done(idx):
+            if idx < 0:
+                return
+            sess = sessions[idx]
+            if sess.get("live"):
+                for w in sublime.windows():
+                    v = w.find_view_by_id(sess.get("id"))
+                    if v is not None:
+                        w.focus_view(v)
+                        return
+            if sess.get("missing"):
+                sublime.error_message(
+                    "ai_terminal: folder no longer exists:\n%s" % sess.get("path", "")
+                )
+                return
+            self.window.run_command(
+                "ai_terminal_open_here",
+                {"profile": sess.get("profile"), "paths": [sess.get("path")]},
+            )
+
+        self.window.show_quick_panel(
+            rows, on_done, placeholder="Recent sessions", selected_index=0
+        )
+
+
+class AiTerminalSelectProfileCommand(sublime_plugin.WindowCommand):
+    """Pick a profile and open it in the resolved cwd.
+
+    Command palette: "Ai: Open Terminal Profile...". Kept as the one-step form
+    (cwd resolved from context) for users who never want the directory step;
+    the two-step flow is ai_terminal_launcher.
     """
 
     def run(self, paths=None):
         s = sublime.load_settings(_SETTINGS_NAME)
-        profiles = s.get("profiles", {})
-        profile_names = list(profiles.keys())
+        profile_names = _profile_names(s)
 
         if not profile_names:
             # Fall back to launching default terminal
             self.window.run_command("ai_terminal_open_here", {"paths": paths})
             return
 
-        items = []
-        availability = []
-        for name in profile_names:
-            ready = _profile_is_available(name, s)
-            availability.append(ready)
-            items.append([name, _profile_availability_label(name, s)])
+        context_dir = _resolve_here_path(self.window, paths or [])
+        ordered, items = _profile_items(profile_names, s, context_dir=context_dir)
 
         def on_done(idx):
             if idx == -1:
                 return
-            if not availability[idx]:
+            name = ordered[idx]
+            if not _profile_is_available(name, s):
                 sublime.status_message(
                     "Ai terminal: "
-                    + profile_names[idx]
+                    + name
                     + " is unavailable ("
-                    + _profile_availability_label(profile_names[idx], s).lower()
+                    + _profile_availability_label(name, s).lower()
                     + ")"
                 )
                 return
-            self.window.run_command("ai_terminal_open_here", {
-                "profile": profile_names[idx],
-                "paths": paths
-            })
+            self.window.run_command(
+                "ai_terminal_open_here", {"profile": name, "paths": paths}
+            )
 
-        self.window.show_quick_panel(items, on_done)
+        self.window.show_quick_panel(
+            items, on_done, placeholder="Open terminal profile", selected_index=0
+        )
 
 
 class AiTerminalSendStringCommand(sublime_plugin.TextCommand):

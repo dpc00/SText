@@ -1,4 +1,7 @@
 [
+	// Launcher: agent picker, then directory picker. Both frecency-ranked.
+	{"keys": ["ctrl+alt+n"], "command": "ai_terminal_launcher"},
+	{"keys": ["ctrl+alt+h"], "command": "ai_terminal_recent_sessions"},
 	{"keys": ["ctrl+alt+g"], "command": "claude_grab_response"},
 	{"keys": ["ctrl+alt+i"], "command": "capture_idea"},
 	{"keys": ["ctrl+alt+l"], "command": "ccstatusline_editor_open"},
