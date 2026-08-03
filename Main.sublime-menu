@@ -125,10 +125,6 @@
                             },
                             {
                                 "command": "ai_terminal_open_here",
-                                "args": { "profile": "JCode" }
-                            },
-                            {
-                                "command": "ai_terminal_open_here",
                                 "args": { "profile": "Junie" }
                             },
                             {

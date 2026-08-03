@@ -198,15 +198,6 @@
                 "AI_TERMINAL_LOG_LINES": "1"
             }
         },
-        "JCode": {
-            "launch_command": [
-                "jcode"
-            ],
-            "spawn_env": {
-                "AI_TERMINAL_LOG_LINES": "1",
-                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
-            }
-        },
         "Junie": {
             // JetBrains Junie CLI (shim: ~/.local/bin/junie.bat). Interactive TUI
             // in the project cwd — not the PyCharm plugin panel. Prefer full
