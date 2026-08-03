@@ -677,6 +677,189 @@ def _normalize_event_keys(ev):
     return ev
 
 
+def process_event(ev, recv=None):
+    """Ingest one normalized hook event into the session/turn buffers.
+
+    Shared by the HTTP handler (do_POST) and the in-process journal tailer
+    (jcode_tailer) so both paths reuse the exact same turn-flush logic.
+    Returns None; all output goes to the daily markdown log.
+    """
+    if recv is None:
+        recv = _ts()
+    _normalize_event_keys(ev)
+
+    # Normalize raw Gemini CLI events
+    event_type = ev.get("hook_event_name") or ev.get("event_type")
+    if event_type:
+        # Map event types to SText log server names
+        if event_type == "BeforeAgent":
+            ev["hook_event_name"] = "UserPromptSubmit"
+            if "prompt" not in ev:
+                ev["prompt"] = ev.get("prompt", "")
+            ev.setdefault("agent", "Gemini")
+        elif event_type == "BeforeTool":
+            ev["hook_event_name"] = "PreToolUse"
+            tool_call = ev.get("tool_call") or {}
+            ev["tool_name"] = ev.get("tool_name") or tool_call.get("name") or "?"
+            ev["tool_input"] = ev.get("tool_input") or tool_call.get("args")
+            ev["tool_use_id"] = ev.get("tool_use_id") or tool_call.get("id")
+            ev.setdefault("agent", "Gemini")
+        elif event_type == "AfterTool":
+            tool_call = ev.get("tool_call") or {}
+            tool_response = ev.get("tool_response") or {}
+            is_error = bool(ev.get("error") or tool_response.get("error"))
+            ev["hook_event_name"] = "PostToolUseFailure" if is_error else "PostToolUse"
+            ev["tool_name"] = ev.get("tool_name") or tool_call.get("name") or "?"
+            ev["tool_use_id"] = ev.get("tool_use_id") or tool_call.get("id")
+            ev.setdefault("agent", "Gemini")
+        elif event_type == "AfterAgent":
+            ev["hook_event_name"] = "Stop"
+            ev["last_assistant_message"] = (
+                ev.get("last_assistant_message")
+                or ev.get("prompt_response")
+                or ev.get("response")
+                or ev.get("message")
+                or ""
+            )
+            ev["stop_reason"] = ev.get("stop_reason") or ""
+            ev.setdefault("agent", "Gemini")
+        elif event_type == "Notification":
+            ev["hook_event_name"] = "Notification"
+            ev["message"] = ev.get("message") or ""
+            ev["notification_type"] = ev.get("notification_type") or ""
+        else:
+            # Grok/Claude event names already match; lower-case variants too.
+            if event_type and event_type[0].islower():
+                # e.g. "user_prompt_submit" / "stop" from some runners
+                parts = event_type.replace("-", "_").split("_")
+                event_type = "".join(p[:1].upper() + p[1:] for p in parts if p)
+            ev["hook_event_name"] = event_type
+
+    # Fill session_id
+    if not ev.get("session_id"):
+        ev["session_id"] = (
+            ev.get("sessionId")
+            or (ev.get("session_info") or {}).get("session_id")
+            or "_"
+        )
+
+    name = ev.get("hook_event_name", "")
+    sid = ev.get("session_id", "_")
+    agent = _detect_agent(ev)
+    # Drop permission-prompt spam early.
+    if name in ("Notification", "PermissionRequest") and _is_permission_noise(name, ev):
+        return
+    # Dedup: drop identical ambient events (same sid+name within 1s).
+    # Tool events (PreToolUse/PostToolUse) are NOT deduped -- they carry
+    # unique tool_use_ids and parallel calls can share a name+second.
+    if name in ("InstructionsLoaded", "SessionEnd", "SessionStart",
+                "Setup", "Notification", "ConfigChange", "CwdChanged"):
+        dedup_key = (sid, name, recv.strftime("%Y%m%d%H%M%S"))
+        now = time.time()
+        with _lock:
+            last_ts = _recent_events.get(dedup_key)
+            if last_ts and (now - last_ts) < _DEDUP_TTL:
+                return
+            _recent_events[dedup_key] = now
+    with _lock:
+        def _touch_agent(s):
+            if agent and s is not None and not s.get("agent"):
+                s["agent"] = agent
+
+        if name == "UserPromptSubmit":
+            if sid in _sessions:
+                _flush_turn(sid)
+            _sessions[sid] = {
+                "prompt": _extract_prompt(ev) or _coerce_text(ev.get("prompt")),
+                "start": recv,
+                "tools": [],
+                "extras": [],
+                "agent": agent or "Claude",
+            }
+        elif name == "PreToolUse":
+            s = _sessions.setdefault(
+                sid,
+                {"prompt": "", "start": recv, "tools": [], "extras": [], "agent": agent or "Claude"},
+            )
+            _touch_agent(s)
+            s.setdefault("first_tool_ts", recv)
+            s["tools"].append({
+                "name": ev.get("tool_name", "?"),
+                "input": ev.get("tool_input"),
+                "pre": recv,
+                "id": ev.get("tool_use_id"),
+            })
+        elif name == "PostToolUse":
+            s = _sessions.get(sid)
+            _touch_agent(s)
+            _mark_tool_done(sid, ev.get("tool_use_id"), ev.get("tool_name", "?"), False, response=ev.get("tool_response"))
+        elif name == "PostToolUseFailure":
+            s = _sessions.get(sid)
+            _touch_agent(s)
+            _mark_tool_done(sid, ev.get("tool_use_id"), ev.get("tool_name", "?"), True, response=ev.get("tool_response"))
+        elif name == "AfterModel":
+            s = _sessions.get(sid)
+            _touch_agent(s)
+            if s is not None:
+                resp = ev.get("llm_response") or {}
+                try:
+                    parts = resp.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                    for p in parts:
+                        text = ""
+                        if isinstance(p, dict) and "thought" in p:        
+                            text = p.get("text", "")
+                        elif isinstance(p, str) and ("**Analyzing" in p or "**Checking" in p or "**Refining" in p or "**Investigating" in p or "**Observing" in p or "**Clarifying" in p):
+                            text = p
+                        if text:
+                            current = s.setdefault("thinking", [])        
+                            if not current:
+                                current.append(text)
+                            else:
+                                if text.startswith(current[-1]):
+                                    current[-1] = text
+                                elif not current[-1].startswith(text):    
+                                    current.append(text)
+                except Exception:
+                    pass
+        elif name == "Stop":
+            s = _sessions.get(sid)
+            _touch_agent(s)
+            if s:
+                s["stop_ts"] = recv
+                msg = ev.get("last_assistant_message") or ev.get("prompt_response") or ev.get("message") or ev.get("response") or ""
+                if msg or not s.get("stop_msg"):
+                    s["stop_msg"] = msg
+                s["stop_reason"] = ev.get("stop_reason", "")
+            # defer_flush: set the closing message but keep the turn open
+            # (jcode narrates mid-turn; the real boundary is the next
+            # user prompt or an idle timeout). force_flush closes now.
+            if ev.get("defer_flush") and not ev.get("force_flush"):
+                pass
+            elif s and (ev.get("force_flush") or s.get("stop_msg") or not s.get("tools")):
+                _flush_turn(sid)
+        elif name == "SessionEnd":
+            _md_ambient_standalone(recv, "⏹", "SessionEnd", _summarize_event("SessionEnd", ev))
+            _sessions.pop(sid, None)
+        else:
+            # ambient event: buffer into the open turn (interleaved by ts),
+            # or write standalone if no turn is currently open
+            text = _summarize_event(name, ev)
+            if text is None:
+                pass  # e.g. non-final MessageDisplay / permission noise
+            else:
+                s = _sessions.get(sid)
+                _touch_agent(s)
+                if s is not None:
+                    s["extras"].append({
+                        "ts": recv,
+                        "glyph": _GLYPH.get(name, "•"),
+                        "name": name,
+                        "text": text,
+                    })
+                else:
+                    _md_ambient_standalone(recv, _GLYPH.get(name, "•"), name, text)
+
+
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -689,185 +872,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 ev = json.loads(body)
             except Exception:
                 ev = {"_raw": body.decode("utf-8", "replace")}
-            recv = _ts()
-
-            _normalize_event_keys(ev)
-
-            # Normalize raw Gemini CLI events
-            event_type = ev.get("hook_event_name") or ev.get("event_type")
-            if event_type:
-                # Map event types to SText log server names
-                if event_type == "BeforeAgent":
-                    ev["hook_event_name"] = "UserPromptSubmit"
-                    if "prompt" not in ev:
-                        ev["prompt"] = ev.get("prompt", "")
-                    ev.setdefault("agent", "Gemini")
-                elif event_type == "BeforeTool":
-                    ev["hook_event_name"] = "PreToolUse"
-                    tool_call = ev.get("tool_call") or {}
-                    ev["tool_name"] = ev.get("tool_name") or tool_call.get("name") or "?"
-                    ev["tool_input"] = ev.get("tool_input") or tool_call.get("args")
-                    ev["tool_use_id"] = ev.get("tool_use_id") or tool_call.get("id")
-                    ev.setdefault("agent", "Gemini")
-                elif event_type == "AfterTool":
-                    tool_call = ev.get("tool_call") or {}
-                    tool_response = ev.get("tool_response") or {}
-                    is_error = bool(ev.get("error") or tool_response.get("error"))
-                    ev["hook_event_name"] = "PostToolUseFailure" if is_error else "PostToolUse"
-                    ev["tool_name"] = ev.get("tool_name") or tool_call.get("name") or "?"
-                    ev["tool_use_id"] = ev.get("tool_use_id") or tool_call.get("id")
-                    ev.setdefault("agent", "Gemini")
-                elif event_type == "AfterAgent":
-                    ev["hook_event_name"] = "Stop"
-                    ev["last_assistant_message"] = (
-                        ev.get("last_assistant_message")
-                        or ev.get("prompt_response")
-                        or ev.get("response")
-                        or ev.get("message")
-                        or ""
-                    )
-                    ev["stop_reason"] = ev.get("stop_reason") or ""
-                    ev.setdefault("agent", "Gemini")
-                elif event_type == "Notification":
-                    ev["hook_event_name"] = "Notification"
-                    ev["message"] = ev.get("message") or ""
-                    ev["notification_type"] = ev.get("notification_type") or ""
-                else:
-                    # Grok/Claude event names already match; lower-case variants too.
-                    if event_type and event_type[0].islower():
-                        # e.g. "user_prompt_submit" / "stop" from some runners
-                        parts = event_type.replace("-", "_").split("_")
-                        event_type = "".join(p[:1].upper() + p[1:] for p in parts if p)
-                    ev["hook_event_name"] = event_type
-
-            # Fill session_id
-            if not ev.get("session_id"):
-                ev["session_id"] = (
-                    ev.get("sessionId")
-                    or (ev.get("session_info") or {}).get("session_id")
-                    or "_"
-                )
-
-            name = ev.get("hook_event_name", "")
-            sid = ev.get("session_id", "_")
-            agent = _detect_agent(ev)
-            # Drop permission-prompt spam early (still 200 so hooks fail-open).
-            if name in ("Notification", "PermissionRequest") and _is_permission_noise(name, ev):
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Connection", "close")
-                self.end_headers()
-                self.wfile.write(b"{}")
-                return
-            # Dedup: drop identical ambient events (same sid+name within 1s).
-            # Tool events (PreToolUse/PostToolUse) are NOT deduped -- they carry
-            # unique tool_use_ids and parallel calls can share a name+second.
-            if name in ("InstructionsLoaded", "SessionEnd", "SessionStart",
-                        "Setup", "Notification", "ConfigChange", "CwdChanged"):
-                dedup_key = (sid, name, recv.strftime("%Y%m%d%H%M%S"))
-                now = time.time()
-                with _lock:
-                    last_ts = _recent_events.get(dedup_key)
-                    if last_ts and (now - last_ts) < _DEDUP_TTL:
-                        self.send_response(200)
-                        self.send_header("Content-Type", "application/json")
-                        self.send_header("Connection", "close")
-                        self.end_headers()
-                        self.wfile.write(b"{}")
-                        return
-                    _recent_events[dedup_key] = now
-            with _lock:
-                def _touch_agent(s):
-                    if agent and s is not None and not s.get("agent"):
-                        s["agent"] = agent
-
-                if name == "UserPromptSubmit":
-                    if sid in _sessions:
-                        _flush_turn(sid)
-                    _sessions[sid] = {
-                        "prompt": _extract_prompt(ev) or _coerce_text(ev.get("prompt")),
-                        "start": recv,
-                        "tools": [],
-                        "extras": [],
-                        "agent": agent or "Claude",
-                    }
-                elif name == "PreToolUse":
-                    s = _sessions.setdefault(
-                        sid,
-                        {"prompt": "", "start": recv, "tools": [], "extras": [], "agent": agent or "Claude"},
-                    )
-                    _touch_agent(s)
-                    s.setdefault("first_tool_ts", recv)
-                    s["tools"].append({
-                        "name": ev.get("tool_name", "?"),
-                        "input": ev.get("tool_input"),
-                        "pre": recv,
-                        "id": ev.get("tool_use_id"),
-                    })
-                elif name == "PostToolUse":
-                    s = _sessions.get(sid)
-                    _touch_agent(s)
-                    _mark_tool_done(sid, ev.get("tool_use_id"), ev.get("tool_name", "?"), False, response=ev.get("tool_response"))
-                elif name == "PostToolUseFailure":
-                    s = _sessions.get(sid)
-                    _touch_agent(s)
-                    _mark_tool_done(sid, ev.get("tool_use_id"), ev.get("tool_name", "?"), True, response=ev.get("tool_response"))
-                elif name == "AfterModel":
-                    s = _sessions.get(sid)
-                    _touch_agent(s)
-                    if s is not None:
-                        resp = ev.get("llm_response") or {}
-                        try:
-                            parts = resp.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-                            for p in parts:
-                                text = ""
-                                if isinstance(p, dict) and "thought" in p:        
-                                    text = p.get("text", "")
-                                elif isinstance(p, str) and ("**Analyzing" in p or "**Checking" in p or "**Refining" in p or "**Investigating" in p or "**Observing" in p or "**Clarifying" in p):
-                                    text = p
-                                if text:
-                                    current = s.setdefault("thinking", [])        
-                                    if not current:
-                                        current.append(text)
-                                    else:
-                                        if text.startswith(current[-1]):
-                                            current[-1] = text
-                                        elif not current[-1].startswith(text):    
-                                            current.append(text)
-                        except Exception:
-                            pass
-                elif name == "Stop":
-                    s = _sessions.get(sid)
-                    _touch_agent(s)
-                    if s:
-                        s["stop_ts"] = recv
-                        msg = ev.get("last_assistant_message") or ev.get("prompt_response") or ev.get("message") or ev.get("response") or ""
-                        if msg or not s.get("stop_msg"):
-                            s["stop_msg"] = msg
-                        s["stop_reason"] = ev.get("stop_reason", "")
-                    if s and (s.get("stop_msg") or not s.get("tools")):
-                        _flush_turn(sid)
-                elif name == "SessionEnd":
-                    _md_ambient_standalone(recv, "⏹", "SessionEnd", _summarize_event("SessionEnd", ev))
-                    _sessions.pop(sid, None)
-                else:
-                    # ambient event: buffer into the open turn (interleaved by ts),
-                    # or write standalone if no turn is currently open
-                    text = _summarize_event(name, ev)
-                    if text is None:
-                        pass  # e.g. non-final MessageDisplay / permission noise
-                    else:
-                        s = _sessions.get(sid)
-                        _touch_agent(s)
-                        if s is not None:
-                            s["extras"].append({
-                                "ts": recv,
-                                "glyph": _GLYPH.get(name, "•"),
-                                "name": name,
-                                "text": text,
-                            })
-                        else:
-                            _md_ambient_standalone(recv, _GLYPH.get(name, "•"), name, text)
+            process_event(ev)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Connection", "close")
@@ -919,6 +924,22 @@ if __name__ == "__main__":
 
     # Rebind again after import in case parent closed inherited handles.
     _rebind_stdio()
+
+    # jcode has no native HTTP hooks; instead of a per-event spawned script we
+    # tail its append-only session journals from one background thread and feed
+    # them through the same process_event() sink as HTTP hook clients.
+    try:
+        import jcode_tailer
+        jcode_tailer.start(process_event)
+        _safe_log("jcode_tailer started (journal -> log)")
+    except Exception:
+        import traceback
+        try:
+            with open(os.path.join(DIAG_DIR, "server_error.log"), "a", encoding="utf-8", errors="replace") as f:
+                f.write("jcode_tailer failed to start:\n" + traceback.format_exc() + "\n")
+        except OSError:
+            pass
+
     socketserver.TCPServer.allow_reuse_address = True
     try:
         with socketserver.ThreadingTCPServer(("0.0.0.0", args.port), H) as s:
