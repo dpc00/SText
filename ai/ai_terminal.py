@@ -552,6 +552,7 @@ try:
     )
     from .terminal.screen import Screen as _Screen, BLANK as _BLANK
     from .terminal.pyte_engine import PyteParser as _Parser
+    from .terminal.ghostty_engine import GhosttyParser as _GhosttyParser
     from .terminal.keys import (
         KEY_MAP as _KEY_MAP,
         APP_MODE_KEY_MAP as _APP_MODE_KEY_MAP,
@@ -625,6 +626,7 @@ except ImportError as _term_imp_err:
         )
         from ai.terminal.screen import Screen as _Screen, BLANK as _BLANK
         from ai.terminal.pyte_engine import PyteParser as _Parser
+        from ai.terminal.ghostty_engine import GhosttyParser as _GhosttyParser
         from ai.terminal.keys import (
             KEY_MAP as _KEY_MAP,
             APP_MODE_KEY_MAP as _APP_MODE_KEY_MAP,
@@ -1212,6 +1214,27 @@ def _scrollback_size():
 def _force_main_screen():
     s = _settings or sublime.load_settings(_SETTINGS_NAME)
     return bool(s.get("force_main_screen", True))
+
+
+def _vt_engine():
+    """"pyte" (default) or "ghostty" -- opt-in via ai_terminal.sublime-settings.
+
+    Validation-phase: libghostty-vt hasn't been diffed against every real
+    session yet and its DLL isn't deployed alongside the package. Absent
+    the setting, behavior is unchanged from before this existed. See
+    ai/terminal/ghostty_engine.py.
+    """
+    s = _settings or sublime.load_settings(_SETTINGS_NAME)
+    return s.get("vt_engine", "pyte")
+
+
+def _make_parser(screen, force_main_screen):
+    if _vt_engine() == "ghostty":
+        try:
+            return _GhosttyParser(screen, force_main_screen=force_main_screen)
+        except Exception as e:
+            print("[ai_terminal] ghostty vt_engine failed to load (%r), falling back to pyte" % (e,))
+    return _Parser(screen, force_main_screen=force_main_screen)
 
 
 def _cols_bounds():
@@ -3832,7 +3855,7 @@ def _spawn(window, path, profile=None):
         view.close()
         return
     screen = _Screen(cols, rows, history_cap=_scrollback_size())
-    parser = _Parser(screen, force_main_screen=_force_main_screen())
+    parser = _make_parser(screen, _force_main_screen())
     term = _Terminal(
         view,
         pty,
