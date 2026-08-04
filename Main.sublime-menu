@@ -112,54 +112,52 @@
                         ]
                     },
                     {
-                        "caption": "Other Agents",
-                        "children":
-                        [
-                            {
-                                "command": "ai_terminal_open_here",
-                                "args": { "profile": "Gemini" }
-                            },
-                            {
-                                "command": "ai_terminal_open_here",
-                                "args": { "profile": "Grok Build" }
-                            },
-                            {
-                                "command": "ai_terminal_open_here",
-                                "args": { "profile": "Junie" }
-                            },
-                            {
-                                "command": "ai_terminal_open_here",
-                                "args": { "profile": "Kimi" }
-                            },
-                            {
-                                "command": "ai_terminal_open_here",
-                                "args": { "profile": "Mimo" }
-                            },
-                            {
-                                "command": "ai_terminal_open_here",
-                                "args": { "profile": "OpenClaw" }
-                            },
-                            {
-                                "command": "ai_terminal_open_here",
-                                "args": { "profile": "OpenClaw →⇢⇨ Ollama" }
-                            },
-                            {
-                                "command": "ai_terminal_open_here",
-                                "args": { "profile": "Qwen" }
-                            },
-                            {
-                                "command": "ai_terminal_open_here",
-                                "args": { "profile": "Qwen →⇢⇨ Ollama" }
-                            },
-                            {
-                                "command": "ai_terminal_open_here",
-                                "args": { "profile": "Vibe" }
-                            },
-                            {
-                                "command": "ai_terminal_open_here",
-                                "args": { "profile": "Testing Agent" }
-                            }
-                        ]
+                        "command": "ai_terminal_open_here",
+                        "args": { "profile": "Antigravity" }
+                    },
+                    {
+                        "command": "ai_terminal_open_here",
+                        "args": { "profile": "Gemini" }
+                    },
+                    {
+                        "command": "ai_terminal_open_here",
+                        "args": { "profile": "Grok Build" }
+                    },
+                    {
+                        "command": "ai_terminal_open_here",
+                        "args": { "profile": "Junie" }
+                    },
+                    {
+                        "command": "ai_terminal_open_here",
+                        "args": { "profile": "Kimi" }
+                    },
+                    {
+                        "command": "ai_terminal_open_here",
+                        "args": { "profile": "Mimo" }
+                    },
+                    {
+                        "command": "ai_terminal_open_here",
+                        "args": { "profile": "OpenClaw" }
+                    },
+                    {
+                        "command": "ai_terminal_open_here",
+                        "args": { "profile": "OpenClaw →⇢⇨ Ollama" }
+                    },
+                    {
+                        "command": "ai_terminal_open_here",
+                        "args": { "profile": "Qwen" }
+                    },
+                    {
+                        "command": "ai_terminal_open_here",
+                        "args": { "profile": "Qwen →⇢⇨ Ollama" }
+                    },
+                    {
+                        "command": "ai_terminal_open_here",
+                        "args": { "profile": "Vibe" }
+                    },
+                    {
+                        "command": "ai_terminal_open_here",
+                        "args": { "profile": "Testing Agent" }
                     },
                     { "caption": "-" },
                     {

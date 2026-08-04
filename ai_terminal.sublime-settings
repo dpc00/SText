@@ -70,6 +70,19 @@
     // Configured terminal/shell profiles for SText.
     // This allows SText to work as a multi-console terminal launcher.
     "profiles": {
+        "Antigravity": {
+            // Google Antigravity CLI. Shim installed to
+            // C:\Users\donal\AppData\Local\agy\bin\agy.exe -- not on PATH
+            // until the shell that launches ST is restarted, so use the
+            // full path (same reasoning as the Junie profile below).
+            "launch_command": [
+                "C:\\Users\\donal\\AppData\\Local\\agy\\bin\\agy.exe"
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+            }
+        },
         "Bash": {
             // Pin Git Bash — bare "bash" resolves to the WSL App Execution
             // Alias (WindowsApps\\bash.exe, 0-byte stub) which precedes Git on PATH.
