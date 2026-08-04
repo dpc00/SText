@@ -38,10 +38,17 @@ database.db-wal
 .gemini/
 .idea/
 .vscode/
+.pytest_cache/
+.mimocode/
+.cursor/
+.playwright-mcp/
+.firecrawl/
 **/__pycache__/
 **/.cache/
 **/.claude/
 **/.gemini/
+**/.pytest_cache/
+**/.mimocode/
 ai_terminal.sublime-color-scheme
 
 # --- Logs ---
