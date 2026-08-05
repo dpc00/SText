@@ -26,6 +26,7 @@ as a fallback for any key-bound commands that still dispatch as insert/move.
 
 import codecs
 import collections
+import ctypes
 import json
 import os
 import queue
@@ -590,6 +591,7 @@ try:
         pad_row_for_caret as _pad_row_for_caret,
     )
     from .terminal.mouse import (
+        BTN_RELEASE_X10 as _BTN_RELEASE_X10,
         encode_click as _encode_click,
         encode_mouse as _encode_mouse,
         encode_wheel as _encode_wheel,
@@ -664,6 +666,7 @@ except ImportError as _term_imp_err:
             pad_row_for_caret as _pad_row_for_caret,
         )
         from ai.terminal.mouse import (
+            BTN_RELEASE_X10 as _BTN_RELEASE_X10,
             encode_click as _encode_click,
             encode_mouse as _encode_mouse,
             encode_wheel as _encode_wheel,
@@ -1211,8 +1214,19 @@ def _scrollback_size():
         return _DEFAULT_SCROLLBACK
 
 
-def _force_main_screen():
+def _force_main_screen(profile_name=None):
+    """Whether to ignore DECSET 1049 (alt screen) for a terminal.
+
+    Global default is true (keep ST scrollback for agent CLIs). Fullscreen
+    Textual apps need the real alt-screen buffer; a profile may set
+    ``"force_main_screen": false`` to opt out.
+    """
     s = _settings or sublime.load_settings(_SETTINGS_NAME)
+    if profile_name:
+        profiles = s.get("profiles", {})
+        profile = profiles.get(profile_name) if isinstance(profiles, dict) else None
+        if isinstance(profile, dict) and "force_main_screen" in profile:
+            return bool(profile["force_main_screen"])
     return bool(s.get("force_main_screen", True))
 
 
@@ -2121,6 +2135,7 @@ class _Terminal:
         except Exception:
             _MOUSE_HOLD.pop(vid, None)
         _MOUSE_LAST_CLICK.pop(vid, None)
+        _hover_last_cell.pop(vid, None)
         self._last_mouse_cell = None
         self._vp_pan_accum = 0.0
         # Stop accepting queued input before closing the PTY. The daemon
@@ -3855,7 +3870,7 @@ def _spawn(window, path, profile=None):
         view.close()
         return
     screen = _Screen(cols, rows, history_cap=_scrollback_size())
-    parser = _make_parser(screen, _force_main_screen())
+    parser = _make_parser(screen, _force_main_screen(profile_name))
     term = _Terminal(
         view,
         pty,
@@ -4749,6 +4764,112 @@ def _poll_loop():
     _poll_token = sublime.set_timeout(_poll_loop, _POLL_MS)
 
 
+# ─── hover-motion polling (mode 1003 "any-event" mouse tracking) ──────────────
+#
+# ST's plugin API has no continuous mouse-move event. EventListener.on_hover
+# is the only mouse-position hook plugins get outside of click/drag/scroll
+# commands, and it is debounced/settle-based, not a live stream -- confirmed
+# empirically (2026-08-05): continuous mouse movement over an ST view produced
+# only 4 on_hover calls in 10s (~every 2.4-5.1s), nowhere near real-time. Apps
+# that enable xterm mode 1003 (Textual's hover-highlight, e.g. pybackup's TUI)
+# need a report for every cell the cursor crosses, which on_hover cannot give.
+#
+# plugin_host is a real, unsandboxed Python process though, so instead of
+# waiting on ST's event system this polls the actual OS cursor position via
+# user32.GetCursorPos on a fast timer and forwards synthetic xterm motion
+# reports directly -- independent of anything ST chooses to deliver. Windows-
+# only (ctypes user32); no-ops elsewhere since ai_terminal targets Windows.
+#
+# Scope/known limitation: only forwards hover for window.active_view() of the
+# OS foreground ST window. A terminal visible in a background pane/window
+# while another view has focus will not receive hover motion -- acceptable
+# because a user can only be pointing at what has focus/foreground in practice
+# for this use case (hover-driven TUI widget highlighting).
+
+_HOVER_POLL_MS = 33  # ~30Hz -- reads as continuous; early-exits keep it cheap when idle
+_hover_poll_token = None
+_hover_last_cell = {}  # view_id -> (col, row) last cell a motion report was sent for
+
+
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+def _hover_st_hwnd():
+    """HWND of the OS foreground window, if it's a Sublime Text window."""
+    try:
+        u32 = ctypes.windll.user32
+        hwnd = u32.GetForegroundWindow()
+        if not hwnd:
+            return None
+        buf = ctypes.create_unicode_buffer(64)
+        u32.GetClassNameW(hwnd, buf, 64)
+        if buf.value != "PX_WINDOW_CLASS":
+            return None
+        return hwnd
+    except Exception:
+        return None
+
+
+def _hover_poll_tick():
+    hwnd = _hover_st_hwnd()
+    if hwnd is None:
+        return
+    win = sublime.active_window()
+    view = win.active_view() if win else None
+    if view is None:
+        return
+    term = _Terminal.from_id(view.id())
+    if term is None:
+        return
+    if not _mouse_handling_enabled(term):
+        return
+    if int(term.screen.mouse_tracking or 0) < 1003:
+        return  # clicks/drag already routed via _route_mouse_click; only "any-event" needs hover
+
+    u32 = ctypes.windll.user32
+    pt = _POINT()
+    if not u32.GetCursorPos(ctypes.byref(pt)):
+        return
+    client = _POINT(pt.x, pt.y)
+    if not u32.ScreenToClient(hwnd, ctypes.byref(client)):
+        return
+    try:
+        text_pt = view.window_to_text((client.x, client.y))
+        row, col = view.rowcol(text_pt)
+    except Exception:
+        return
+    cell = _view_point_to_cell(
+        row, col,
+        hist_len=_mouse_hist_len(term),
+        screen_rows=term.screen.rows,
+        screen_cols=term.screen.cols,
+    )
+    if cell is None:
+        return
+    vid = view.id()
+    if _hover_last_cell.get(vid) == cell:
+        return
+    _hover_last_cell[vid] = cell
+    col, row = cell
+    try:
+        sgr = term.screen.mouse_sgr
+        seq = _encode_mouse(_BTN_RELEASE_X10, col, row, press=True, motion=True, sgr=sgr)
+        term.send_string(seq)
+    except Exception as e:
+        print(f"[ai_terminal] hover motion send failed: {e}")
+
+
+def _hover_poll_loop():
+    global _hover_poll_token
+    try:
+        if os.name == "nt":
+            _hover_poll_tick()
+    except Exception as e:
+        print(f"[ai_terminal] hover poll error: {e}")
+    _hover_poll_token = sublime.set_timeout(_hover_poll_loop, _HOVER_POLL_MS)
+
+
 # ─── viewport clamp ───────────────────────────────────────────────────────────
 #
 # ST's view.show() overshoots to a NEGATIVE viewport y (e.g. vp[1]=-20) when
@@ -4953,6 +5074,13 @@ def plugin_loaded():
         except Exception:
             pass
     _clamp_token = sublime.set_timeout(_clamp_vp_loop, 8)
+    global _hover_poll_token
+    if _hover_poll_token:
+        try:
+            sublime.cancel_timeout(_hover_poll_token)
+        except Exception:
+            pass
+    _hover_poll_token = sublime.set_timeout(_hover_poll_loop, _HOVER_POLL_MS)
     _start_layout_watcher()
     _ensure_usage_scanner()
     _start_usage_refresh()
@@ -4960,7 +5088,7 @@ def plugin_loaded():
 
 
 def plugin_unloaded():
-    global _clamp_token, _settings, _poll_token
+    global _clamp_token, _settings, _poll_token, _hover_poll_token
     if _settings is not None:
         try:
             _settings.clear_on_change("ai_terminal")
@@ -4972,6 +5100,12 @@ def plugin_unloaded():
         except Exception:
             pass
         _clamp_token = None
+    if _hover_poll_token:
+        try:
+            sublime.cancel_timeout(_hover_poll_token)
+        except Exception:
+            pass
+        _hover_poll_token = None
     if _poll_token:
         try:
             sublime.cancel_timeout(_poll_token)
