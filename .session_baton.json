@@ -1,33 +1,18 @@
 {
-  "written_at": "2026-08-05T02:04:47-06:00",
-  "task": "Removed the pyte VT engine entirely from ai_terminal; libghostty-vt is now the sole VT engine. Fixed the cursor-popping-around bug (DECTCEM/cursor visibility). Ghostty engine confirmed live-working in Dos Console (Tab 1) after ST restart. Pybackup Textual TUI (Tab 2) surfaced a resize-propagation issue: the TUI wasn't adjusting to viewport size changes, and ST's scrollbars were jiggling on/off (flooding).",
-  "files_edited": [
-    "C:\\Users\\donal\\projects\\SText\\ai\\ai_terminal.py (includes this turn's resize edits, see below)",
-    "C:\\Users\\donal\\projects\\SText\\ai\\terminal\\screen.py",
-    "C:\\Users\\donal\\projects\\SText\\ai\\terminal\\caret.py",
-    "C:\\Users\\donal\\projects\\SText\\ai\\terminal\\ghostty_engine.py",
-    "C:\\Users\\donal\\projects\\SText\\ai\\terminal\\ghostty_vt.py",
-    "C:\\Users\\donal\\projects\\SText\\ai_terminal.sublime-settings",
-    "DELETED: C:\\Users\\donal\\projects\\SText\\ai\\vendor\\pyte\\",
-    "DELETED: C:\\Users\\donal\\projects\\SText\\ai\\terminal\\pyte_engine.py",
-    "DELETED (by Donal): C:\\Users\\donal\\projects\\SText\\ai_terminal.py (stale root-level duplicate)",
-    "ADDED: C:\\Users\\donal\\projects\\SText\\ai\\terminal\\bin\\ghostty-vt.dll (in-repo)"
-  ],
-  "resize_fix_this_turn": {
-    "change_1": "_on_layout_setting_change() in ai_terminal.py (_terminal_view) was a no-op referencing a deleted function (_trigger_resize_for). Rewired to look up the term by vid and call term._watcher.request() -- the existing _LayoutWatcher's debounced/stability-gated resize path (2 consecutive matching 250ms polls required before term.resize() fires).",
-    "change_2": "Deleted dead '# --- resize poller + lifecycle ---' block (_POLL_MS=750, _poll_token, _ensure_poller(), _poll_loop()). Its body had already been emptied by an earlier session with the comment 'No automatic resize... resize happens at spawn only' -- this was the flood-avoidance fix Donal referred to as 'size events were shut off.' Superseded by _LayoutWatcher (wired via _start_layout_watcher() in plugin_loaded, runs a 250ms tick unconditionally for every registered term). Removed its call sites in plugin_loaded/plugin_unloaded.",
-    "syntax_check": "py_compile passed",
-    "not_yet_confirmed": "Whether this actually fixes the Pybackup TUI resize/flood behavior Donal observed in Tab 2 -- not tested live yet."
+  "written_at": "2026-08-05T02:45:00-06:00",
+  "task": "ai_terminal: pyte VT engine fully removed, libghostty-vt is now the sole engine (verified working, Dos Console tab, no cursor bug). Separately, found and fixed a real bug in the _LayoutWatcher resize-debounce logic (ai_terminal.py, class _LayoutWatcher, method _run) that silently stopped PTY resize from ever firing once the viewport size stabilized.",
+  "bug_fixed": {
+    "where": "ai/ai_terminal.py, _LayoutWatcher._run()",
+    "what_was_wrong": "_run() had an early-return `if size == self._last_measure: return` before the candidate-stability check. The candidate logic requires the SAME measured size on two consecutive polls before calling term.resize(). But the early-return set _last_measure to the new size on the FIRST poll that saw it, so the SECOND (confirming) poll -- which reads the identical size -- matched _last_measure and returned early, before ever reaching the candidate-count increment. Net effect: candidate_count could never reach 2 once the viewport stopped changing (the normal case), so resize silently never fired except during active size fluctuation.",
+    "fix_applied": "Removed the early-return guard entirely; the candidate-stability check now runs on every poll unconditionally, so two consecutive identical readings (whether or not they match a stale _last_measure) correctly confirm the candidate and fire term.resize().",
+    "verified_live": "Confirmed via eval_python live introspection on two open tabs (Dos Console, Pybackup Textual TUI): before the fix, watcher.candidate_count was permanently stuck at 1 across multiple poll cycles despite a stable, correct larger measured size (118x47) sitting unused while term._last_cols/_last_rows stayed at their stale spawn-time values (116x16 / 119x22). After mirroring the fix to Packages/User and reload_plugin, refreshing the two live terms' stale _watcher instances (reload_plugin does not rebind existing _watcher objects to the new class -- only _Terminal itself gets the upgrade-dance treatment in plugin_loaded) produced immediate correct behavior: console showed '[ai_terminal] resized PTY to 118x47' and '[ai_terminal] resized PTY to 121x38' firing as expected.",
+    "caveat": "The live-refresh of term._watcher was a manual testing patch only, done through eval_python on already-open tabs from before the reload. It was NOT written back into any persistent code path. This is not a problem going forward: any NEW terminal tab spawned after the reload gets a fresh _watcher instance built from the current (fixed) class automatically via normal _Terminal.__init__. Only tabs that were already open at the moment of that specific reload needed the manual patch, and Donal has since closed both of those tabs."
   },
   "state": {
-    "repo_changes": "written to disk, complete",
-    "packages_user_mirror": "stale -- Packages/User still has the pre-resize-fix ai_terminal.py",
-    "plugin_reload": "not yet done this turn",
-    "live_verification": "Ghostty/pyte-removal verified working (Tab 1, Dos Console, no cursor bug). Resize fix unverified (Tab 2, Pybackup Textual TUI, still open in its pre-fix state)."
+    "repo_changes": "ai/ai_terminal.py -- both the pyte-removal changes and the _LayoutWatcher fix are written to disk, complete.",
+    "packages_user_mirror": "up to date -- mirrored and reload_plugin run after the _LayoutWatcher fix; last reload was clean, no traceback.",
+    "live_verification_done": "Fix confirmed working via direct resize events in the console log (see verified_live above), using the Pybackup Textual TUI profile (force_main_screen: false, an alt-screen fullscreen app) and a Dos Console tab (plain cmd.exe).",
+    "live_verification_still_needed": "The specific scenario NOT yet tested: a non-alt-screen agent (force_main_screen: true, the global default -- e.g. the 'Claude' profile in ai_terminal.sublime-settings) streaming ordinary scrolling text output, to check whether the _LayoutWatcher fix reintroduces the horizontal-scrollbar-oscillation flood that the candidate-stability debounce exists to prevent in the first place (see the long comment right above the candidate-count logic in _run() for the exact failure mode being guarded against: a boundary column count where content width toggles the scrollbar on/off, each toggle producing a slightly different viewport reading, chasing forever). This is what Donal wants tested next."
   },
-  "last_3_turns": [
-    "Donal: confirmed Ghostty/Tab 1 looked right, said keep this baton -- more testing needed.",
-    "Donal: opened Pybackup Textual TUI in Tab 2, reported resize not reaching the TUI + ST scrollbar flooding, said 'to stop a flood, size events were shut off, now I need them back.'",
-    "Claude: found and fixed the two dead-code resize-suppression sites (see resize_fix_this_turn). Donal asked for the baton updated before mirroring/reloading proceeds."
-  ]
+  "next_action": "Donal is opening a Claude-profile terminal tab himself (non-alt-screen agent) so a fresh Claude session in that tab can watch the console log for repeated/oscillating '[ai_terminal] resized PTY to CxR' lines while the agent's output streams and scrolls -- that pattern (many resize calls to alternating or nearby sizes in quick succession) would indicate the fix reintroduced the flood. A single resize settling to a stable size and then going quiet is the expected/good outcome."
 }
