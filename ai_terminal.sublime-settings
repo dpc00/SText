@@ -193,6 +193,20 @@
             ],
             "spawn_env": {}
         },
+        "Pybackup Textual TUI": {
+            // Batch cds to the pybackup repo root first. A bare
+            //   py C:\...\ui\tui.py
+            // inherits whatever cwd ai_terminal picked (often SText or the
+            // active folder), which breaks relative paths and confuses tools.
+            // Textual also needs mouse_handling (same as the Vibe profile).
+            "launch_command": [
+                "C:\\Users\\donal\\projects\\pybackup\\run_tui.bat"
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1"
+            },
+            "mouse_handling": true
+        },
         "Gemini": {
             "launch_command": [
                 "gemini.cmd"

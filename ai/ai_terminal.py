@@ -4439,6 +4439,35 @@ class AiTerminalKeypressCommand(sublime_plugin.TextCommand):
             term.send_string(code)
 
 
+# In-memory-only ring buffer for diagnosing the rare (~daily) fast_caret
+# splat bug (see memory ai-terminal-fast-caret-splat-bug): a wrong glyph
+# briefly appears at the wrong position, then vanishes on the next full
+# repaint. No disk writes — inspect live via eval_python (sublime-mcp) after
+# noticing a glitch; deque drops oldest frames once full so it never grows.
+# ~40Hz render cadence * 60s ≈ 2400 frames.
+_RENDER_HISTORY = collections.deque(maxlen=2400)
+_RENDER_HISTORY_FRAME_NO = [0]
+
+
+def _record_render_history(view_id, patched, diffs, cur, text):
+    """Record one AiTerminalRenderCommand frame for post-hoc glitch diagnosis.
+
+    Every frame gets a cheap entry (patched flag + up to 4 diff triples).
+    Every 20th frame also gets a full text snapshot so a diagnosis can see
+    the surrounding buffer, not just the single changed characters.
+    """
+    n = _RENDER_HISTORY_FRAME_NO[0] = _RENDER_HISTORY_FRAME_NO[0] + 1
+    entry = {
+        "t": time.monotonic(),
+        "view_id": view_id,
+        "patched": patched,
+        "diffs": [(i, cur[i] if i < len(cur) else None, text[i] if i < len(text) else None) for i in diffs] if diffs else [],
+    }
+    if n % 20 == 0:
+        entry["snapshot"] = text
+    _RENDER_HISTORY.append(entry)
+
+
 class AiTerminalRenderCommand(sublime_plugin.TextCommand):
     """Replace the whole view with the current screen snapshot on the main thread.
 
@@ -4485,13 +4514,14 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
             return
 
         patched = False
+        cur = ""
+        diffs = []
         if fast_caret and text and view.size() == len(text):
             # Diff live buffer vs new frame; host █ / reverse move is 0–2 cells.
             # Mid-line left/right: chars identical (only reverse attr moves) →
             # 0 diffs; still patch=True so we skip full view.replace.
             cur = view.substr(sublime.Region(0, view.size()))
             if len(cur) == len(text):
-                diffs = []
                 for i, (a, b) in enumerate(zip(cur, text)):
                     if a != b:
                         diffs.append(i)
@@ -4512,6 +4542,11 @@ class AiTerminalRenderCommand(sublime_plugin.TextCommand):
             # Re-apply colour regions every frame: view.replace invalidates the old
             # regions, and add_regions with the same key replaces what was there.
             _apply_color_regions(view, regions or [])
+
+        try:
+            _record_render_history(view.id(), patched, diffs if patched else [], cur, text)
+        except Exception:
+            pass
 
         rest = _host_rest_y(view)
         real_h = _real_content_height(view)

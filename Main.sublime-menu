@@ -157,6 +157,10 @@
                     },
                     {
                         "command": "ai_terminal_open_here",
+                        "args": { "profile": "Pybackup Textual TUI" }
+                    },
+                    {
+                        "command": "ai_terminal_open_here",
                         "args": { "profile": "Testing Agent" }
                     },
                     { "caption": "-" },
@@ -183,6 +187,11 @@
             {
                 "caption": "PyBackup Flask App (Silent)",
                 "command": "pb_flask_silent"
+            },
+            {
+                "caption": "PyBackup Textual TUI",
+                "command": "ai_terminal_open_here",
+                "args": { "profile": "Pybackup Textual TUI" }
             }
         ]
     }
