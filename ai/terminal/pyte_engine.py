@@ -153,6 +153,8 @@ class _AdaptedScreen(pyte.HistoryScreen):
                 self._outer.set_private_mode(mode, True)
                 if mode == 1049 and not self._outer_force_main_screen:
                     self._outer.alt_screen = True
+                if mode == 25:
+                    self._outer.cursor_visible = True
         super().set_mode(*modes, **kwargs)
 
     def reset_mode(self, *modes, **kwargs):
@@ -161,6 +163,8 @@ class _AdaptedScreen(pyte.HistoryScreen):
                 self._outer.set_private_mode(mode, False)
                 if mode == 1049:
                     self._outer.alt_screen = False
+                if mode == 25:
+                    self._outer.cursor_visible = False
         super().reset_mode(*modes, **kwargs)
 
     def reset(self):

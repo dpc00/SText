@@ -98,7 +98,6 @@ from User.ai.view_toggles import (
 from User.logs.ai_logger import AiCaptureScrollPositionCommand
 from User.launchers.pb_flask_launcher import PbFlaskLauncherCommand
 from User.launchers.pb_flask_launcher_silent import PbFlaskSilentCommand
-from User.launchers.pb_tui_launcher import PbTuiLauncherCommand
 from User.launchers.ssh_panel_auto_connect import SshPanelAutoConnectCommand
 from User.launchers.ccstatusline_editor import CcstatuslineEditorOpenCommand
 from User.config.st_config import StConfigOpenCommand

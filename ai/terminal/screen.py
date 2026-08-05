@@ -24,6 +24,13 @@ class Screen:
         self.history = collections.deque(maxlen=history_cap)
         self.saved = (0, 0)
         self.alt_screen = False
+        # DECTCEM (mode 25): whether the app wants its real terminal cursor
+        # shown. Defaults True (real terminals start with the cursor visible).
+        # Fullscreen TUIs (Textual, ratatui, curses) hide it via ESC[?25l and
+        # draw their own focus/highlight styling instead -- paint_host_cursor
+        # must not synthesize a cursor block when this is False, or it chases
+        # pyte's raw last-write position around the screen on every redraw.
+        self.cursor_visible = True
         self.dirty = True
         # Last hardware cursor column while on the `>` prompt row. Used by
         # adjust_display_caret when Claude parks the cursor on the status bar
@@ -64,6 +71,7 @@ class Screen:
         self.x = self.y = 0
         self.private_modes.clear()
         self.input_caret_x = None
+        self.cursor_visible = True
         self.dirty = True
 
     def set_private_mode(self, mode, enable):

@@ -190,7 +190,8 @@
             },
             {
                 "caption": "PyBackup Textual TUI",
-                "command": "pb_tui_launcher"
+                "command": "ai_terminal_open_here",
+                "args": { "profile": "Pybackup Textual TUI" }
             }
         ]
     }
