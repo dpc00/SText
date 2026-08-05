@@ -171,7 +171,7 @@ def adjust_display_caret(screen, cy, cx):
 
     hist = 0 if screen.alt_screen else len(screen.history)
 
-    # Live on the prompt row: Terminus/pyte style — trust hardware cursor only.
+    # Live on the prompt row: Terminus style — trust hardware cursor only.
     if screen.y == py:
         col = _clamp_live_col(screen, py, int(screen.x))
         screen.input_caret_x = col

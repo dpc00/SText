@@ -8,15 +8,15 @@ iterators for the active grid, and grid_ref for scrollback rows (which
 sit outside the render-state's viewport-only scope). See
 include/ghostty/vt/*.h in the ghostty checkout for the full API.
 
-DLL location is not yet packaged into this repo -- this is still the
-validation phase (confirming the swap works before it goes anywhere near
-ai_terminal.py's live path). Override via GHOSTTY_VT_DLL env var if the
-build output moves.
+DLL ships in-repo at terminal/bin/ghostty-vt.dll (built from the Zig
+checkout at ~/tools/ghostty/zig-out/bin/ghostty-vt.dll -- copy a fresh build
+over that file to update). Override via GHOSTTY_VT_DLL env var to point at
+a different build during development.
 """
 import ctypes
 import os
 
-DEFAULT_DLL_PATH = r"C:\Users\donal\tools\ghostty\zig-out\bin\ghostty-vt.dll"
+DEFAULT_DLL_PATH = os.path.join(os.path.dirname(__file__), "bin", "ghostty-vt.dll")
 
 
 def load_library(path=None):

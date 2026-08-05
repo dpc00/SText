@@ -1,0 +1,33 @@
+{
+  "written_at": "2026-08-05T02:04:47-06:00",
+  "task": "Removed the pyte VT engine entirely from ai_terminal; libghostty-vt is now the sole VT engine. Fixed the cursor-popping-around bug (DECTCEM/cursor visibility). Ghostty engine confirmed live-working in Dos Console (Tab 1) after ST restart. Pybackup Textual TUI (Tab 2) surfaced a resize-propagation issue: the TUI wasn't adjusting to viewport size changes, and ST's scrollbars were jiggling on/off (flooding).",
+  "files_edited": [
+    "C:\\Users\\donal\\projects\\SText\\ai\\ai_terminal.py (includes this turn's resize edits, see below)",
+    "C:\\Users\\donal\\projects\\SText\\ai\\terminal\\screen.py",
+    "C:\\Users\\donal\\projects\\SText\\ai\\terminal\\caret.py",
+    "C:\\Users\\donal\\projects\\SText\\ai\\terminal\\ghostty_engine.py",
+    "C:\\Users\\donal\\projects\\SText\\ai\\terminal\\ghostty_vt.py",
+    "C:\\Users\\donal\\projects\\SText\\ai_terminal.sublime-settings",
+    "DELETED: C:\\Users\\donal\\projects\\SText\\ai\\vendor\\pyte\\",
+    "DELETED: C:\\Users\\donal\\projects\\SText\\ai\\terminal\\pyte_engine.py",
+    "DELETED (by Donal): C:\\Users\\donal\\projects\\SText\\ai_terminal.py (stale root-level duplicate)",
+    "ADDED: C:\\Users\\donal\\projects\\SText\\ai\\terminal\\bin\\ghostty-vt.dll (in-repo)"
+  ],
+  "resize_fix_this_turn": {
+    "change_1": "_on_layout_setting_change() in ai_terminal.py (_terminal_view) was a no-op referencing a deleted function (_trigger_resize_for). Rewired to look up the term by vid and call term._watcher.request() -- the existing _LayoutWatcher's debounced/stability-gated resize path (2 consecutive matching 250ms polls required before term.resize() fires).",
+    "change_2": "Deleted dead '# --- resize poller + lifecycle ---' block (_POLL_MS=750, _poll_token, _ensure_poller(), _poll_loop()). Its body had already been emptied by an earlier session with the comment 'No automatic resize... resize happens at spawn only' -- this was the flood-avoidance fix Donal referred to as 'size events were shut off.' Superseded by _LayoutWatcher (wired via _start_layout_watcher() in plugin_loaded, runs a 250ms tick unconditionally for every registered term). Removed its call sites in plugin_loaded/plugin_unloaded.",
+    "syntax_check": "py_compile passed",
+    "not_yet_confirmed": "Whether this actually fixes the Pybackup TUI resize/flood behavior Donal observed in Tab 2 -- not tested live yet."
+  },
+  "state": {
+    "repo_changes": "written to disk, complete",
+    "packages_user_mirror": "stale -- Packages/User still has the pre-resize-fix ai_terminal.py",
+    "plugin_reload": "not yet done this turn",
+    "live_verification": "Ghostty/pyte-removal verified working (Tab 1, Dos Console, no cursor bug). Resize fix unverified (Tab 2, Pybackup Textual TUI, still open in its pre-fix state)."
+  },
+  "last_3_turns": [
+    "Donal: confirmed Ghostty/Tab 1 looked right, said keep this baton -- more testing needed.",
+    "Donal: opened Pybackup Textual TUI in Tab 2, reported resize not reaching the TUI + ST scrollbar flooding, said 'to stop a flood, size events were shut off, now I need them back.'",
+    "Claude: found and fixed the two dead-code resize-suppression sites (see resize_fix_this_turn). Donal asked for the baton updated before mirroring/reloading proceeds."
+  ]
+}

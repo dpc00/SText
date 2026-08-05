@@ -380,7 +380,7 @@
                 "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
             },
             // Vibe (Textual) manages its own scroll region and never emits a
-            // real ANSI scroll, so pyte's history stays empty and PageUp/
+            // real ANSI scroll, so the history deque stays empty and PageUp/
             // PageDown reach nothing -- mouse wheel is the only way to see
             // scrolled-off content. Global mouse handling is off by default
             // (kill switch, see ai_terminal.py) because it broke Qwen; this
@@ -418,7 +418,7 @@
     // bypassing terminal scrollback -- so only the last screenful of
     // conversation is ever visible and ST folding damages the matrix. The
     // classic renderer writes scrolling output to the primary buffer, where
-    // our pyte screen + history deque capture the full conversation and ST
+    // our screen grid + history deque capture the full conversation and ST
     // folding works on real scrolling text. Added in Claude Code v2.1.132;
     // takes precedence over CLAUDE_CODE_NO_FLICKER and the tui setting.
     // See https://code.claude.com/docs/en/env-vars

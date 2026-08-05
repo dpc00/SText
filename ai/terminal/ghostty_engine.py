@@ -1,11 +1,10 @@
-"""libghostty-vt-backed VT parser: drop-in replacement for Parser.feed().
+"""libghostty-vt-backed VT parser -- the sole VT engine for ai_terminal.py.
 
-Same contract as pyte_engine.PyteParser (__init__(screen, force_main_screen),
-feed(text), resize(cols, rows), reset()) so it can be swapped in at the same
-seam without touching Screen/render.py/caret.py/mouse.py.
-
-Validation-phase code: not wired into ai_terminal.py yet. See
-ghostty_vt.py for the ctypes binding layer and DLL location.
+Contract: __init__(screen, force_main_screen), feed(text), resize(cols, rows),
+reset() -- Screen/render.py/caret.py/mouse.py only depend on this contract
+and Screen's grid/attrs/x/y/history/private_modes/cursor_visible surface, not
+on this module's internals. See ghostty_vt.py for the ctypes binding layer
+and DLL location.
 """
 import re
 
@@ -15,10 +14,8 @@ from . import ghostty_vt as gvt
 from .colors import pack_attr, quantize256, BOLD, REVERSE, FAINT, XTERM256_RGB
 from .screen import BLANK
 
-# libghostty-vt implements real primary/alternate screen buffer swapping
-# (unlike vendored pyte, which never did -- pyte_engine.py's _AdaptedScreen
-# only toggled a display flag on a single shared buffer). That means
-# "force_main_screen" -- the user setting that keeps showing the
+# libghostty-vt implements real primary/alternate screen buffer swapping.
+# That means "force_main_screen" -- the user setting that keeps showing the
 # scrollback-style view instead of a fullscreen TUI's alt-screen redraw --
 # can no longer be emulated by ignoring the *mode flag*; the alternate
 # screen would genuinely hold different cell contents once entered. Instead
@@ -43,7 +40,7 @@ def _color_id(result, rgb):
 
 
 class GhosttyParser:
-    """Same contract as Parser/PyteParser: __init__(screen, force_main_screen), feed(text)."""
+    """__init__(screen, force_main_screen), feed(text), resize(cols, rows), reset()."""
 
     def __init__(self, screen, force_main_screen=True, dll_path=None):
         self.s = screen
@@ -117,6 +114,11 @@ class GhosttyParser:
         self._g.terminal_get(self._term, data_id, ctypes.byref(v))
         return v.value
 
+    def _get_bool(self, data_id):
+        v = ctypes.c_bool()
+        self._g.terminal_get(self._term, data_id, ctypes.byref(v))
+        return v.value
+
     def _mode(self, mode_value):
         v = ctypes.c_bool()
         rc = self._g.terminal_mode_get(self._term, mode_value, ctypes.byref(v))
@@ -134,8 +136,9 @@ class GhosttyParser:
 
     def _finish_cell(self, text, fg, bg, flags):
         if not text or text == " ":
-            # See pyte_engine._cell_attr: a space's foreground is never
-            # visible; dropping it here keeps trailing-blank trim working.
+            # A space's foreground is never visible; dropping it here keeps
+            # trailing-blank trim working (Screen.render_cells()'s rstrip
+            # only trims exact (" ", 0) cells).
             if not bg and not (flags & REVERSE):
                 fg = 0
         return (text or " "), pack_attr(fg, bg, flags)
@@ -251,6 +254,12 @@ class GhosttyParser:
 
         s.x = min(self._get_u16(gvt.TERMINAL_DATA_CURSOR_X), s.cols - 1)
         s.y = min(self._get_u16(gvt.TERMINAL_DATA_CURSOR_Y), s.rows - 1)
+        # DECTCEM (ESC[?25l/h): fullscreen TUIs (Textual, ratatui, curses)
+        # hide the real cursor and draw their own focus/highlight styling
+        # instead. render.py's paint_host_cursor must not synthesize a
+        # cursor block when this is False, or it chases the last-written
+        # cell around the screen on every redraw.
+        s.cursor_visible = self._get_bool(gvt.TERMINAL_DATA_CURSOR_VISIBLE)
 
         active_screen = ctypes.c_int()
         self._g.terminal_get(self._term, gvt.TERMINAL_DATA_ACTIVE_SCREEN, ctypes.byref(active_screen))

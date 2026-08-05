@@ -552,7 +552,6 @@ try:
         _ANSI16_RGB,
     )
     from .terminal.screen import Screen as _Screen, BLANK as _BLANK
-    from .terminal.pyte_engine import PyteParser as _Parser
     from .terminal.ghostty_engine import GhosttyParser as _GhosttyParser
     from .terminal.keys import (
         KEY_MAP as _KEY_MAP,
@@ -627,7 +626,6 @@ except ImportError as _term_imp_err:
             _ANSI16_RGB,
         )
         from ai.terminal.screen import Screen as _Screen, BLANK as _BLANK
-        from ai.terminal.pyte_engine import PyteParser as _Parser
         from ai.terminal.ghostty_engine import GhosttyParser as _GhosttyParser
         from ai.terminal.keys import (
             KEY_MAP as _KEY_MAP,
@@ -1154,7 +1152,7 @@ _DEFAULT_MIN_ROWS = 1
 # Per-profile override: a profile can set "mouse_handling": true to opt back
 # in (see _mouse_handling_enabled below) -- needed for apps like Vibe (a
 # Textual TUI) that manage their own scroll region without ever emitting a
-# real ANSI scroll, so pyte's history never populates and PageUp/PageDown
+# real ANSI scroll, so Screen.history never populates and PageUp/PageDown
 # reach nothing; mouse wheel is the only way such an app can scroll at all.
 _MOUSE_HANDLING_ENABLED = False
 
@@ -1230,25 +1228,9 @@ def _force_main_screen(profile_name=None):
     return bool(s.get("force_main_screen", True))
 
 
-def _vt_engine():
-    """"pyte" (default) or "ghostty" -- opt-in via ai_terminal.sublime-settings.
-
-    Validation-phase: libghostty-vt hasn't been diffed against every real
-    session yet and its DLL isn't deployed alongside the package. Absent
-    the setting, behavior is unchanged from before this existed. See
-    ai/terminal/ghostty_engine.py.
-    """
-    s = _settings or sublime.load_settings(_SETTINGS_NAME)
-    return s.get("vt_engine", "pyte")
-
-
 def _make_parser(screen, force_main_screen):
-    if _vt_engine() == "ghostty":
-        try:
-            return _GhosttyParser(screen, force_main_screen=force_main_screen)
-        except Exception as e:
-            print("[ai_terminal] ghostty vt_engine failed to load (%r), falling back to pyte" % (e,))
-    return _Parser(screen, force_main_screen=force_main_screen)
+    """libghostty-vt is the sole VT engine. See ai/terminal/ghostty_engine.py."""
+    return _GhosttyParser(screen, force_main_screen=force_main_screen)
 
 
 def _cols_bounds():
@@ -2103,9 +2085,9 @@ class _Terminal:
         self._last_cols, self._last_rows = cols, rows
         with self._lock:
             if hasattr(self.parser, "resize"):
-                # PyteParser owns a second (pyte) screen mirroring self.screen's
-                # size; it must stay in lockstep or _sync() reads past pyte's
-                # actual column/row range next feed().
+                # The parser owns its own internal terminal state mirroring
+                # self.screen's size; it must stay in lockstep or _sync()
+                # reads past its actual column/row range next feed().
                 self.parser.resize(cols, rows)
             else:
                 self.screen.resize(cols, rows)
@@ -2222,8 +2204,6 @@ class _LayoutWatcher:
         except Exception as e:
             print(f"[ai_terminal] layout measure error: {e}")
             return
-        if size == self._last_measure:
-            return
         self._last_measure = size
         # Require the same candidate size on two consecutive polls before
         # acting on it. A resize can itself toggle the horizontal scrollbar
@@ -2234,6 +2214,15 @@ class _LayoutWatcher:
         # repeat, forcing the TUI to redraw on every tick (looks like a
         # frozen/flickering terminal). Requiring stability kills the loop;
         # worst case we just don't chase that last column.
+        #
+        # This must run every poll, even when size == the previous poll's
+        # measurement -- that repeat IS the confirmation the candidate check
+        # is waiting for. An earlier version returned early right here on
+        # "size unchanged since last poll", which meant the second (and every
+        # later) identical reading was swallowed before ever reaching the
+        # candidate-count logic below, so candidate_count could never reach 2
+        # once the size stabilized -- resize silently stopped firing whenever
+        # the viewport was NOT actively fluctuating, i.e. the common case.
         if size == self._candidate:
             self._candidate_count += 1
         else:
@@ -2364,11 +2353,15 @@ def _terminal_view(window, name=None):
 
     def _on_layout_setting_change():
         # Genuine windowing-layer trigger (gutter/line_numbers/fold_buttons/
-        # margin toggle) -- safe to resize. The poller's auto-resize path
-        # (re-measuring viewport_extent after PTY output) is the feedback loop
-        # and is disabled; this is NOT the poller.
-        # sublime.set_timeout(lambda: _trigger_resize_for(vid), 0)
-        pass
+        # margin toggle) -- ask the term's own _LayoutWatcher to check, same
+        # debounced/stability-gated path the 250ms poll uses. This only saves
+        # latency (reacts immediately instead of waiting up to 250ms for the
+        # next tick); it does not bypass the oscillation guard, so it can't
+        # reintroduce the resize/replay flood.
+        with _term_lock():
+            term = _term_registry().get(vid)
+        if term is not None and term._watcher is not None:
+            term._watcher.request()
 
     for _key in ("gutter", "line_numbers", "fold_buttons", "margin", "font_face", "font_size"):
         v.settings().add_on_change(_key, _on_layout_setting_change)
@@ -2634,7 +2627,15 @@ def _do_render(term):
         # then have us wipe it without painting that feed.
         term.screen.dirty = False
     plain_sig = _plain_cells_signature(rows)
-    rows, _host_painted = _paint_host_cursor(rows, cy, cx)
+    if term.screen.cursor_visible:
+        rows, _host_painted = _paint_host_cursor(rows, cy, cx)
+    else:
+        # App hid the real cursor (DECTCEM off, ESC[?25l) -- fullscreen TUIs
+        # (Textual, ratatui, curses) do this and draw their own focus/
+        # highlight styling instead. Painting a synthetic block here chases
+        # the raw last-write cell around the screen on every redraw (visible
+        # as a flickering cursor "popping up all over").
+        _host_painted = False
     text, regions = _build_text_and_regions(rows)
     caret_off = _cursor_text_offset(rows, cy, cx)
     # Host-only pads above+below: trackpad can pan both ways. Shift colour
@@ -4732,38 +4733,6 @@ class AiTerminalDumpScreenCommand(sublime_plugin.TextCommand):
                 print(f"     {marks}|  (attrs: * = non-default)")
 
 
-# ─── resize poller + lifecycle ───────────────────────────────────────────────
-
-_POLL_MS = 750
-_poll_token = None
-
-
-def _ensure_poller():
-    global _poll_token
-    if _poll_token is not None:
-        return
-    _poll_loop()
-
-
-def _poll_loop():
-    global _poll_token
-    _poll_token = None
-    try:
-        with _term_lock():
-            items = list(_term_registry().items())
-        for _vid, term in items:
-            view = term.view
-            if not view.is_valid():
-                continue
-            # No automatic resize. Any resize (grow or shrink) triggers the
-            # TUI to rewrap/replay its content, and on a long conversation that
-            # replay loops forever via viewport_extent fluctuation. See
-            # _trigger_resize_for docstring. Resize happens at spawn only.
-    except Exception as e:
-        print(f"[ai_terminal] poll error: {e}")
-    _poll_token = sublime.set_timeout(_poll_loop, _POLL_MS)
-
-
 # ─── hover-motion polling (mode 1003 "any-event" mouse tracking) ──────────────
 #
 # ST's plugin API has no continuous mouse-move event. EventListener.on_hover
@@ -5031,7 +5000,6 @@ def _clamp_vp_loop():
 def plugin_loaded():
     if not _PTY_OK:
         print("[ai_terminal] no PTY backend available; commands will report the error.")
-    _ensure_poller()
     global _clamp_token, _settings
     _init_dynamic_color_scheme()
     # Bind the settings object and live-apply edits (the callback fires on the
@@ -5088,7 +5056,7 @@ def plugin_loaded():
 
 
 def plugin_unloaded():
-    global _clamp_token, _settings, _poll_token, _hover_poll_token
+    global _clamp_token, _settings, _hover_poll_token
     if _settings is not None:
         try:
             _settings.clear_on_change("ai_terminal")
@@ -5106,12 +5074,6 @@ def plugin_unloaded():
         except Exception:
             pass
         _hover_poll_token = None
-    if _poll_token:
-        try:
-            sublime.cancel_timeout(_poll_token)
-        except Exception:
-            pass
-        _poll_token = None
     _stop_layout_watcher()
     _stop_usage_refresh()
     # Deliberately do NOT kill ConPTY children on unload.  The terminal
