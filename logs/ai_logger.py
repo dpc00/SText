@@ -36,6 +36,7 @@ _CHECK_MS = 500
 _SCREENSHOT_INTERVAL = 60
 _tick_active = False  # guard: only one _tick loop may be scheduled at a time
 _SCREENSHOT_RETENTION_DAYS = 7
+_PERIODIC_SCREENSHOTS_ENABLED = False  # disabled 2026-08-05: no active ST UI bugs to troubleshoot; manual "Screenshot at Scroll" still works
 _PANIC_THRESHOLD = 1  # output_tokens — trigger on every assistant response
 _AUTO_PANIC = False  # disabled: intercepts agent SDK responses it shouldn't
 _PANIC_RESPONSE_VIEW = "Panic: Response"
@@ -934,15 +935,16 @@ def _tick_background():
         except OSError:
             pass
 
-    _SS_KEY = "__screenshot__"
-    if _SS_KEY not in _last_screenshot_time:
-        _last_screenshot_time[_SS_KEY] = current_time
-    elif current_time - _last_screenshot_time[_SS_KEY] > _SCREENSHOT_INTERVAL:
-        _last_screenshot_time[_SS_KEY] = current_time
-        try:
-            _take_screenshot(_SS_KEY)
-        except Exception as e:
-            _diagnostic_log(f"SCREENSHOT_BG_ERROR: {e}")
+    if _PERIODIC_SCREENSHOTS_ENABLED:
+        _SS_KEY = "__screenshot__"
+        if _SS_KEY not in _last_screenshot_time:
+            _last_screenshot_time[_SS_KEY] = current_time
+        elif current_time - _last_screenshot_time[_SS_KEY] > _SCREENSHOT_INTERVAL:
+            _last_screenshot_time[_SS_KEY] = current_time
+            try:
+                _take_screenshot(_SS_KEY)
+            except Exception as e:
+                _diagnostic_log(f"SCREENSHOT_BG_ERROR: {e}")
 
     # Re-schedule on the main thread
     sublime.set_timeout(_tick_schedule, _CHECK_MS)

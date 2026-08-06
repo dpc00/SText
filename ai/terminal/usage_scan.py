@@ -137,7 +137,6 @@ _PROVIDER_EXECUTABLES = {
     "vibe": "vibe",
     "opencode": "opencode",
     "jcode": "jcode",
-    "openclaw": "openclaw",
     "mimo": "mimo",
     # Wrapped launches ("ollama launch codex") bill Ollama, not the wrapped
     # CLI's account, so the wrapper must win provider detection.

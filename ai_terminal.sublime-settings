@@ -246,27 +246,18 @@
                 "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
             }
         },
+        "Kiro": {
+            "launch_command": [
+                "kiro-cli"
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+            }
+        },
         "Mimo": {
             "launch_command": [
                 "mimo"
-            ],
-            "spawn_env": {
-                "AI_TERMINAL_LOG_LINES": "1",
-                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
-            }
-        },
-        "OpenClaw": {
-            "launch_command": [
-                "openclaw"
-            ],
-            "spawn_env": {
-                "AI_TERMINAL_LOG_LINES": "1",
-                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
-            }
-        },
-        "OpenClaw →⇢⇨ Ollama": {
-            "launch_command": [
-                "openclaw"
             ],
             "spawn_env": {
                 "AI_TERMINAL_LOG_LINES": "1",

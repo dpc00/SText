@@ -133,15 +133,11 @@
                     },
                     {
                         "command": "ai_terminal_open_here",
+                        "args": { "profile": "Kiro" }
+                    },
+                    {
+                        "command": "ai_terminal_open_here",
                         "args": { "profile": "Mimo" }
-                    },
-                    {
-                        "command": "ai_terminal_open_here",
-                        "args": { "profile": "OpenClaw" }
-                    },
-                    {
-                        "command": "ai_terminal_open_here",
-                        "args": { "profile": "OpenClaw →⇢⇨ Ollama" }
                     },
                     {
                         "command": "ai_terminal_open_here",
