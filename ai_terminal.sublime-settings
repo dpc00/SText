@@ -208,6 +208,19 @@
             "mouse_handling": true,
             "force_main_screen": false
         },
+        "Pybackup Go TUI": {
+            // gotui.exe spawns `python ui/app.py` itself and talks to it over
+            // HTTP -- see ui/gotui/backend.go. Same alt-screen/mouse needs as
+            // the Textual profile above.
+            "launch_command": [
+                "C:\\Users\\donal\\projects\\pybackup\\ui\\gotui\\gotui.exe"
+            ],
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1"
+            },
+            "mouse_handling": true,
+            "force_main_screen": false
+        },
         "Gemini": {
             "launch_command": [
                 "gemini.cmd"
@@ -455,10 +468,5 @@
     // TUI symbol coverage (U+23BF, U+23F8, U+2733, U+273B, U+2802, U+2B1D).
     // "Cascadia Code" ships with Windows 10+ and has all of these.
     // Set to null to inherit the global font_face.
-    "terminal_font": "Cascadia Code",
-    // Toggles the PTY backend on Windows.
-    // "conpty" -- Windows native CreatePseudoConsole API.
-    // "winpty" -- Symmetrical winpty PTY backend. Use this to confirm or isolate
-    // whether the random conversation replays are a ConPTY-specific issue.
-    "windows_pty_backend": "conpty"
+    "terminal_font": "Cascadia Code"
 }
