@@ -59,6 +59,9 @@ ai/terminal/bin/*.dll
 logs/**/*.log
 logs/*.log
 
+# --- Generated diagnostic output ---
+_probe_out.txt
+
 # --- OS/System ---
 .DS_Store
 Thumbs.db

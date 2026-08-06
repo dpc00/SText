@@ -23,5 +23,6 @@ try:
 finally:
     conn.close()
 
-with open("_probe_out.txt", "w", encoding="utf-8") as fh:
+out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_probe_out.txt")
+with open(out_path, "w", encoding="utf-8") as fh:
     fh.write("\n".join(out))
