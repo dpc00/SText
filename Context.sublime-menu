@@ -5,9 +5,5 @@
         "args": {
             "cwd": "${file_path:${folder}}"
         }
-    },
-    {
-        "caption": "Open Ai Terminal here...",
-        "command": "ai_terminal_open_in_editor"
     }
 ]

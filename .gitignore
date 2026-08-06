@@ -51,6 +51,9 @@ database.db-wal
 **/.mimocode/
 ai_terminal.sublime-color-scheme
 
+# Built binary artifact (libghostty-vt) -- not source, stays on disk only
+ai/terminal/bin/*.dll
+
 # --- Logs ---
 *.log
 logs/**/*.log

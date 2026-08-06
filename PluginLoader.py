@@ -51,27 +51,6 @@ from User.ai.ai_tab_manager import (
     AiQuitFlaskAppsCommand,
     AiEventListener,
 )
-from User.ai.ai_terminal import (
-    AiTerminalOpenHereCommand,
-    AiTerminalOpenInEditorCommand,
-    AiTerminalSelectProfileCommand,
-    AiTerminalLauncherCommand,
-    AiTerminalRecentSessionsCommand,
-    AiTerminalRefreshUsageCommand,
-    AiTerminalSendStringCommand,
-    AiTerminalSendStringWindowCommand,
-    AiTerminalKeypressCommand,
-    AiTerminalRenderCommand,
-    AiTerminalNukeCommand,
-    AiTerminalNoopCommand,
-    AiTerminalDumpScreenCommand,
-    # Invoked from a .sublime-mousemap, not the palette. Registered here so the
-    # command exists if a mousemap binds it; there is currently no mousemap in
-    # the package, so it is inert until one is added.
-    AiTerminalTrackpadScrollCommand,
-    AiTerminalViewListener,
-    AiTerminalKeyInterceptor,
-)
 from User.ai.open_ai import (
     OpenAiHereCommand,
     OpenAiInEditorCommand,
@@ -269,7 +248,6 @@ def plugin_unloaded():
 # user-visible signal that the module is alive.
 _PLUGIN_LOADED_MODULES = [
     "User.logs.ai_logger",          # 60s screenshot capture + JSONL logging
-    "User.ai.ai_terminal",          # ConPTY Claude terminal; start resize poller
     "User.ai.ai_tab_manager",       # prints "loaded" + ensures log dir exists
     "User.ai.panic_dialog",         # restore panic-dialog phantoms after reload
 ]
@@ -279,7 +257,6 @@ _PLUGIN_LOADED_MODULES = [
 # fire for users.
 _PLUGIN_UNLOADED_MODULES = [
     "User.logs.ai_logger",          # flush JSONL + save state
-    "User.ai.ai_terminal",          # kill all live ConPTY children
     "User.ai.ai_tab_manager",       # prints "unloaded"
     "User.config.settings_editor",  # stop HTTP server (port 57324)
     "User.config.st_config",        # stop HTTP server
