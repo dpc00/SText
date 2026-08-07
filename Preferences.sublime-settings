@@ -3,7 +3,6 @@
 	"file_exclude_patterns": [
 		"*.pyc",
 		"*.pyo",
-		"*.exe",
 		"*.obj",
 		"*.o",
 		"*.a",
@@ -19,9 +18,7 @@
 		".directory",
 		"desktop.ini",
 		"*.class",
-		"*.psd",
-		"*.db",
-		"*.sublime-workspace"
+		"*.psd"
 	],
 	"ignored_packages": [
 		"Vintage",
