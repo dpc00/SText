@@ -22,11 +22,6 @@
                 "args": { "profile": "Pybackup Go TUI" }
             },
             {
-                "caption": "PyBackup Textual TUI",
-                "command": "ai_terminal_open_here",
-                "args": { "profile": "Pybackup Textual TUI" }
-            },
-            {
                 "caption": "PyBackup Flask App",
                 "command": "pb_flask_launcher"
             },
