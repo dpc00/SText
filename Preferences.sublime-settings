@@ -22,5 +22,6 @@
 	],
 	"ignored_packages": [
 		"Vintage",
-	]
+	],
+	"font_size": 12,
 }
