@@ -24,4 +24,5 @@
 		"Vintage",
 	],
 	"font_size": 13,
+	"index_files": false,
 }
