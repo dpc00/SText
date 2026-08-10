@@ -23,6 +23,13 @@
 	"ignored_packages": [
 		"Vintage",
 	],
-	"font_size": 13,
+	// CrossDevice holds Windows Phone Link shortcuts to the phone's storage
+	// (moto g - 2025). When the phone isn't actively connected, ST's sidebar
+	// scanner walking into it throws a failure notification per unreachable
+	// path -- 30+ on startup with 'donal' in the sidebar. Skip it entirely.
+	"folder_exclude_patterns": [
+		"CrossDevice",
+	],
+	"font_size": 12,
 	"index_files": false,
 }
