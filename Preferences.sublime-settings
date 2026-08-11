@@ -30,6 +30,6 @@
 	"folder_exclude_patterns": [
 		"CrossDevice",
 	],
-	"font_size": 12,
+	"font_size": 13,
 	"index_files": false,
 }
