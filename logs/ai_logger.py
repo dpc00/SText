@@ -27,7 +27,7 @@ import sublime_plugin  # type: ignore
 
 # -- constants ----------------------------------------------------------------
 
-_LOG_DIR = str(Path.home() / "data" / "logs")
+_LOG_DIR = str(Path.home() / "data" / "logs" / "jsonl_tail_transcripts")
 _STATE_FILE = str(Path.home() / "data" / "state" / "ai_logger_state.json")
 _SCREENSHOT_DIR = str(Path.home() / "data" / "logs" / "periodic_automatic_editor_screenshots_for_additional_context")
 _DIAGNOSTICS_FILE = str(Path.home() / "data" / "logs" / "developer_diagnostics_and_runtime_server_error_logs" / "ai_diagnostics.log")
