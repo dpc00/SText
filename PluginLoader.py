@@ -9,39 +9,6 @@ are not imported here -- they are launched as separate processes by the modules 
 """
 import sys
 
-# --- SText Auto-Restart on Hot-Reload ---
-# If SText's PluginLoader is reloaded (which happens when you copy nested submodules
-# and touch/copy PluginLoader.py), we detect the reload sentinel. To prevent
-# destructive module reloading, crashing terminals, and color scheme wipes, we:
-# 1) Refuse to perform any further imports or registrations.
-# 2) Spawn a detached PowerShell process to restart Sublime Text.
-# 3) Trigger a graceful exit of Sublime Text.
-if getattr(sys, "_stext_plugin_loader_loaded", False):
-    print("\n[SText] Hot-reload of PluginLoader detected! Initiating clean IDE restart...")
-    try:
-        import sublime
-        import subprocess
-        
-        executable = sublime.executable_path()
-        # Wait 500ms to allow ST to exit, then start a fresh instance
-        restart_cmd = f'Start-Sleep -Milliseconds 500; Start-Process -FilePath "{executable}"'
-        
-        subprocess.Popen(
-            ["powershell.exe", "-NoProfile", "-Command", restart_cmd],
-            creationflags=subprocess.CREATE_NO_WINDOW,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL
-        )
-        sublime.set_timeout(lambda: sublime.run_command("exit"), 50)
-    except Exception as e:
-        print(f"[SText] Failed to trigger auto-restart: {e}")
-        
-    raise ImportError("SText auto-restart triggered.")
-
-# Mark that SText has successfully loaded for the first time in this session
-sys._stext_plugin_loader_loaded = True
-
 from User.ai.ai_hub import AiHubOpenCommand, AiHubRefreshCommand, AiHubStatusListener
 from User.ai.ai_tab_manager import (
     AiTrimNowCommand,
