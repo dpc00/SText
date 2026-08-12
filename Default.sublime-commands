@@ -22,7 +22,6 @@
 	{"caption": "Ai: Screenshot at Scroll", "command": "ai_capture_scroll_position"},
 	{"caption": "Ai: Trim Buffer Now", "command": "ai_trim_now"},
 	{"caption": "Ai: Quit Flask Apps", "command": "ai_quit_flask_apps"},
-	{"caption": "Ai: Search Conversations", "command": "ai_search_conversations"},
 	{"caption": "CC Statusline Editor", "command": "ccstatusline_editor_open"},
 	{"caption": "Claude Code: Open Here", "command": "claude_code_here"},
 	{"caption": "Claude: Grab Last Response", "command": "claude_grab_response"},

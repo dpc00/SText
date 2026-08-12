@@ -363,41 +363,6 @@ class AiListSessionsCommand(sublime_plugin.WindowCommand):
         v.run_command("append", {"characters": output})
 
 
-class AiSearchConversationsCommand(sublime_plugin.WindowCommand):
-    """Launch the Ai conversation search Flask app on port 5758, or open it in a browser if already running.
-
-    Command palette: "Ai: Search Conversations"
-    """
-
-    def run(self):
-        import socket
-        import webbrowser
-        url = "http://127.0.0.1:5758"
-
-        def _port_free(p):
-            with socket.socket() as s:
-                try:
-                    s.connect(("127.0.0.1", p))
-                    return False
-                except OSError:
-                    return True
-
-        if _port_free(5758):
-            script = str(Path(__file__).parent / "ai_search_app.py")
-            from User.winutil._job import assign_pid
-            from User.winutil._platform import hidden_popen_kwargs
-            proc = subprocess.Popen(
-                ["python", script],
-                **hidden_popen_kwargs()
-            )
-            try:
-                assign_pid(proc.pid)
-            except Exception:
-                pass
-        else:
-            webbrowser.open(url)
-
-
 # -- flask management ---------------------------------------------------------
 
 _FLASK_APPS = [

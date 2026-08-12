@@ -14,7 +14,6 @@ from User.ai.ai_tab_manager import (
     AiTrimNowCommand,
     AiDumpBufferCommand,
     AiListSessionsCommand,
-    AiSearchConversationsCommand,
     AiQuitFlaskAppsCommand,
     AiEventListener,
 )
