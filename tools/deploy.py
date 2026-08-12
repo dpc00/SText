@@ -40,7 +40,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Only these trees/files are owned by the repo. Everything else in Packages/User
 # belongs to Sublime or to the user and is left strictly alone.
-OWNED_DIRS = ("ai", "config", "launchers", "logs")
+OWNED_DIRS = ("ai", "launchers", "logs")
 OWNED_FILES = (
     # PluginLoader.py is the *only* module Sublime auto-loads; every command
     # class must be imported into its namespace to be registered at all, so

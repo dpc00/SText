@@ -79,8 +79,6 @@ from User.launchers.pb_flask_launcher import PbFlaskLauncherCommand
 from User.launchers.pb_flask_launcher_silent import PbFlaskSilentCommand
 from User.launchers.ssh_panel_auto_connect import SshPanelAutoConnectCommand
 from User.launchers.ccstatusline_editor import CcstatuslineEditorOpenCommand
-from User.config.st_config import StConfigOpenCommand
-from User.config.settings_editor import SettingsEditorOpenCommand
 
 
 # -- lifecycle -----------------------------------------------------------------
@@ -258,8 +256,6 @@ _PLUGIN_LOADED_MODULES = [
 _PLUGIN_UNLOADED_MODULES = [
     "User.logs.ai_logger",          # flush JSONL + save state
     "User.ai.ai_tab_manager",       # prints "unloaded"
-    "User.config.settings_editor",  # stop HTTP server (port 57324)
-    "User.config.st_config",        # stop HTTP server
 ]
 
 
