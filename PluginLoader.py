@@ -44,7 +44,6 @@ from User.logs.ai_logger import AiCaptureScrollPositionCommand
 from User.launchers.pb_flask_launcher import PbFlaskLauncherCommand
 from User.launchers.pb_flask_launcher_silent import PbFlaskSilentCommand
 from User.launchers.ssh_panel_auto_connect import SshPanelAutoConnectCommand
-from User.launchers.ccstatusline_editor import CcstatuslineEditorOpenCommand
 
 
 # -- lifecycle -----------------------------------------------------------------
