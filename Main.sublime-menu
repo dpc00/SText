@@ -12,6 +12,10 @@
             },
             { "caption": "-" },
             {
+                "caption": "PyBackup Open Panel",
+                "command": "pybackup_open"
+            },
+            {
                 "caption": "PyBackup Go TUI",
                 "command": "ai_terminal_open_here",
                 "args": { "profile": "Pybackup Go TUI" }
