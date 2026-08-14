@@ -11,19 +11,11 @@ import sys
 
 from User.ai.ai_hub import AiHubOpenCommand, AiHubRefreshCommand, AiHubStatusListener
 from User.ai.ai_tab_manager import (
-    AiTrimNowCommand,
-    AiDumpBufferCommand,
     AiListSessionsCommand,
     AiQuitFlaskAppsCommand,
-    AiEventListener,
 )
 from User.ai.open_ai import (
-    OpenAiHereCommand,
-    OpenAiInEditorCommand,
-    OpenAiTerminusInEditorCommand,
-    OpenAiTerminusHereCommand,
     ClaudeGrabResponseCommand,
-    ClaudeSendTabCommand,
 )
 from User.ai.panic_dialog import (
     PanicOpenCommand,
@@ -33,8 +25,6 @@ from User.ai.panic_dialog import (
     PanicRefreshCommand,
 )
 from User.ai.capture_idea import CaptureIdeaCommand, OpenIdeaInboxCommand
-from User.ai.claude_code_here import ClaudeCodeHereCommand
-from User.ai.clear_buffer import ClearBufferCommand
 from User.ai.view_toggles import (
     AiToggleGutterCommand,
     AiToggleLineNumbersCommand,
@@ -211,7 +201,7 @@ def plugin_unloaded():
 # user-visible signal that the module is alive.
 _PLUGIN_LOADED_MODULES = [
     "User.logs.ai_logger",          # 60s screenshot capture + JSONL logging
-    "User.ai.ai_tab_manager",       # prints "loaded" + ensures log dir exists
+    "User.ai.ai_tab_manager",       # prints "loaded"
     "User.ai.panic_dialog",         # restore panic-dialog phantoms after reload
 ]
 

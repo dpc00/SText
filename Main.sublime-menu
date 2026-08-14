@@ -7,12 +7,7 @@
                 "caption": "Ai Utilities",
                 "children":
                 [
-                    { "caption": "Trim Ai Buffer Now", "command": "ai_trim_now" },
-                    { "caption": "Export Ai Buffer...", "command": "ai_dump_buffer" },
-                    { "caption": "Screenshot at Scroll", "command": "ai_capture_scroll_position" },
-                    { "caption": "-" },
-                    { "caption": "Open Terminus+Ai Here", "command": "open_ai_terminus_here" },
-                    { "caption": "Open Terminus+Ai in Editor", "command": "open_ai_terminus_in_editor" }
+                    { "caption": "Screenshot at Scroll", "command": "ai_capture_scroll_position" }
                 ]
             },
             { "caption": "-" },

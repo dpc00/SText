@@ -3,14 +3,8 @@
 	{"keys": ["ctrl+alt+i"], "command": "capture_idea"},
 	{"keys": ["ctrl+alt+o"], "command": "open_idea_inbox"},
 	{"keys": ["ctrl+alt+p"], "command": "panic_open"},
-	{"keys": ["ctrl+alt+r"], "command": "claude_send_tab"},
 	{"keys": ["ctrl+enter"], "command": "panic_send", "context": [{"key": "setting.panic_reply_view", "operator": "equal", "operand": true}]},
 	{"keys": ["ctrl+s"], "command": "save_all", "args": {"async": true}},
-	{"keys": ["ctrl+shift+k"], "command": "clear_buffer"},
 	{"keys": ["escape"], "command": "panic_cancel", "context": [{"key": "setting.panic_reply_view", "operator": "equal", "operand": true}]},
-
-	// ── Ai Utilities: orphaned user-facing commands (also under Tools → Ai Utilities) ──
-	{"keys": ["ctrl+alt+t"], "command": "ai_trim_now"},
-	{"keys": ["ctrl+alt+e"], "command": "ai_dump_buffer"},
 	{"keys": ["ctrl+alt+s"], "command": "ai_capture_scroll_position"}
 ]

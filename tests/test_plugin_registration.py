@@ -26,11 +26,10 @@ sys.path.insert(0, REPO)
 # processes, never registered as plugins.
 COMMAND_MODULES = (
     "ai/ai_hub.py",
+    "ai/ai_tab_manager.py",
     "ai/open_ai.py",
     "ai/panic_dialog.py",
     "ai/capture_idea.py",
-    "ai/claude_code_here.py",
-    "ai/clear_buffer.py",
     "ai/view_toggles.py",
 )
 
