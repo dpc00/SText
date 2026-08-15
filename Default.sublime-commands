@@ -1,31 +1,103 @@
 [
-	{"caption": "SublimeREPL: Python (SText cwd)", "command": "repl_open", "args": {
-		"type": "subprocess",
-		"encoding": "utf8",
-		"cmd": ["python", "-i", "-u"],
-		"cwd": "C:\\Users\\donal\\projects\\SText",
-		"syntax": "Packages/Python/Python.sublime-syntax",
-		"external_id": "python",
-		"extend_env": {"PYTHONIOENCODING": "utf-8"}
-	}},
-	{"caption": "AI Hub: Open", "command": "ai_hub_open"},
-	{"caption": "AI Hub: Refresh", "command": "ai_hub_refresh"},
-	{"caption": "Ai: Capture Idea", "command": "capture_idea"},
-	{"caption": "Ai: List Recent Sessions", "command": "ai_list_sessions"},
-	{"caption": "Ai: Open Idea Inbox", "command": "open_idea_inbox"},
-	{"caption": "Ai: Screenshot at Scroll", "command": "ai_capture_scroll_position"},
-	{"caption": "Ai: Quit Flask Apps", "command": "ai_quit_flask_apps"},
-	{"caption": "Claude: Grab Last Response", "command": "claude_grab_response"},
-	{"caption": "MCP: Browse Command Palette", "command": "mcp_browse_command_palette"},
-	{"caption": "MCP: Browse Commands", "command": "mcp_browse_commands"},
-	{"caption": "MCP: Browse Menu Items", "command": "mcp_browse_menu_items"},
-	{"caption": "MCP: Browse Syntaxes", "command": "mcp_browse_syntaxes"},
-	{"caption": "MCP: Browse Variables", "command": "mcp_browse_variables"},
-	{"caption": "Panic: Quote & Reply", "command": "panic_open"},
-	{"caption": "PyBackup: Open Panel", "command": "pybackup_open"},
-	{"caption": "PyBackup: Go TUI", "command": "ai_terminal_open_here", "args": {"profile": "Pybackup Go TUI"}},
-	{"caption": "PyBackup: Flask App", "command": "pb_flask_launcher"},
-	{"caption": "PyBackup: Flask App (silent)", "command": "pb_flask_silent"},
-	{"caption": "PyBackup: Run Script", "command": "exec", "args": {"cmd": ["python", "C:/Users/donal/projects/pybackup/pybackup.py"], "working_dir": "C:/Users/donal/projects/pybackup"}},
-	{"caption": "SSH-Panel: Auto Connect Phone", "command": "ssh_panel_auto_connect"}
+    {
+        "caption": "SublimeREPL: Python (SText cwd)",
+        "command": "repl_open",
+        "args": {
+            "type": "subprocess",
+            "encoding": "utf8",
+            "cmd": [
+                "python",
+                "-i",
+                "-u"
+            ],
+            "cwd": "C:\\Users\\donal\\projects\\SText",
+            "syntax": "Packages/Python/Python.sublime-syntax",
+            "external_id": "python",
+            "extend_env": {
+                "PYTHONIOENCODING": "utf-8"
+            }
+        }
+    },
+    {
+        "caption": "AI Hub: Open",
+        "command": "ai_hub_open"
+    },
+    {
+        "caption": "AI Hub: Refresh",
+        "command": "ai_hub_refresh"
+    },
+    {
+        "caption": "Ai: Capture Idea",
+        "command": "capture_idea"
+    },
+    {
+        "caption": "Ai: List Recent Sessions",
+        "command": "ai_list_sessions"
+    },
+    {
+        "caption": "Ai: Open Idea Inbox",
+        "command": "open_idea_inbox"
+    },
+    {
+        "caption": "Ai: Quit Flask Apps",
+        "command": "ai_quit_flask_apps"
+    },
+    {
+        "caption": "Claude: Grab Last Response",
+        "command": "claude_grab_response"
+    },
+    {
+        "caption": "MCP: Browse Command Palette",
+        "command": "mcp_browse_command_palette"
+    },
+    {
+        "caption": "MCP: Browse Commands",
+        "command": "mcp_browse_commands"
+    },
+    {
+        "caption": "MCP: Browse Menu Items",
+        "command": "mcp_browse_menu_items"
+    },
+    {
+        "caption": "MCP: Browse Syntaxes",
+        "command": "mcp_browse_syntaxes"
+    },
+    {
+        "caption": "MCP: Browse Variables",
+        "command": "mcp_browse_variables"
+    },
+    {
+        "caption": "Panic: Quote & Reply",
+        "command": "panic_open"
+    },
+    {
+        "caption": "PyBackup: Go TUI",
+        "command": "ai_terminal_open_here",
+        "args": {
+            "profile": "Pybackup Go TUI"
+        }
+    },
+    {
+        "caption": "PyBackup: Flask App",
+        "command": "pb_flask_launcher"
+    },
+    {
+        "caption": "PyBackup: Flask App (silent)",
+        "command": "pb_flask_silent"
+    },
+    {
+        "caption": "PyBackup: Run Script",
+        "command": "exec",
+        "args": {
+            "cmd": [
+                "python",
+                "C:/Users/donal/projects/pybackup/pybackup.py"
+            ],
+            "working_dir": "C:/Users/donal/projects/pybackup"
+        }
+    },
+    {
+        "caption": "SSH-Panel: Auto Connect Phone",
+        "command": "ssh_panel_auto_connect"
+    }
 ]
