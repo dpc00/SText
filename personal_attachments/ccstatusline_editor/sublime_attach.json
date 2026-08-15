@@ -1,0 +1,8 @@
+{
+    "id": "ccstatusline-editor",
+    "name": "CC Statusline Editor",
+    "plugin_dir": ".",
+    "plugin_modules": ["ccstatusline_editor_launcher"],
+    "resource_files": ["Default.sublime-commands", "Default.sublime-keymap"],
+    "settings_files": []
+}
