@@ -1,6 +1,6 @@
 """ai_tab_manager.py — Session browsing and Flask app management for Ai.
 
-Logging lives in ai_logger.py. Terminal management lives in GhostShell.
+Logging lives in the STLogs package. Terminal management lives in GhostShell.
 """
 
 import calendar

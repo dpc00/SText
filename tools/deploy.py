@@ -40,7 +40,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Only these trees/files are owned by the repo. Everything else in Packages/User
 # belongs to Sublime or to the user and is left strictly alone.
-OWNED_DIRS = ("ai", "launchers", "logs")
+OWNED_DIRS = ("ai", "launchers")
 OWNED_FILES = (
     # PluginLoader.py is the *only* module Sublime auto-loads; every command
     # class must be imported into its namespace to be registered at all, so
@@ -50,7 +50,6 @@ OWNED_FILES = (
     "Context.sublime-menu",
     "Default.sublime-commands",
     "Default.sublime-keymap",
-    "AiLog.sublime-syntax",
     # Settings are user-editable, so this one leans hard on the newer-live
     # guard below: edit it in Sublime and the next deploy refuses to clobber
     # you until the change is copied back into the repo. It is still tracked,
