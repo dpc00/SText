@@ -8,16 +8,6 @@ finds them. Standalone subprocess scripts (ai_search_app, dedup_logs)
 are not imported here -- they are launched as separate processes by the modules above.
 Logging lives in the STLogs package (Packages/STLogs), not here.
 """
-import sys
-
-# pybackup_panel.py lives in the pybackup repo, not under Packages/User, and
-# is no longer its own symlinked ST package -- load it the same way as any
-# other subfolder module here, just with its directory added to sys.path
-# first since it's outside the User package tree.
-_PYBACKUP_PANEL_DIR = r"C:\Users\donal\projects\pybackup\ui\sublime_panel"
-if _PYBACKUP_PANEL_DIR not in sys.path:
-    sys.path.insert(0, _PYBACKUP_PANEL_DIR)
-
 from User.ai.ai_hub import AiHubOpenCommand, AiHubRefreshCommand, AiHubStatusListener
 from User.ai.ai_tab_manager import (
     AiListSessionsCommand,
@@ -42,11 +32,6 @@ from User.ai.view_toggles import (
 from User.launchers.pb_flask_launcher import PbFlaskLauncherCommand
 from User.launchers.pb_flask_launcher_silent import PbFlaskSilentCommand
 from User.launchers.ssh_panel_auto_connect import SshPanelAutoConnectCommand
-from pybackup_panel import (
-    PybackupOpenCommand,
-    PybackupInsertAtCommand,
-    PybackupPanelCloseListener,
-)
 
 
 # -- lifecycle -----------------------------------------------------------------
