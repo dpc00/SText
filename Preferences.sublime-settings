@@ -22,7 +22,6 @@
 	],
 	"ignored_packages": [
 		"Vintage",
-		"STLogs",
 	],
 	// CrossDevice holds Windows Phone Link shortcuts to the phone's storage
 	// (moto g - 2025). When the phone isn't actively connected, ST's sidebar
