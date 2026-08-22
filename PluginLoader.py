@@ -6,7 +6,6 @@ THAT MODULE'S OWN NAMESPACE for *Command / *EventListener subclasses and registe
 command/listener class from the subfolder modules into its own namespace, where ST's scan
 finds them. Standalone subprocess scripts (ai_search_app, dedup_logs)
 are not imported here -- they are launched as separate processes by the modules above.
-Logging lives in the STLogs package (Packages/STLogs), not here.
 """
 from User.ai.ai_hub import AiHubOpenCommand, AiHubRefreshCommand, AiHubStatusListener
 from User.ai.ai_tab_manager import (
