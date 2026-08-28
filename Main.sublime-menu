@@ -15,6 +15,14 @@
                 "caption": "-"
             },
             {
+                "caption": "CC Statusline Editor",
+                "command": "ccstatusline_editor_open"
+            },
+            {
+                "caption": "PyBackup Panel",
+                "command": "pybackup_open"
+            },
+            {
                 "caption": "PyBackup Go TUI",
                 "command": "ai_terminal_open_here",
                 "args": {

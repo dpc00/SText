@@ -1,15 +1,16 @@
-"""Shared kill-before-launch helper for PyBackup Flask launchers.
+"""pb_flask_launcher.py — open a Terminus tab that starts the PyBackup Flask app.
 
-Kills any python process currently listening on the Flask port so a stale
-prior instance (still holding cached engine state) doesn't serve the UI
-instead of the freshly spawned process. Cross-process on Windows via netstat
-+ taskkill; no-ops cleanly on non-Windows or if nothing is listening.
+Menu: Main.sublime-menu -> Tools -- "PyBackup Flask App"
+Command palette: "PyBackup: Flask App"
 """
 
 import os
 import socket
 import subprocess
 import time
+
+import sublime
+import sublime_plugin
 
 PORT = 5757
 
@@ -52,7 +53,9 @@ def kill_existing(port: int = PORT, timeout: float = 3.0) -> int:
     """Kill any process listening on `port`; wait for the port to free.
 
     Returns the number of processes killed. Safe to call when nothing is
-    listening (returns 0).
+    listening (returns 0). Needed because a stale prior instance (still
+    holding cached engine state) would otherwise serve the UI instead of
+    the freshly spawned process.
     """
     if os.name == "nt":
         pids = _pids_listening_on_windows(port)
@@ -82,3 +85,40 @@ def kill_existing(port: int = PORT, timeout: float = 3.0) -> int:
             s.close()
             time.sleep(0.1)
     return len(pids)
+
+
+class PbFlaskLauncherCommand(sublime_plugin.WindowCommand):
+    """Open a Terminus tab that starts the PyBackup Flask app and launches its browser UI.
+
+    Kills any prior process still holding port %d first, so a stale instance
+    with cached engine state can't serve the freshly launched UI.
+
+    Menu: Main.sublime-menu -> Tools -- "PyBackup Flask App"
+    Command palette: "PyBackup: Flask App"
+    """ % PORT
+
+    def run(self):
+        kill_existing(PORT)
+        self.window.run_command(
+            "terminus_open",
+            {
+                "title": "Pybackup Flask App",
+                "tag": "pb_flask",
+                "post_view_hooks": [
+                    [
+                        "terminus_paste_text",
+                        {
+                            "text": "start http://127.0.0.1:%d\n" % PORT,
+                            "bracketed": False,
+                        },
+                    ],
+                    [
+                        "terminus_paste_text",
+                        {
+                            "text": "start /B \"C:\\Users\\donal\\AppData\\Local\\Programs\\Python\\Python312\\python.exe\" C:/Users/donal/projects/pybackup/ui/app.py\n",
+                            "bracketed": False,
+                        },
+                    ],
+                ],
+            },
+        )

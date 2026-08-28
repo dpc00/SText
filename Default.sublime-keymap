@@ -1,10 +1,5 @@
 [
-	{"keys": ["ctrl+alt+g"], "command": "claude_grab_response"},
-	{"keys": ["ctrl+alt+i"], "command": "capture_idea"},
-	{"keys": ["ctrl+alt+o"], "command": "open_idea_inbox"},
-	{"keys": ["ctrl+alt+p"], "command": "panic_open"},
-	{"keys": ["ctrl+enter"], "command": "panic_send", "context": [{"key": "setting.panic_reply_view", "operator": "equal", "operand": true}]},
 	{"keys": ["ctrl+s"], "command": "save_all", "args": {"async": true}},
-	{"keys": ["escape"], "command": "panic_cancel", "context": [{"key": "setting.panic_reply_view", "operator": "equal", "operand": true}]},
-	{"keys": ["ctrl+alt+s"], "command": "ai_capture_scroll_position"}
+	{"keys": ["ctrl+alt+s"], "command": "ai_capture_scroll_position"},
+	{"keys": ["ctrl+alt+l"], "command": "ccstatusline_editor_open"}
 ]

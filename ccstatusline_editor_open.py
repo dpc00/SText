@@ -1,7 +1,10 @@
-"""ccstatusline_editor_launcher.py — Sublime command that launches the ccstatusline-editor server.
+"""ccstatusline_editor_open.py — Sublime command that launches the
+ccstatusline-editor server.
 
-Top-level .py, auto-loaded by ST like any package's plugin file (no PluginLoader
-needed for a single command class).
+Top-level .py, auto-loaded by ST like any package's plugin file (no loader
+needed for a single command class). Formerly managed by STRepoInstall as a
+personal attachment; that project is retired, this is now a plain flat
+plugin file directly in this package.
 """
 
 import subprocess

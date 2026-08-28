@@ -1,7 +1,7 @@
 """Deploy this repo into Sublime's live ``Packages/User`` directory.
 
 Why this exists
----------------
+----------------
 The repo and the live plugin are two independent copies. Editing one and
 forgetting the other is the default failure mode, and the symptom (Sublime
 running yesterday's code while the tests pass against today's) is invisible.
@@ -9,7 +9,7 @@ This script makes the copy an explicit, reviewable step.
 
 Design notes
 ------------
-* **Repo is the source of truth.** Only repo → live. Never the reverse: a
+* **Repo is the source of truth.** Only repo -> live. Never the reverse: a
   reverse sync would quietly resurrect whatever was hand-edited in the live
   copy, which is exactly how the two drifted apart in the first place.
 * **--check is the default.** Nothing is written until you pass ``--apply``,
@@ -21,12 +21,19 @@ Design notes
   state and other packages' files in the same directory. Deleting anything not
   in the repo would be catastrophic, so this only ever adds and overwrites the
   specific paths the repo owns.
+* **No subdir walk, no hand-maintained file list.** The repo is flat (one
+  plugin command per top-level .py file, no subdirs) specifically so nothing
+  has to remember to register a new file anywhere. A top-level .py is "owned"
+  (and deployed) iff it imports sublime_plugin -- that's what distinguishes
+  an actual ST plugin file from an adhoc root-level script (e.g. a one-off
+  probe script) that isn't meant to go live. Adding a new command file is
+  enough; this script picks it up automatically, no list to edit here.
 
 Usage
 -----
-    python tools/deploy.py            # report what would change
-    python tools/deploy.py --apply    # do it
-    python tools/deploy.py --apply --force   # overwrite newer live files too
+    python deploy.py            # report what would change
+    python deploy.py --apply    # do it
+    python deploy.py --apply --force   # overwrite newer live files too
 """
 
 import argparse
@@ -36,30 +43,17 @@ import shutil
 import sys
 
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO = os.path.dirname(os.path.abspath(__file__))
 
-# Only these trees/files are owned by the repo. Everything else in Packages/User
-# belongs to Sublime or to the user and is left strictly alone.
-OWNED_DIRS = ("ai", "launchers")
-OWNED_FILES = (
-    # PluginLoader.py is the *only* module Sublime auto-loads; every command
-    # class must be imported into its namespace to be registered at all, so
-    # forgetting to deploy it means new commands silently do not exist.
-    "PluginLoader.py",
+# Non-.py resources the repo owns outright (not auto-discovered, since
+# nothing about their content signals "this belongs to Sublime").
+OWNED_RESOURCE_FILES = (
     "Main.sublime-menu",
     "Context.sublime-menu",
     "Default.sublime-commands",
     "Default.sublime-keymap",
-    # Settings are user-editable, so this one leans hard on the newer-live
-    # guard below: edit it in Sublime and the next deploy refuses to clobber
-    # you until the change is copied back into the repo. It is still tracked,
-    # because a new key that ships without its documented default is a feature
-    # that silently does nothing.
-    "ai_terminal.sublime-settings",
 )
 
-# Build artefacts and caches: present in the repo, meaningless (or harmful) live.
-SKIP_DIRS = {"__pycache__", ".git", ".pytest_cache", "node_modules"}
 SKIP_SUFFIXES = (".pyc", ".pyo", ".orig", ".rej")
 
 
@@ -78,23 +72,38 @@ def default_target():
     return candidate
 
 
+def _is_plugin_file(path):
+    """A top-level .py is repo-owned iff it imports sublime_plugin -- that's
+    what separates a real ST plugin command from an adhoc dev/probe script
+    sitting at repo root (e.g. _probe_ollama.py), without needing a
+    hand-maintained allowlist that the flat-file convention exists to avoid."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except OSError:
+        return False
+    # An actual import statement, not just the string appearing anywhere
+    # (e.g. in a comment/docstring describing this very mechanism -- this
+    # script's own docstring above did exactly that and self-selected as
+    # "owned" until this was tightened).
+    return any(
+        line.startswith("import sublime_plugin") or line.startswith("from sublime_plugin")
+        for line in lines
+    )
+
+
 def owned_paths():
     """Every repo-relative file this script is allowed to write."""
     out = []
-    for name in OWNED_FILES:
+    for name in OWNED_RESOURCE_FILES:
         if os.path.isfile(os.path.join(REPO, name)):
             out.append(name)
-    for top in OWNED_DIRS:
-        root_dir = os.path.join(REPO, top)
-        if not os.path.isdir(root_dir):
+    for fn in sorted(os.listdir(REPO)):
+        if not fn.endswith(".py") or fn.endswith(SKIP_SUFFIXES):
             continue
-        for root, dirs, files in os.walk(root_dir):
-            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
-            for fn in files:
-                if fn.endswith(SKIP_SUFFIXES):
-                    continue
-                full = os.path.join(root, fn)
-                out.append(os.path.relpath(full, REPO).replace(os.sep, "/"))
+        full = os.path.join(REPO, fn)
+        if os.path.isfile(full) and _is_plugin_file(full):
+            out.append(fn)
     return sorted(out)
 
 
@@ -152,7 +161,7 @@ def main(argv=None):
     if buckets["conflict"] and not args.force:
         print(
             "\ndeploy: refusing to overwrite files that are NEWER live than in the\n"
-            "repo — they were probably edited in place. Copy those changes back\n"
+            "repo -- they were probably edited in place. Copy those changes back\n"
             "into the repo first, or re-run with --force to discard them."
         )
         return 1

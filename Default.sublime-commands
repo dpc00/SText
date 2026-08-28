@@ -19,32 +19,12 @@
         }
     },
     {
-        "caption": "AI Hub: Open",
-        "command": "ai_hub_open"
-    },
-    {
-        "caption": "AI Hub: Refresh",
-        "command": "ai_hub_refresh"
-    },
-    {
-        "caption": "Ai: Capture Idea",
-        "command": "capture_idea"
-    },
-    {
-        "caption": "Ai: List Recent Sessions",
-        "command": "ai_list_sessions"
-    },
-    {
-        "caption": "Ai: Open Idea Inbox",
-        "command": "open_idea_inbox"
-    },
-    {
         "caption": "Ai: Quit Flask Apps",
         "command": "ai_quit_flask_apps"
     },
     {
-        "caption": "Claude: Grab Last Response",
-        "command": "claude_grab_response"
+        "caption": "CC Statusline Editor",
+        "command": "ccstatusline_editor_open"
     },
     {
         "caption": "MCP: Browse Command Palette",
@@ -67,8 +47,8 @@
         "command": "mcp_browse_variables"
     },
     {
-        "caption": "Panic: Quote & Reply",
-        "command": "panic_open"
+        "caption": "PyBackup: Open Panel",
+        "command": "pybackup_open"
     },
     {
         "caption": "PyBackup: Go TUI",
@@ -99,5 +79,17 @@
     {
         "caption": "SSH-Panel: Auto Connect Phone",
         "command": "ssh_panel_auto_connect"
+    },
+    {
+        "caption": "View: Toggle Gutter",
+        "command": "ai_toggle_gutter"
+    },
+    {
+        "caption": "View: Toggle Line Numbers",
+        "command": "ai_toggle_line_numbers"
+    },
+    {
+        "caption": "View: Toggle Fold Buttons",
+        "command": "ai_toggle_fold_buttons"
     }
 ]

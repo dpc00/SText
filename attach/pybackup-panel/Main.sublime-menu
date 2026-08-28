@@ -1,9 +1,0 @@
-[
-	{
-		"id": "tools",
-		"children": [
-			{"caption": "-", "id": "pybackup-panel-separator"},
-			{"caption": "Pybackup: Open Panel", "command": "pybackup_open"}
-		]
-	}
-]
