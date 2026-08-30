@@ -1,0 +1,162 @@
+{
+    "profiles": {
+        /*"Qwen PR #10500": {
+            "detachable": true,
+            "launch_command": [
+                "node",
+                "C:\\Users\\donal\\tools\\qwen-code\\packages\\cli\\dist\\index.js"
+            ],
+            "page_keys_to_pty": true,
+            "spawn_env": {
+                "AI_TERMINAL_LOG_LINES": "1",
+                "QWEN_HOME": "C:\\Users\\donal\\tools\\qwen-code-pr10500-home"
+            }
+        }*/
+        "Antigravity":
+        {
+			"launch_command":
+			[
+				"agy"
+			],
+			"spawn_env":
+			{
+			}
+		},
+        "Claude":
+        {
+			"launch_command":
+			[
+				"claude"
+			],
+			"spawn_env":
+			{
+				"CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"
+			}
+		},
+        "Codex":
+        {
+			"launch_command":
+			[
+				"codex"
+			],
+			"spawn_env":
+			{
+			}
+		},
+        "Gemini":
+        {
+			"launch_command":
+			[
+				"gemini.cmd"
+			],
+			"spawn_env":
+			{
+				"GEMINI_PROMPT_QUEUE": "false"
+			}
+		},
+        "Grok Build":
+        {
+			"launch_command":
+			[
+				"grok"
+			],
+			"spawn_env":
+			{
+			}
+		},
+        "Junie":
+        {
+			"launch_command":
+			[
+				"junie"
+			],
+			"spawn_env":
+			{
+			}
+		},
+        "Kimi":
+        {
+			"launch_command":
+			[
+				"kimi"
+			],
+			"spawn_env":
+			{
+			}
+		},
+        "Kiro":
+        {
+			"launch_command":
+			[
+				"kiro-cli"
+			],
+			"spawn_env":
+			{
+			}
+		},
+        "Mimo":
+        {
+			"launch_command":
+			[
+				"mimo"
+			],
+			"spawn_env":
+			{
+			}
+		},
+        "OpenCode":
+        {
+			"launch_command":
+			[
+				"opencode"
+			],
+			"spawn_env":
+			{
+			}
+		},
+        "Qwen":
+        {
+			"launch_command":
+			[
+				"qwen"
+			],
+			"spawn_env":
+			{
+			}
+		},
+        "Vibe":
+        {
+			"launch_command":
+			[
+				"vibe"
+			],
+			"mouse_handling": true,
+			"spawn_env":
+			{
+				"LOG_LEVEL": "DEBUG"
+			}
+		},
+        "dsh":
+        {
+			"launch_command":
+			[
+				"ollama",
+				"launch",
+				"dsh"
+			],
+			"spawn_env":
+			{
+			}
+		},
+        "jcode":
+        {
+			"launch_command":
+			[
+				"jcode"
+			],
+			"spawn_env":
+			{
+			}
+		},
+    },
+}
