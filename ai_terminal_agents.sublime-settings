@@ -179,7 +179,7 @@
 			"page_keys_to_pty": true,
 		},
     
-		"Node.js REPL":
+		/*"Node.js REPL":
 		{
 			"detachable": true,
 			"launch_command":
@@ -189,8 +189,8 @@
 			"spawn_env":
 			{
 			}
-		},
-		"Python REPL":
+		},*/
+		/*"Python REPL":
 		{
 			"detachable": true,
 			"launch_command":
@@ -201,6 +201,17 @@
 			"spawn_env":
 			{
 			}
+		},*/
+		"Pi":
+		{
+			"detachable": true,
+			"launch_command":
+			[
+				"pi"
+			],
+			"spawn_env":
+			{
+			},
 		},
 	},
 }
