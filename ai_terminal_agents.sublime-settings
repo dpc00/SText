@@ -213,5 +213,82 @@
 			{
 			},
 		},
+		"Amp":
+		{
+			"detachable": true,
+			"launch_command":
+			[
+				"amp"
+			],
+			"spawn_env":
+			{
+			},
+		},
+		"Auggie":
+		{
+			"detachable": true,
+			"launch_command":
+			[
+				"auggie"
+			],
+			"spawn_env":
+			{
+			},
+		},
+		"Cline":
+		{
+			"detachable": true,
+			"launch_command":
+			[
+				"cline"
+			],
+			"spawn_env":
+			{
+			},
+		},
+		"Cody":
+		{
+			"detachable": true,
+			"launch_command":
+			[
+				"cody"
+			],
+			"spawn_env":
+			{
+			},
+		},
+		"GitHub Copilot":
+		{
+			"detachable": true,
+			"launch_command":
+			[
+				"copilot"
+			],
+			"spawn_env":
+			{
+			},
+		},
+		"Kilo Code":
+		{
+			"detachable": true,
+			"launch_command":
+			[
+				"kilocode"
+			],
+			"spawn_env":
+			{
+			},
+		},
+		"Continue":
+		{
+			"detachable": true,
+			"launch_command":
+			[
+				"cn"
+			],
+			"spawn_env":
+			{
+			},
+		},
 	},
 }
