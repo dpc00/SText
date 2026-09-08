@@ -34,7 +34,7 @@ database.db-wal
 
 # --- Caches and Local settings ---
 .cache/
-.claude/
+.claude/settings.local.json
 .gemini/
 .idea/
 .vscode/
@@ -45,7 +45,7 @@ database.db-wal
 .firecrawl/
 **/__pycache__/
 **/.cache/
-**/.claude/
+**/.claude/settings.local.json
 **/.gemini/
 **/.pytest_cache/
 **/.mimocode/
