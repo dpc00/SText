@@ -6,14 +6,10 @@
 	"installed_packages":
 	[
 		"Debugger",
-		"DiffTabs",
-		"Lark Grammar Syntax",
 		"LSP",
 		"LSP-json",
 		"LSP-pyright",
-		"MarkdownPreview",
+		"OpenUri",
 		"Package Control",
-		"SublimeREPL",
-		"TreeSitter",
 	],
 }
