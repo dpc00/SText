@@ -33,4 +33,5 @@
 	"font_size": 11,
 	"index_files": false,
 	"update_channel": "dev",
+	"close_windows_when_empty": false,
 }

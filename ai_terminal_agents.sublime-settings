@@ -213,6 +213,17 @@
 			{
 			},
 		},
+		/*"OMP":
+		{
+			"detachable": true,
+			"launch_command":
+			[
+				"omp"
+			],
+			"spawn_env":
+			{
+			},
+		},*/
 		"Amp":
 		{
 			"detachable": true,
