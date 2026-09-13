@@ -257,17 +257,6 @@
 			{
 			},
 		},
-		"Cody":
-		{
-			"detachable": true,
-			"launch_command":
-			[
-				"cody"
-			],
-			"spawn_env":
-			{
-			},
-		},
 		"GitHub Copilot":
 		{
 			"detachable": true,
