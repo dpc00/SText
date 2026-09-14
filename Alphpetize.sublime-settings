@@ -1,0 +1,7 @@
+{
+	"prioritize":
+	[
+		"__construct",
+		"__destruct"
+	]
+}
