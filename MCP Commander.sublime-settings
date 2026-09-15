@@ -1,0 +1,9 @@
+{
+    // Kept on for WSL access -- WSL-side Sublime Text couldn't reach
+    // 127.0.0.1 on the Windows host without this, and switching WSL to
+    // mirrored networking mode wasn't wanted. See the package default's
+    // own comment in MCP Commander.sublime-settings for the tradeoff this
+    // accepts (both local servers become reachable from the whole network,
+    // still with no authentication).
+    "allow_lan_access": true
+}
