@@ -1,5 +1,7 @@
 {
 	"bootstrapped": true,
+	// Never fetch/pull git or hg checkouts under Packages (e.g. junctioned dev repos).
+	"ignore_vcs_packages": true,
 	"in_process_packages":
 	[
 	],
