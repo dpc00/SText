@@ -8,7 +8,6 @@
 	"installed_packages":
 	[
 		"Debugger",
-		"GlassIt",
 		"LSP",
 		"LSP-json",
 		"LSP-pyright",

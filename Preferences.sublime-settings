@@ -30,9 +30,10 @@
 	"folder_exclude_patterns": [
 		"CrossDevice",
 	],
-	"font_size": 11,
+	"font_size": 12,
 	"index_files": false,
-	"update_channel": "dev",
+	"update_channel": "stable",
+	"update_check": false,
 	"close_windows_when_empty": false,
 	"neovintageous_build_version": 13200,
 }
