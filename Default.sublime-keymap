@@ -1,5 +1,50 @@
 [
 	{"keys": ["ctrl+s"], "command": "save_all", "args": {"async": true}},
 	{"keys": ["ctrl+alt+s"], "command": "ai_capture_scroll_position"},
-	{"keys": ["ctrl+alt+l"], "command": "ccstatusline_editor_open"}
+	{"keys": ["ctrl+alt+l"], "command": "ccstatusline_editor_open"},
+
+	// Escape goes to whatever has focus. The default keymap hides any visible
+	// panel (e.g. the build output) on Escape even while a view has focus, and
+	// that beats clearing extra cursors. The rules below (a later rule wins):
+	//   1. view focused, panel visible: Escape must not close the panel
+	//      (`cancel` is the default "do nothing" command);
+	//   2. same in a terminal tab: the terminal gets its Escape;
+	//   3. view focused with several cursors: clear them, even with a panel.
+	// A focused panel, popups, auto-complete, the overlay and snippet fields
+	// still get Escape as before (those contexts are excluded).
+	{
+		"keys": ["escape"], "command": "cancel",
+		"context": [
+			{"key": "panel_visible", "operator": "equal", "operand": true},
+			{"key": "panel_has_focus", "operator": "equal", "operand": false},
+			{"key": "setting.ai_terminal_view", "operator": "not_equal", "operand": true},
+			{"key": "setting.command_mode", "operator": "not_equal", "operand": true},
+			{"key": "overlay_visible", "operator": "equal", "operand": false},
+			{"key": "auto_complete_visible", "operator": "equal", "operand": false},
+			{"key": "popup_visible", "operator": "equal", "operand": false},
+			{"key": "has_next_field", "operator": "equal", "operand": false},
+			{"key": "has_prev_field", "operator": "equal", "operand": false}
+		]
+	},
+	{
+		"keys": ["escape"], "command": "ai_terminal_keypress", "args": {"key": "escape"},
+		"context": [
+			{"key": "setting.ai_terminal_view", "operator": "equal", "operand": true},
+			{"key": "panel_visible", "operator": "equal", "operand": true},
+			{"key": "panel_has_focus", "operator": "equal", "operand": false},
+			{"key": "overlay_visible", "operator": "equal", "operand": false}
+		]
+	},
+	{
+		"keys": ["escape"], "command": "single_selection",
+		"context": [
+			{"key": "num_selections", "operator": "not_equal", "operand": 1},
+			{"key": "panel_has_focus", "operator": "equal", "operand": false},
+			{"key": "overlay_visible", "operator": "equal", "operand": false},
+			{"key": "auto_complete_visible", "operator": "equal", "operand": false},
+			{"key": "popup_visible", "operator": "equal", "operand": false},
+			{"key": "has_next_field", "operator": "equal", "operand": false},
+			{"key": "has_prev_field", "operator": "equal", "operand": false}
+		]
+	}
 ]

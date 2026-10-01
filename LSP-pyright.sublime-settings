@@ -1,0 +1,9 @@
+{
+	"settings": {
+		// Sublime's own API modules (sublime, sublime_plugin) only exist inside Sublime,
+		// so point pyright at the copies in the install folder.
+		"python.analysis.extraPaths": [
+			"C:/Program Files/Sublime Text/Lib/python314"
+		]
+	}
+}
