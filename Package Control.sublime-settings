@@ -12,6 +12,7 @@
 		"LSP-json",
 		"LSP-pyright",
 		"OpenUri",
+		"OverrideAudit",
 		"Package Control",
 		"Pretty JSON",
 	],
