@@ -7,8 +7,6 @@
 	],
 	"installed_packages":
 	[
-		"ClaudeSublime",
-		"Debugger",
 		"LSP",
 		"LSP-json",
 		"LSP-pyright",
@@ -16,6 +14,6 @@
 		"OverrideAudit",
 		"Package Control",
 		"Pretty JSON",
-		"Terminus",
+		"SettingsUI",
 	],
 }
