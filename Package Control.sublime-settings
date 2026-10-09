@@ -7,12 +7,14 @@
 	],
 	"installed_packages":
 	[
+		"A File Icon",
 		"LSP",
 		"LSP-json",
 		"LSP-pyright",
 		"OpenUri",
 		"OverrideAudit",
 		"Package Control",
+		"Packed",
 		"Pretty JSON",
 		"SettingsUI",
 	],

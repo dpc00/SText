@@ -30,16 +30,16 @@
 	"folder_exclude_patterns": [
 		"CrossDevice",
 	],
-	"font_size": 13,
+	"font_size": 12,
 	"index_files": false,
 	"update_channel": "stable",
 	"update_check": false,
 	"close_windows_when_empty": false,
 	"neovintageous_build_version": 13200,
-	"font_face": "tahoma",
 	"minimap_horizontal_scrolling": true,
 	"always_show_minimap_viewport": true,
 	"show_line_endings": true,
 	"show_encoding": true,
 	"show_spelling_errors": false,
+	"file_icon_theme": "A File Icon.sublime-file-icons",
 }
