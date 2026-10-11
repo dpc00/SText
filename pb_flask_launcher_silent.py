@@ -246,7 +246,7 @@ class PbFlaskSilentCommand(sublime_plugin.WindowCommand):
             kill_existing(PORT)
             _log(f"kill_existing done: {time.monotonic()-t0:.2f}s")
             proc = subprocess.Popen(
-                [r"C:\Users\donal\AppData\Local\Programs\Python\Python312\python.exe", r"C:/Users/donal/projects/pybackup/ui/app.py"],
+                [r"C:\Program Files\Python314\python.exe", r"C:/Users/donal/projects/pybackup/ui/app.py"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
