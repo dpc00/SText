@@ -1,5 +1,5 @@
-{
-	"debug": false,
+﻿{
+	"debug": true,
 	"ide_name": "AgentIDE",
 	"split_size": 0.5,
     "fallback_layout": "single",

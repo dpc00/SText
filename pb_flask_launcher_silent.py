@@ -21,7 +21,8 @@ IS_WINDOWS = sys.platform == "win32"
 def _pids_listening_on_windows(port: int) -> list:
     try:
         out = subprocess.check_output(
-            ["netstat", "-ano", "-p", "tcp"], stderr=subprocess.DEVNULL, text=True
+            ["netstat", "-ano", "-p", "tcp"], stderr=subprocess.DEVNULL, text=True,
+            **hidden_popen_kwargs()
         )
     except Exception:
         return []
@@ -66,6 +67,7 @@ def kill_existing(port: int = PORT, timeout: float = 3.0) -> int:
             subprocess.call(
                 ["taskkill", "/F", "/PID", str(pid)],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                **hidden_popen_kwargs()
             )
     else:
         pids = _pids_listening_on_posix(port)
