@@ -58,10 +58,6 @@
         }
     },
     {
-        "caption": "PyBackup: Flask App",
-        "command": "pb_flask_launcher"
-    },
-    {
         "caption": "PyBackup: Flask App (silent)",
         "command": "pb_flask_silent"
     },
