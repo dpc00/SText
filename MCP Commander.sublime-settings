@@ -5,5 +5,10 @@
     // own comment in MCP Commander.sublime-settings for the tradeoff this
     // accepts (both local servers become reachable from the whole network,
     // still with no authentication).
-    "allow_lan_access": true
+    "allow_lan_access": true,
+
+    // Destructive tools (close with discard, delete, revert, exit, eval_python, ...) ask first.
+    // Was false while the audit ran in this Sublime (2026-10-20); the audit now runs in a portable
+    // whose own settings turn it off. Back on 2026-10-30 (the plugin reads this live, no restart).
+    "require_consent_for_destructive": true
 }
