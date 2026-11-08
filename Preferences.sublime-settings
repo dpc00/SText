@@ -21,7 +21,6 @@
 		"*.psd"
 	],
 	"ignored_packages": [
-		"NinetyFive",
 		"Vintage",
 	],
 	// CrossDevice holds Windows Phone Link shortcuts to the phone's storage
