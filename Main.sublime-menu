@@ -39,7 +39,7 @@
                 "args": {
                     "cmd": [
                         "python","-u",
-                        "C:/Users/donal/projects/pybackup/pybackup.py"
+                        "pybackup.py"
                     ],
                     "working_dir": "C:/Users/donal/projects/pybackup"
                 }
