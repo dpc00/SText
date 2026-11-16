@@ -38,7 +38,7 @@
                 "command": "exec",
                 "args": {
                     "cmd": [
-                        "python",
+                        "python","-u",
                         "C:/Users/donal/projects/pybackup/pybackup.py"
                     ],
                     "working_dir": "C:/Users/donal/projects/pybackup"
